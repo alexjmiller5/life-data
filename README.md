@@ -48,11 +48,39 @@ it is a complete backup. Never place the data dir inside a file-sync folder
 - **`_sync_state`** holds sync cursors (used by the upcoming sync engine).
 - Zero runtime dependencies: Python stdlib only.
 
+## Sync and backup
+
+`life sync` replicates through a hub (Cloudflare D1) so every machine holds a
+full copy: pull, then push, last-write-wins per row on `updated_at`, soft
+deletes via `deleted_at`, schema replayed from `_schema_log`. `life backup`
+PUTs a full SQL dump to R2. Both read `config.json` in the data dir:
+
+```json
+{
+  "hub": {
+    "account_id": "<cloudflare account id>",
+    "database_id": "<d1 database id>",
+    "token_cmd": "op read op://<vault>/<item>/credential"
+  },
+  "backup": { "bucket": "<r2 bucket>", "prefix": "backups/" }
+}
+```
+
+The Cloudflare API token needs D1 edit + R2 write scopes; `token_cmd` is any
+command printing it (`LIFE_HUB_TOKEN` env overrides it). Deletes must be
+soft (`UPDATE ... SET deleted_at = updated_at`) — hard DELETEs don't
+propagate.
+
+## Importing data
+
+There is no importer command by design: an AI agent (or you) maps any source
+into the generic primitives - `life table create`, then transform the source
+records to JSON and pipe them into `life insert <table>`. Source record IDs
+become row `id`s so re-imports and cross-source relations stay stable.
+
 ## Roadmap
 
 - `life sync`: local-first replication between machines through a Cloudflare
   D1 hub (row-cursor, last-write-wins; schema changes replayed from
   `_schema_log`).
-- `life import notion`: generic Notion database importer (relations become
-  junction tables).
 - `life backup`: SQL-text export to object storage.

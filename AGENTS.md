@@ -38,12 +38,33 @@ created through the installed CLI.
   consistent with this format (sync ordering depends on lexicographic = 
   chronological).
 - `just` verbs: `run` (CLI passthrough), `test`, `check`, `fmt`.
+- **Always invoke uv through `just`, never bare `uv run`**: the justfile
+  relocates the venv outside iCloud (UV_PROJECT_ENVIRONMENT). Bare `uv run`
+  uses `./.venv` under iCloud, where macOS intermittently stamps the editable
+  install's .pth UF_HIDDEN and Python 3.13+ silently ignores it
+  (ModuleNotFoundError: life_data). If that strikes anyway:
+  `chflags nohidden .venv/lib/python*/site-packages/*.pth`.
 
-## Roadmap (build order)
+## Imports are agent work, not product code
 
-1. `life sync` - replication via a Cloudflare D1 hub: row-cursor push/pull,
-   last-write-wins on `updated_at`, tombstones via `deleted_at`, schema via
-   `_schema_log` replay. State-based per row, never op-log.
-2. `life import notion` - generic data-source importer: Notion page IDs
-   become row `id`s, relations become junction tables.
-3. `life backup` - SQL-text export to S3-compatible object storage.
+There is deliberately no `life import <source>` command. Migrating data in
+(Notion, Garmin, anything) = a user op: the agent fetches from the source and
+maps it through the generic primitives (`life table create`, `life insert`
+with JSON on stdin, `life sql`). Source IDs become row `id`s (Notion page
+UUIDs dash-stripped to 32 hex), source relations become junction tables,
+multi-value fields become JSON-array text columns. Never add source-specific
+importer code to this repo.
+
+## Sync internals
+
+`sync(path, hub)` is state-based, never op-log: replay missing `_schema_log`
+DDL on both sides (idempotent-by-skip on "already exists"/"duplicate
+column"), snapshot push candidates BEFORE applying the pull (else pulled
+rows echo back), pull then push via a single-JSON-parameter `json_each`
+upsert (D1 caps bind params at ~100/query) guarded by
+`WHERE excluded.updated_at > t.updated_at` (the LWW rule), then advance the
+global per-direction cursors in `_sync_state`. Hub targets implement
+`.query(sql, params)` — `LocalTarget` (tests) and `D1Target` (Cloudflare
+REST). Soft deletes only: `deleted_at` propagates, hard DELETEs don't.
+`life backup` = `iterdump` → R2 object PUT via the Cloudflare API (no S3
+signing).
