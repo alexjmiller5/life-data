@@ -21,3 +21,7 @@ check:
 fmt:
     uv run ruff format .
     uv run ruff check --fix .
+
+# deploy the hub (CI does this on push to main; local runs are break-glass)
+deploy:
+    cd worker && bunx wrangler@4 deploy

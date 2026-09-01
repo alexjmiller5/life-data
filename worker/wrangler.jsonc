@@ -1,0 +1,21 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "life-data",
+	"main": "src/index.js",
+	"compatibility_date": "2026-07-06",
+	"workers_dev": true,
+	"observability": { "enabled": true },
+	// The hub's storage. Declaring the bindings here IS the provisioning —
+	// nothing about D1 or R2 reaches the client.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "life-data",
+			"database_id": "a7a10931-e427-428e-8d0d-1e4024a3312b"
+		}
+	],
+	"r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "life-data-backups" }],
+	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
+	// belongs to (daily / weekly / monthly / yearly).
+	"triggers": { "crons": ["10 9 * * *"] }
+}

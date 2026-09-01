@@ -1,23 +1,22 @@
 # life-data
 
 A schema-agnostic personal data store: local-first SQLite with an
-agent-friendly CLI. Think "headless Notion" - you define your own tables at
-runtime through the CLI, your data lives in one SQLite file on your machine,
-and AI agents query and edit it with plain SQL. No server, no migrations to
-write, no vendor.
+agent-friendly CLI, and an optional sync service. Think "headless Notion" —
+you define your own tables at runtime, your data lives in a SQLite file on
+your own machine, AI agents query and edit it with plain SQL, and every
+device stays a complete replica whether or not the network is up.
 
 The software is generic: it ships zero personal schema. Your tables, columns,
-and rows are *state*, created and evolved entirely through the installed
-CLI - never by editing this repo.
+and rows are *state*, created entirely through the installed CLI — never by
+editing this repo.
 
 ## Install
 
 ```bash
 nix profile install github:alexjmiller5/life-data
-# or in a flake / home-manager setup, add the package from this flake's outputs
 ```
 
-## Usage
+## Use
 
 ```bash
 life init                                  # create the data dir + database
@@ -26,61 +25,90 @@ life table create people name:text birthday:text
 life sql "INSERT INTO people (name) VALUES ('Ada')"
 life sql "SELECT * FROM people"            # results as JSON
 life sql "ALTER TABLE people ADD COLUMN likes TEXT"
+life export > backup.sql                   # portable dump, no cloud involved
 ```
 
-Every statement is plain SQLite SQL. `life sql` prints query results as JSON.
+Every statement is plain SQLite SQL. Everything above works offline, forever,
+with no account and no server.
+
+## Sync (optional)
+
+```bash
+life sync     # one round trip with the hub
+life watch    # continuous: pushes local writes within ~1s, polls for remote
+```
+
+Sync is state-based and last-write-wins per row on `updated_at`; deletes are
+soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate — a
+hard `DELETE` will not. Schema changes replay from `_schema_log`, so a brand
+new device pulls the tables *and* the rows with one `life sync`.
+
+Configure it in `config.json` in the data dir — every field is optional:
+
+```json
+{
+  "hub_url": "https://your-hub.example.com",
+  "token": "…",
+  "token_cmd": "op read op://vault/item/credential",
+  "headers": { "CF-Access-Client-Id": "…", "CF-Access-Client-Secret": "…" }
+}
+```
+
+`hub_url` defaults to the hosted service. Credentials are a plain bearer
+token: give it literally (`token`), via a command (`token_cmd`), or via the
+`LIFE_HUB_TOKEN` environment variable, which wins over both. `headers` adds
+arbitrary headers for hubs behind an authenticating proxy (e.g. Cloudflare
+Access). The client has no provider-specific code.
+
+## Self-hosting the hub
+
+The hub is a Cloudflare Worker in `worker/`, storing the canonical replica in
+D1 and writing backups to R2 — all declared in `worker/wrangler.jsonc`.
+
+```bash
+cd worker && bunx wrangler@4 deploy
+bunx wrangler@4 secret put HUB_TOKEN     # the bearer token clients present
+../scripts/cf-r2-lifecycle.py            # apply tiered backup retention
+```
+
+Point clients at it with `hub_url`, and you own the whole loop.
+
+### Backups
+
+The hub's daily cron dumps the database to R2 as gzipped SQL, writing into
+the prefix matching how long that copy should live:
+
+| Prefix     | Written | Kept |
+|------------|---------|------|
+| `daily/`   | daily   | 35 days |
+| `weekly/`  | Sundays | 190 days |
+| `monthly/` | the 1st | 400 days |
+| `yearly/`  | Jan 1   | forever |
+
+Retention is enforced by R2 lifecycle rules; `scripts/cf-r2-lifecycle.py` is
+their source of truth. Restore any of them with
+`gunzip -c life-….sql.gz | sqlite3 restored.db`. D1's own Time Travel
+separately covers point-in-time restore for the last 7 days.
 
 ## Where data lives
 
 `$LIFE_DATA_DIR` if set, else `$XDG_DATA_HOME/life-data`, else
-`~/.local/share/life-data`. The database is a single `life.db` file - copying
-it is a complete backup. Never place the data dir inside a file-sync folder
+`~/.local/share/life-data`. The database is a single `life.db` file — copying
+it is a complete backup. Never put the data dir inside a file-sync folder
 (iCloud Drive, Dropbox): file-level sync corrupts SQLite WAL databases.
 
 ## Design
 
 - **Tables created via `life table create` get sync-ready columns
-  automatically**: `id` (random 128-bit hex, primary key), `created_at`,
-  `updated_at` (maintained by trigger), `deleted_at` (for soft deletes). ISO
-  8601 UTC timestamps with millisecond precision.
-- **`_schema_log`** records every DDL statement executed through the CLI, in
-  order - replicas replay it to converge on the same schema.
-- **`_sync_state`** holds sync cursors (used by the upcoming sync engine).
-- Zero runtime dependencies: Python stdlib only.
-
-## Sync and backup
-
-`life sync` replicates through a hub (Cloudflare D1) so every machine holds a
-full copy: pull, then push, last-write-wins per row on `updated_at`, soft
-deletes via `deleted_at`, schema replayed from `_schema_log`. `life backup`
-PUTs a full SQL dump to R2. Both read `config.json` in the data dir:
-
-```json
-{
-  "hub": {
-    "account_id": "<cloudflare account id>",
-    "database_id": "<d1 database id>",
-    "token_cmd": "op read op://<vault>/<item>/credential"
-  },
-  "backup": { "bucket": "<r2 bucket>", "prefix": "backups/" }
-}
-```
-
-The Cloudflare API token needs D1 edit + R2 write scopes; `token_cmd` is any
-command printing it (`LIFE_HUB_TOKEN` env overrides it). Deletes must be
-soft (`UPDATE ... SET deleted_at = updated_at`) — hard DELETEs don't
-propagate.
+  automatically**: `id` (random 128-bit hex), `created_at`, `updated_at`
+  (trigger-maintained), `deleted_at`. ISO 8601 UTC, millisecond precision.
+- **`_schema_log`** records every DDL statement in order; replicas replay it.
+- **`_sync_state`** holds the sync cursors.
+- The client is pure Python standard library — no runtime dependencies.
 
 ## Importing data
 
-There is no importer command by design: an AI agent (or you) maps any source
-into the generic primitives - `life table create`, then transform the source
-records to JSON and pipe them into `life insert <table>`. Source record IDs
-become row `id`s so re-imports and cross-source relations stay stable.
-
-## Roadmap
-
-- `life sync`: local-first replication between machines through a Cloudflare
-  D1 hub (row-cursor, last-write-wins; schema changes replayed from
-  `_schema_log`).
-- `life backup`: SQL-text export to object storage.
+There is no importer command by design: an agent (or you) maps any source
+into the generic primitives — `life table create`, then transform records to
+JSON and pipe them into `life insert <table>`. Use source record ids as row
+`id`s so re-imports stay idempotent and cross-source relations survive.
