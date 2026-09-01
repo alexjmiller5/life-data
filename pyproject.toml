@@ -1,0 +1,25 @@
+[project]
+name = "life-data"
+version = "0.1.0"
+description = "Schema-agnostic personal data store: local-first SQLite with agent-friendly CLI"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+life = "life_data:main"
+
+[build-system]
+requires = ["uv_build>=0.8,<1.0"]
+build-backend = "uv_build"
+
+# pythonpath fallback: the editable install's .pth is unreliable here — on
+# iCloud-synced dirs macOS intermittently stamps files UF_HIDDEN, and Python
+# 3.13+ ignores hidden .pth files
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
