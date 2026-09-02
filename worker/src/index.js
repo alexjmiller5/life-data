@@ -290,17 +290,6 @@ async function runBackup(env, now) {
 
 const STREAM_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
-// Projection enrichment: landing stays byte-verbatim, but the copy teed into
-// the Iceberg table gets source/claim stamped when the record lacks them —
-// from ?source=/&claim= query params, else the presenting token's name.
-// The resolved tags are also written to the landing object's customMetadata
-// so replays reproduce the projection exactly.
-function resolveTags(record, url, tokenName) {
-  return {
-    source: record.source ?? url.searchParams.get("source") ?? tokenName ?? null,
-    claim: record.claim ?? url.searchParams.get("claim") ?? "measured",
-  };
-}
 const MAX_APPEND_BYTES = 1_000_000;
 
 function landingKey(stream, now) {
@@ -308,20 +297,9 @@ function landingKey(stream, now) {
   return `landing/${stream}/${ts}-${crypto.randomUUID().slice(0, 8)}.json`;
 }
 
-async function streamAppend(env, stream, body, now, url, tokenName) {
+async function streamAppend(env, stream, body, now) {
   const key = landingKey(stream, now);
-  let record = null;
-  let tags = { source: tokenName ?? null, claim: "measured" };
-  try {
-    record = JSON.parse(new TextDecoder().decode(body));
-    tags = resolveTags(record, url, tokenName);
-  } catch {
-    /* non-JSON body: stored verbatim, no tee below */
-  }
-  await env.ARCHIVE.put(key, body, {
-    httpMetadata: { contentType: "application/json" },
-    customMetadata: { source: String(tags.source), claim: tags.claim },
-  });
+  await env.ARCHIVE.put(key, body, { httpMetadata: { contentType: "application/json" } });
   // small "latest" pointer so tail is O(1) instead of a full listing
   await env.ARCHIVE.put(`state/${stream}/latest.json`, body, {
     httpMetadata: { contentType: "application/json" },
@@ -331,15 +309,12 @@ async function streamAppend(env, stream, body, now, url, tokenName) {
   // projection, so its failure must never fail an append — everything is
   // rebuildable from landing.
   let piped = false;
-  if (record !== null) {
-    try {
-      await env.EVENTS.send([
-        { stream, ingested_at: now.toISOString(), record: { ...record, ...tags } },
-      ]);
-      piped = true;
-    } catch (e) {
-      console.log(`pipeline tee failed for ${key}: ${e}`);
-    }
+  try {
+    const record = JSON.parse(new TextDecoder().decode(body));
+    await env.EVENTS.send([{ stream, ingested_at: now.toISOString(), record }]);
+    piped = true;
+  } catch (e) {
+    console.log(`pipeline tee failed for ${key}: ${e}`);
   }
   return { key, piped };
 }
@@ -368,7 +343,7 @@ async function streamManifest(env, stream, origin) {
   return { parquet: parquet.map(toUrl), landing: landing.map(toUrl) };
 }
 
-async function handleStreams(request, env, url, tenantName) {
+async function handleStreams(request, env, url) {
   const parts = url.pathname.split("/").filter(Boolean); // v1 streams <name> <op>
   const [, , stream, op] = parts;
   if (!STREAM_NAME.test(stream ?? "")) return json({ error: "bad stream name" }, 400);
@@ -378,7 +353,7 @@ async function handleStreams(request, env, url, tenantName) {
     if (body.byteLength === 0 || body.byteLength > MAX_APPEND_BYTES) {
       return json({ error: "body must be 1..1MB of JSON" }, 400);
     }
-    return json(await streamAppend(env, stream, body, new Date(), url, tenantName));
+    return json(await streamAppend(env, stream, body, new Date()));
   }
   if (op === "replay" && request.method === "POST") {
     // Projection rebuild: tee records into the pipeline WITHOUT writing
@@ -389,13 +364,9 @@ async function handleStreams(request, env, url, tenantName) {
       return json({ error: "body must be a JSON array of 1..1000 records" }, 400);
     }
     const ingested = new Date().toISOString();
-    const enriched = records.map((record) => ({
-      ...record,
-      ...resolveTags(record, url, tenantName),
-    }));
-    for (let i = 0; i < enriched.length; i += 100) {
+    for (let i = 0; i < records.length; i += 100) {
       await env.EVENTS.send(
-        enriched.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))
+        records.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))
       );
     }
     return json({ replayed: records.length });
@@ -410,17 +381,13 @@ async function handleStreams(request, env, url, tenantName) {
     }
     const now = new Date();
     const key = `landing/${stream}/${now.toISOString().replace(/[:]/g, "-")}-batch-${crypto.randomUUID().slice(0, 8)}.json`;
-    const enriched = records.map((record) => ({
-      ...record,
-      ...resolveTags(record, url, tenantName),
-    }));
     await env.ARCHIVE.put(key, JSON.stringify(records), {
       httpMetadata: { contentType: "application/json" },
     });
     const ingested = now.toISOString();
-    for (let i = 0; i < enriched.length; i += 100) {
+    for (let i = 0; i < records.length; i += 100) {
       await env.EVENTS.send(
-        enriched.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))
+        records.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))
       );
     }
     return json({ count: records.length, key });
@@ -509,9 +476,7 @@ export default {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.pathname.startsWith("/v1/streams/")) {
-        return await handleStreams(request, env, url, tenant.name);
-      }
+      if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
       if (
         url.pathname.startsWith("/v1/archive/") &&
         (request.method === "GET" || request.method === "HEAD")
