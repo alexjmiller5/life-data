@@ -94,7 +94,7 @@ function allowed(pathname, method, scopes) {
     pathname === "/v1/schema/pull" ||
     pathname === "/v1/rows/pull" ||
     pathname === "/v1/cursor" ||
-    (method === "GET" &&
+    ((method === "GET" || method === "HEAD") &&
       (pathname.startsWith("/v1/streams/") || pathname.startsWith("/v1/archive/")));
   if (readOnly) return scopes.includes("full") || scopes.includes("tables:read");
   return scopes.includes("full"); // schema/push, rows/push, archive/query
@@ -390,6 +390,16 @@ async function handleStreams(request, env, url) {
 async function handleArchiveGet(request, env, url) {
   const key = decodeURIComponent(url.pathname.slice("/v1/archive/".length));
   if (key.includes("..")) return json({ error: "bad key" }, 400);
+  // HEAD: DuckDB's httpfs sizes files with HEAD before ranged GETs
+  if (request.method === "HEAD") {
+    const head = await env.ARCHIVE.head(key);
+    if (!head) return new Response(null, { status: 404 });
+    const headers = new Headers();
+    head.writeHttpMetadata(headers);
+    headers.set("Accept-Ranges", "bytes");
+    headers.set("Content-Length", String(head.size));
+    return new Response(null, { headers });
+  }
   const obj = await env.ARCHIVE.get(key, {
     range: request.headers.get("Range") ?? undefined,
     onlyIf: request.headers,
@@ -447,7 +457,10 @@ export default {
         });
       }
       if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
-      if (url.pathname.startsWith("/v1/archive/") && request.method === "GET") {
+      if (
+        url.pathname.startsWith("/v1/archive/") &&
+        (request.method === "GET" || request.method === "HEAD")
+      ) {
         return await handleArchiveGet(request, env, url);
       }
       if (!(url.pathname in ROUTES) || request.method !== "POST") {
