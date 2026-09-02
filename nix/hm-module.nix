@@ -1,6 +1,14 @@
 # home-manager module for life-data — exported as `homeModules.default`.
 # Consumers toggle `lifeData.enable` and supply only what the product cannot
-# know: how to obtain the hub credential on this machine.
+# know: how each context on this machine obtains the hub credential.
+#
+# The two contexts are deliberately independent:
+#   cli.tokenCommand   → written to config.json as token_cmd; interactive
+#                        `life` invocations run it in the caller's own env.
+#   watch.tokenCommand → evaluated ONCE by the daemon wrapper at startup and
+#                        exported as LIFE_HUB_TOKEN, which the product
+#                        prefers over token_cmd — so the daemon never touches
+#                        config.json's credential path at all.
 self:
 {
   config,
@@ -12,9 +20,10 @@ let
   cfg = config.lifeData;
   watchBin = pkgs.writeShellApplication {
     name = "life-data-watch";
-    runtimeInputs = [ cfg.package ];
+    runtimeInputs = [ cfg.package ] ++ cfg.watch.packages;
     text = ''
-      ${cfg.watch.setup}
+      LIFE_HUB_TOKEN="$(${cfg.watch.tokenCommand})"
+      export LIFE_HUB_TOKEN
       life init >/dev/null
       exec life watch
     '';
@@ -31,21 +40,21 @@ in
       description = "The life-data package providing the `life` CLI.";
     };
 
-    tokenCommand = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "op read 'op://vault/item/credential'";
-      description = ''
-        Command whose stdout is the hub bearer token (written to config.json
-        as token_cmd). Null configures no credential; hub commands then rely
-        on the LIFE_HUB_TOKEN environment variable.
-      '';
-    };
-
     hubUrl = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Hub to sync with. Null uses the CLI's built-in default (the hosted service); set to self-host.";
+    };
+
+    cli.tokenCommand = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "op read 'op://vault/item/credential'";
+      description = ''
+        Credential command for INTERACTIVE `life` use, written to config.json
+        as token_cmd and run in the calling shell's environment. Null
+        configures none; hub commands then need LIFE_HUB_TOKEN set.
+      '';
     };
 
     watch = {
@@ -54,19 +63,33 @@ in
         default = true;
         description = "Run `life watch` as a background agent: pushes local writes within ~1s, polls for remote changes. (launchd; macOS only.)";
       };
-      setup = lib.mkOption {
-        type = lib.types.lines;
-        default = "";
+      tokenCommand = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = ''TOKEN_ENV="$(cat /path/to/session)" fetch-secret hub-token'';
         description = ''
-          Shell prelude for the watch daemon. Background agents start without
-          a login shell environment, so export here whatever tokenCommand
-          needs to succeed (e.g. a secret-manager session variable).
+          Credential command for the DAEMON, evaluated once at startup and
+          exported as LIFE_HUB_TOKEN. Must be self-sufficient: background
+          agents start with no login-shell environment, so include any
+          environment its own tooling needs inline.
         '';
+      };
+      packages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [ ];
+        description = "Extra packages watch.tokenCommand needs on PATH (the daemon's PATH is minimal).";
       };
     };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = !cfg.watch.enable || cfg.watch.tokenCommand != null;
+        message = "lifeData.watch.enable requires lifeData.watch.tokenCommand (the daemon has no other way to authenticate).";
+      }
+    ];
+
     # duckdb powers `life archive query --raw` (analytical fallback over raw
     # stream objects)
     home.packages = [
@@ -77,7 +100,7 @@ in
     # Read-only by design: this is machine config; all of the app's mutable
     # state lives in the database, never here.
     xdg.dataFile."life-data/config.json".text = builtins.toJSON (
-      lib.optionalAttrs (cfg.tokenCommand != null) { token_cmd = cfg.tokenCommand; }
+      lib.optionalAttrs (cfg.cli.tokenCommand != null) { token_cmd = cfg.cli.tokenCommand; }
       // lib.optionalAttrs (cfg.hubUrl != null) { hub_url = cfg.hubUrl; }
     );
 
