@@ -13,5 +13,5 @@
 # the agent service account, which cannot see project vaults. CI never needs
 # it — Worker secrets persist across deploys.
 
-CLOUDFLARE_API_TOKEN=op://Life Data/Life Data Deploy Creds/api-token
-CLOUDFLARE_ACCOUNT_ID=op://Life Data/Life Data Deploy Creds/account-id
+CLOUDFLARE_API_TOKEN=op://Life Data/Life Data CI Cloudflare Token/api-token
+CLOUDFLARE_ACCOUNT_ID=op://Life Data/Life Data CI Cloudflare Token/account-id

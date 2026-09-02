@@ -34,7 +34,7 @@ jobs:
         with:
           export-env: true
         env:
-          CLOUDFLARE_API_TOKEN: op://Life Data/Life Data Deploy Creds/api-token
-          CLOUDFLARE_ACCOUNT_ID: op://Life Data/Life Data Deploy Creds/account-id
+          CLOUDFLARE_API_TOKEN: op://Life Data/Life Data CI Cloudflare Token/api-token
+          CLOUDFLARE_ACCOUNT_ID: op://Life Data/Life Data CI Cloudflare Token/account-id
       - working-directory: worker
         run: bunx wrangler@4 deploy
