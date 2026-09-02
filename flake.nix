@@ -30,5 +30,12 @@
           };
           default = life-data;
         });
+
+      # home-manager module: `lifeData.enable = true` installs the CLI (+
+      # duckdb), declares config.json from options, and runs the watch daemon.
+      homeModules = rec {
+        life-data = import ./nix/hm-module.nix self;
+        default = life-data;
+      };
     };
 }
