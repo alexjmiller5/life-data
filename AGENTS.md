@@ -125,7 +125,13 @@ Beta gotchas, all hit at build time (2026-09-02):
 - The old AI Agent CF token predates these products: use the platform token
   (below) for any pipelines/catalog/r2-sql wrangler ops.
 
-The platform credential is `AI Agent Life Data Platform Token` (1P
-`rda2kie5ioizhezvq4ngnivuam`, AI Agent vault): Pipelines Write + R2 Data
-Catalog Write + R2 SQL Read + R2 Storage Write + Workers Scripts Write + D1
-Write. It doubles as the catalog's compaction service credential.
+Credentials (AI Agent vault, by ID):
+- `AI Agent Life Data Platform Token` (`rda2kie5ioizhezvq4ngnivuam`):
+  Pipelines/Catalog/R2/Workers/D1 WRITE - agent platform ops + the
+  catalog's compaction service credential. Do not rotate casually: the
+  Pipelines sink derives its R2 credentials from it.
+- `AI Agent Life Data SQL Read Token` (`3hklteqrlhhkr5yiu5z6gvdmia`):
+  R2 SQL + Catalog + R2 Storage READ only - this is the Worker's
+  `R2_SQL_TOKEN` secret (least privilege: the hub only reads).
+- `AI Agent Life Data Hub Token` (`3qq7d6cltvwh3yzken2b46einm`): the bearer
+  token every client presents (CLI, watch daemon, OwnTracks).
