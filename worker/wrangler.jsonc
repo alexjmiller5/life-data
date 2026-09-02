@@ -14,7 +14,18 @@
 			"database_id": "a7a10931-e427-428e-8d0d-1e4024a3312b"
 		}
 	],
-	"r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "life-data-backups" }],
+	"r2_buckets": [
+		{ "binding": "BACKUPS", "bucket_name": "life-data-backups" },
+		{ "binding": "ARCHIVE", "bucket_name": "life-data-archive" }
+	],
+	// Pipelines stream: appends tee events here → Iceberg table life.events
+	// in the R2 Data Catalog (managed compaction on). Landing stays the raw
+	// source of truth.
+	"pipelines": [{ "stream": "24ff9a5dd60549e7b1d0d931cf5ffea0", "binding": "EVENTS" }],
+	"vars": {
+		"ACCOUNT_ID": "1e69de15e5dc3dddea6db7b3ae8087bc",
+		"ARCHIVE_BUCKET": "life-data-archive"
+	},
 	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
 	// belongs to (daily / weekly / monthly / yearly).
 	"triggers": { "crons": ["10 9 * * *"] }

@@ -90,6 +90,30 @@ their source of truth. Restore any of them with
 `gunzip -c life-….sql.gz | sqlite3 restored.db`. D1's own Time Travel
 separately covers point-in-time restore for the last 7 days.
 
+## Streams (append-only data)
+
+Tables hold rows you edit; **streams** hold append-only, timestamped events —
+location pings, sensor readings, anything written once and read analytically.
+Streams are hub-backed by nature (the events are born remote):
+
+```bash
+echo '{"lat": 42.36, "lon": -71.06, "tst": 1756789200}' | life stream append location
+life stream tail location        # the freshest record
+life archive query "SELECT * FROM life.events WHERE stream = 'location' LIMIT 10"
+```
+
+Any client that can POST JSON can feed a stream — e.g. OwnTracks in HTTP mode
+pointed at `<hub>/v1/streams/location/append` with the token as its Basic-auth
+password. The hub stores every event verbatim as a landing object (raw is
+sacred, never deleted) and tees it into a managed pipeline that builds an
+Apache Iceberg table (`life.events`) with automatic compaction. Queries run
+server-side over that table; `--raw` instead runs local DuckDB against the
+raw landing/parquet objects (needs `duckdb` on PATH).
+
+On Cloudflare that machinery is Pipelines + R2 Data Catalog + R2 SQL (open
+beta, Workers Paid); self-hosters get the landing/tail/manifest endpoints
+regardless, and everything is rebuildable from landing.
+
 ## Where data lives
 
 `$LIFE_DATA_DIR` if set, else `$XDG_DATA_HOME/life-data`, else

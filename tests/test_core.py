@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 
 import pytest
 
@@ -262,19 +263,51 @@ class _Handler(BaseHTTPRequestHandler):
     hub = None
     token = "testtoken"
     last_user_agent = None
+    streams: ClassVar[dict] = {}
 
     def log_message(self, *a):
         pass
+
+    def _deny(self):
+        denied = b'{"error":"forbidden"}'
+        self.send_response(403)
+        self.send_header("Content-Length", str(len(denied)))
+        self.end_headers()
+        self.wfile.write(denied)
+
+    def _json(self, obj):
+        payload = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        if self.headers.get("Authorization") != f"Bearer {self.token}":
+            self._deny()
+            return
+        parts = self.path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["v1", "streams"] and parts[3] == "tail":
+            records = _Handler.streams.get(parts[2], [])
+            self._json(json.loads(records[-1]) if records else None)
+            return
+        self.send_response(404)
+        self.end_headers()
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers["Content-Length"]))  # always drain the request
         _Handler.last_user_agent = self.headers.get("User-Agent")
         if self.headers.get("Authorization") != f"Bearer {self.token}":
-            denied = b'{"error":"forbidden"}'
-            self.send_response(403)
-            self.send_header("Content-Length", str(len(denied)))
-            self.end_headers()
-            self.wfile.write(denied)
+            self._deny()
+            return
+        parts = self.path.strip("/").split("/")
+        if parts == ["v1", "archive", "query"]:
+            self._json({"result": {"rows": [{"stream": "location", "n": 4}]}})
+            return
+        if len(parts) == 4 and parts[:2] == ["v1", "streams"] and parts[3] == "append":
+            _Handler.streams.setdefault(parts[2], []).append(raw.decode())
+            self._json({"key": f"landing/{parts[2]}/test.json"})
             return
         body = json.loads(raw or "{}")
         h = self.hub
@@ -367,3 +400,57 @@ def test_http_hub_sends_a_real_user_agent(db, http_hub):
     _mk_people(db, ["Ada"])
     sync(db, http_hub)
     assert _Handler.last_user_agent.startswith("life-data/")
+
+
+# --- streams & archive -------------------------------------------------------
+
+
+def test_expand_stream_sql_unions_parquet_and_landing():
+    from life_data import expand_stream_sql
+
+    manifest = {
+        "parquet": ["https://hub/v1/archive/parquet/location/year%3D2026/part-0.parquet"],
+        "landing": ["https://hub/v1/archive/landing/location/a.json"],
+    }
+    sql = expand_stream_sql("SELECT count(*) FROM stream('location')", {"location": manifest})
+    assert "read_parquet" in sql and "read_json" in sql and "UNION ALL BY NAME" in sql
+    assert "stream(" not in sql
+
+
+def test_expand_stream_sql_parquet_only():
+    from life_data import expand_stream_sql
+
+    manifest = {"parquet": ["https://hub/p.parquet"], "landing": []}
+    sql = expand_stream_sql("SELECT * FROM stream('location')", {"location": manifest})
+    assert "read_parquet" in sql and "read_json" not in sql
+
+
+def test_expand_stream_sql_empty_stream_raises():
+    from life_data import expand_stream_sql
+
+    with pytest.raises(RuntimeError, match="empty"):
+        expand_stream_sql("SELECT * FROM stream('x')", {"x": {"parquet": [], "landing": []}})
+
+
+def test_cli_stream_append_posts_body_and_tail_reads_back(monkeypatch, tmp_path, capsys):
+    server = _serve(tmp_path / "server3.db")
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"lat": 42.36, "lon": -71.09}'))
+    assert main(["stream", "append", "location"]) == 0
+    capsys.readouterr()
+    assert main(["stream", "tail", "location"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"lat": 42.36, "lon": -71.09}
+    server.shutdown()
+
+
+def test_cli_archive_query_proxies_sql_through_hub(monkeypatch, tmp_path, capsys):
+    server = _serve(tmp_path / "server4.db")
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    assert main(["archive", "query", "SELECT count(*) AS n FROM life.events"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["result"]["rows"][0]["n"] == 4
+    server.shutdown()

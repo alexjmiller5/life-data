@@ -82,3 +82,50 @@ multi-tenant model is one D1 database per tenant, not a tenant column.
 Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
 any `sqlite_master` walk — reading them raises `SQLITE_AUTH`.
+
+## Streams
+
+Append-only events, hub-backed by design (tables are local-first; streams are
+not — the events are born remote). `POST /v1/streams/<name>/append` stores the
+request body VERBATIM as a time-prefixed landing object (raw is sacred, never
+deleted — everything downstream is rebuildable from landing) plus a
+`state/<stream>/latest.json` pointer for O(1) tail, then tees
+`{stream, ingested_at, record}` into the Pipelines stream binding (`EVENTS`).
+The tee must NEVER fail the append — landing is the source of truth.
+
+Managed platform (all open beta, Workers Paid): Pipelines stream
+`life_events` (explicit schema: stream string, ingested_at string, record
+json) → pipeline `life_pipeline` (SQL passthrough) → Iceberg sink →
+table `life.events` in the R2 Data Catalog on `life-data-archive`, managed
+compaction enabled. `POST /v1/archive/query` proxies SQL to R2 SQL
+(`api.sql.cloudflarestorage.com/api/v1/accounts/<acct>/r2-sql/query/<bucket>`)
+with the Worker's `R2_SQL_TOKEN` secret — clients never hold a provider
+token. Table columns: `stream`, `ingested_at`, `record` (JSON string),
+`__ingest_ts`. `WHERE`/`count(*)` work; `record` needs client-side JSON
+parsing or the `--raw` DuckDB path for field-level analytics.
+
+Beta gotchas, all hit at build time (2026-09-02):
+- **Creation order is load-bearing**: stream WITH explicit schema first,
+  THEN sink, THEN pipeline. The sink creates the Iceberg table at sink
+  creation with whatever shape it can see — created against a schema-less
+  stream you get a useless `value` JSON-string column, and "writing to
+  existing Catalog tables is not yet supported" blocks fixing it without
+  dropping the table (Iceberg REST: get `prefix` from
+  `catalog.cloudflarestorage.com/<acct>/<bucket>/v1/config`, then DELETE
+  `/v1/<prefix>/namespaces/life/tables/events?purgeRequested=true`).
+- Schema-less streams declare ONE required `value` field: events sent as
+  `{stream, ...}` fail validation SILENTLY (binding send still succeeds).
+- The wrangler `pipelines` binding wants the stream **ID**, not name; the
+  ID changes when the stream is recreated — update wrangler.jsonc + deploy.
+- Sinks with auto-created R2 credentials derive them from the token used at
+  creation: deleting that API token strands the sink ("authentication
+  failed", pipeline → failed state). Recreate sink + pipeline.
+- The stream BUFFERS across sink failures/recreation — buffered events
+  redeliver once a working sink exists. Landing remains the true raw record.
+- The old AI Agent CF token predates these products: use the platform token
+  (below) for any pipelines/catalog/r2-sql wrangler ops.
+
+The platform credential is `AI Agent Life Data Platform Token` (1P
+`rda2kie5ioizhezvq4ngnivuam`, AI Agent vault): Pipelines Write + R2 Data
+Catalog Write + R2 SQL Read + R2 Storage Write + Workers Scripts Write + D1
+Write. It doubles as the catalog's compaction service credential.

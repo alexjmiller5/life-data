@@ -276,10 +276,87 @@ class HttpHub:
     def cursor(self, tables: list[str]) -> str:
         return self._post("/v1/cursor", {"tables": tables})["max_updated_at"] or ""
 
+    def _get(self, route: str) -> dict | list | None:
+        req = urllib.request.Request(f"{self.base}{route}", headers=self.headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"hub HTTP {e.code}: {e.read().decode()[:300]}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"hub unreachable: {e.reason}") from e
+
+    def stream_append(self, name: str, body: str) -> dict:
+        return self._post(f"/v1/streams/{name}/append", json.loads(body))
+
+    def stream_tail(self, name: str):
+        return self._get(f"/v1/streams/{name}/tail")
+
+    def stream_manifest(self, name: str) -> dict:
+        return self._get(f"/v1/streams/{name}/manifest")
+
+    def archive_query(self, sql: str) -> dict:
+        return self._post("/v1/archive/query", {"sql": sql})
+
 
 def hub_from_config(config: dict | None = None) -> HttpHub:
     cfg = config or load_config()
     return HttpHub(cfg["hub_url"], auth_headers(cfg))
+
+
+# --- streams & archive -------------------------------------------------------
+
+STREAM_RE = r"stream\('([A-Za-z0-9_-]+)'\)"
+
+
+def expand_stream_sql(sql: str, manifests: dict) -> str:
+    """Rewrite stream('name') into DuckDB source unions over the manifest URLs."""
+    import re
+
+    def source(match) -> str:
+        m = manifests[match.group(1)]
+        parts = []
+        if m["parquet"]:
+            parts.append(
+                f"SELECT * FROM read_parquet({json.dumps(m['parquet'])}, union_by_name=true)"
+            )
+        if m["landing"]:
+            parts.append(f"SELECT * FROM read_json({json.dumps(m['landing'])}, union_by_name=true)")
+        if not parts:
+            raise RuntimeError(f"stream '{match.group(1)}' is empty")
+        return "(" + " UNION ALL BY NAME ".join(parts) + ")"
+
+    return re.sub(STREAM_RE, source, sql)
+
+
+def archive_query_duckdb(sql: str, config: dict) -> str:
+    """Fallback query path: expand stream() refs over the manifest and run the SQL
+    through the local duckdb CLI against landing/parquet URLs. Exists because R2 SQL
+    (the default path, proxied by the hub) is beta — this reads the raw objects.
+    The SQL script travels on stdin so the token never appears in `ps`."""
+    import re
+    import shutil
+
+    duck = shutil.which("duckdb")
+    if not duck:
+        raise SystemExit("duckdb not found on PATH — install it (nix: pkgs.duckdb)")
+    hub = hub_from_config(config)
+    names = set(re.findall(STREAM_RE, sql))
+    manifests = {n: hub.stream_manifest(n) for n in names}
+    headers = auth_headers(config)
+    header_map = ", ".join(f"'{k}': '{v}'" for k, v in headers.items())
+    script = (
+        "INSTALL httpfs; LOAD httpfs;\n"
+        f"CREATE SECRET hub (TYPE http, EXTRA_HTTP_HEADERS MAP {{{header_map}}});\n"
+        + expand_stream_sql(sql, manifests)
+        + ";\n"
+    )
+    out = subprocess.run(  # noqa: PLW1510 — non-zero handled explicitly below
+        [duck, "-json"], input=script, capture_output=True, text=True
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"duckdb failed: {out.stderr.strip()[:500]}")
+    return out.stdout.strip()
 
 
 # --- sync --------------------------------------------------------------------
@@ -411,6 +488,21 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sync", help="sync once with the hub")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
+    p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
+    s_sub = p_stream.add_subparsers(dest="stream_command", required=True)
+    p_sappend = s_sub.add_parser("append", help="append one JSON record from stdin")
+    p_sappend.add_argument("name")
+    p_stail = s_sub.add_parser("tail", help="print the latest record")
+    p_stail.add_argument("name")
+    p_archive = sub.add_parser("archive", help="analytical queries over streams (DuckDB)")
+    a_sub = p_archive.add_subparsers(dest="archive_command", required=True)
+    p_aq = a_sub.add_parser("query", help="SQL over the archive (life.events), results as JSON")
+    p_aq.add_argument("statement")
+    p_aq.add_argument(
+        "--raw",
+        action="store_true",
+        help="query raw landing/parquet objects with local duckdb via stream('name') sources",
+    )
     p_table = sub.add_parser("table", help="table operations")
     t_sub = p_table.add_subparsers(dest="table_command", required=True)
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
@@ -436,6 +528,17 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)
+    elif args.command == "stream":
+        hub = hub_from_config()
+        if args.stream_command == "append":
+            print(json.dumps(hub.stream_append(args.name, sys.stdin.read())))
+        else:
+            print(json.dumps(hub.stream_tail(args.name), indent=2))
+    elif args.command == "archive":
+        if args.raw:
+            print(archive_query_duckdb(args.statement, load_config()))
+        else:
+            print(json.dumps(hub_from_config().archive_query(args.statement), indent=2))
     elif args.command == "table":
         create_table(path, args.name, args.columns)
         print(f"created table {args.name}")

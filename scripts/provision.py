@@ -50,8 +50,10 @@ def mint_deploy_token() -> str:
         if t["name"] == token_name:
             log(f"deleting existing token {token_name} (value not re-readable)")
             c.delete(f"/user/tokens/{t['id']}").raise_for_status()
+    log(f"✓ scoped deploy token '{token_name}' minting (Workers Scripts + D1 + Pipelines)")
     groups = c.get("/user/tokens/permission_groups").raise_for_status().json()["result"]
-    want = {"Workers Scripts Write", "D1 Write"}
+    # Pipelines Write: deploys bind the events stream, which the API checks
+    want = {"Workers Scripts Write", "D1 Write", "Pipelines Write"}
     ids = [{"id": g["id"]} for g in groups if g["name"] in want]
     assert len(ids) == len(want), f"permission groups not found: {want}"
     r = c.post(
@@ -77,11 +79,36 @@ MINTERS = {
 }
 
 
+BUCKETS = ["life-data-backups", "life-data-archive"]
+
+
+def ensure() -> None:
+    """Non-secret side effects (safe for agents to run): the service's R2
+    buckets exist. wrangler bindings reference them but cannot create them."""
+    admin = op_read(OP_CF_TOKEN)
+    c = httpx.Client(
+        base_url=f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/r2",
+        headers={"Authorization": f"Bearer {admin}"},
+        timeout=30,
+    )
+    have = {b["name"] for b in c.get("/buckets").raise_for_status().json()["result"]["buckets"]}
+    for name in BUCKETS:
+        if name in have:
+            log(f"bucket {name}: exists")
+        else:
+            c.post("/buckets", json={"name": name}).raise_for_status()
+            log(f"✓ bucket {name} created")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--field")
+    ap.add_argument("--ensure", action="store_true")
     args = ap.parse_args()
+    if args.ensure:
+        ensure()
+        return 0
     if args.list:
         print("\n".join(MINTERS))
         return 0

@@ -26,11 +26,22 @@ function tokensMatch(a, b) {
 }
 
 // THE AUTH SEAM. Returns a tenant handle or null. Single-tenant today.
+// Accepts Bearer (the CLI, dashboards) and HTTP Basic with the token as the
+// password (clients that only speak Basic, e.g. OwnTracks).
 function authenticate(request, env) {
   const header = request.headers.get("Authorization") || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  let token = "";
+  if (header.startsWith("Bearer ")) {
+    token = header.slice(7);
+  } else if (header.startsWith("Basic ")) {
+    try {
+      token = atob(header.slice(6)).split(":").slice(1).join(":");
+    } catch {
+      return null;
+    }
+  }
   if (!env.HUB_TOKEN || !tokensMatch(token, env.HUB_TOKEN)) return null;
-  return { db: env.DB };
+  return { db: env.DB, archive: env.ARCHIVE };
 }
 
 function ident(name) {
@@ -184,6 +195,114 @@ async function runBackup(env, now) {
   return keys;
 }
 
+// --- streams: verbatim JSON landing + manifest + tail ------------------------
+//
+// Streams are append-only: the hub stores whatever JSON body arrives, byte for
+// byte, as a landing object (raw is sacred; landing is never deleted). Keys
+// are time-prefixed so lexicographic order == chronological order. The Modal
+// compactor reads landing via the S3 API and writes year=YYYY Parquet
+// partitions; nothing here knows about any particular source.
+
+const STREAM_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_APPEND_BYTES = 1_000_000;
+
+function landingKey(stream, now) {
+  const ts = now.toISOString().replace(/[:]/g, "-");
+  return `landing/${stream}/${ts}-${crypto.randomUUID().slice(0, 8)}.json`;
+}
+
+async function streamAppend(env, stream, body, now) {
+  const key = landingKey(stream, now);
+  await env.ARCHIVE.put(key, body, { httpMetadata: { contentType: "application/json" } });
+  // small "latest" pointer so tail is O(1) instead of a full listing
+  await env.ARCHIVE.put(`state/${stream}/latest.json`, body, {
+    httpMetadata: { contentType: "application/json" },
+  });
+  // tee into the managed pipeline (→ Iceberg table life.events in the data
+  // catalog). Landing is the source of truth; the pipeline is the queryable
+  // projection, so its failure must never fail an append — everything is
+  // rebuildable from landing.
+  let piped = false;
+  try {
+    const record = JSON.parse(new TextDecoder().decode(body));
+    await env.EVENTS.send([{ stream, ingested_at: now.toISOString(), record }]);
+    piped = true;
+  } catch (e) {
+    console.log(`pipeline tee failed for ${key}: ${e}`);
+  }
+  return { key, piped };
+}
+
+async function listAll(bucket, prefix) {
+  const keys = [];
+  let cursor;
+  do {
+    const page = await bucket.list({ prefix, cursor, limit: 1000 });
+    for (const obj of page.objects) keys.push(obj.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return keys;
+}
+
+async function streamManifest(env, stream, origin) {
+  // parquet partitions + only the landing objects NOT yet covered by them
+  // (the compactor records its high-water landing key per stream)
+  const toUrl = (k) => `${origin}/v1/archive/${k.split("/").map(encodeURIComponent).join("/")}`;
+  const parquet = (await listAll(env.ARCHIVE, `parquet/${stream}/`)).filter((k) =>
+    k.endsWith(".parquet")
+  );
+  const watermarkObj = await env.ARCHIVE.get(`state/${stream}/compacted_through`);
+  const watermark = watermarkObj ? await watermarkObj.text() : "";
+  const landing = (await listAll(env.ARCHIVE, `landing/${stream}/`)).filter((k) => k > watermark);
+  return { parquet: parquet.map(toUrl), landing: landing.map(toUrl) };
+}
+
+async function handleStreams(request, env, url) {
+  const parts = url.pathname.split("/").filter(Boolean); // v1 streams <name> <op>
+  const [, , stream, op] = parts;
+  if (!STREAM_NAME.test(stream ?? "")) return json({ error: "bad stream name" }, 400);
+
+  if (op === "append" && request.method === "POST") {
+    const body = await request.arrayBuffer();
+    if (body.byteLength === 0 || body.byteLength > MAX_APPEND_BYTES) {
+      return json({ error: "body must be 1..1MB of JSON" }, 400);
+    }
+    return json(await streamAppend(env, stream, body, new Date()));
+  }
+  if (op === "tail" && request.method === "GET") {
+    const latest = await env.ARCHIVE.get(`state/${stream}/latest.json`);
+    return latest
+      ? new Response(latest.body, { headers: { "Content-Type": "application/json" } })
+      : json(null);
+  }
+  if (op === "manifest" && request.method === "GET") {
+    return json(await streamManifest(env, stream, url.origin));
+  }
+  return json({ error: "not found" }, 404);
+}
+
+async function handleArchiveGet(request, env, url) {
+  const key = decodeURIComponent(url.pathname.slice("/v1/archive/".length));
+  if (key.includes("..")) return json({ error: "bad key" }, 400);
+  const obj = await env.ARCHIVE.get(key, {
+    range: request.headers.get("Range") ?? undefined,
+    onlyIf: request.headers,
+  });
+  if (!obj) return json({ error: "not found" }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("Accept-Ranges", "bytes");
+  headers.set("Content-Length", String(obj.range ? obj.range.length : obj.size));
+  if (obj.range) {
+    headers.set(
+      "Content-Range",
+      `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}/${obj.size}`
+    );
+    return new Response(obj.body, { status: 206, headers });
+  }
+  return new Response(obj.body, { headers });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -192,11 +311,34 @@ export default {
     const tenant = authenticate(request, env);
     if (!tenant) return json({ error: "forbidden" }, 403);
 
-    if (!(url.pathname in ROUTES) || request.method !== "POST") {
-      return json({ error: "not found" }, 404);
-    }
-
     try {
+      if (url.pathname === "/v1/archive/query" && request.method === "POST") {
+        // proxy to R2 SQL with the hub's own service credential, so clients
+        // never hold a provider token. Table: life.events (stream, ingested_at, record.*)
+        const { sql } = await request.json();
+        const resp = await fetch(
+          `https://api.sql.cloudflarestorage.com/api/v1/accounts/${env.ACCOUNT_ID}/r2-sql/query/${env.ARCHIVE_BUCKET}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${env.R2_SQL_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ query: sql }),
+          }
+        );
+        return new Response(resp.body, {
+          status: resp.status,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
+      if (url.pathname.startsWith("/v1/archive/") && request.method === "GET") {
+        return await handleArchiveGet(request, env, url);
+      }
+      if (!(url.pathname in ROUTES) || request.method !== "POST") {
+        return json({ error: "not found" }, 404);
+      }
       if (url.pathname === "/v1/backup") {
         return json({ keys: await runBackup(env, new Date()) });
       }

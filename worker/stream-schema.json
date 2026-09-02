@@ -1,0 +1,7 @@
+{
+  "fields": [
+    { "name": "stream", "type": "string", "required": true },
+    { "name": "ingested_at", "type": "string", "required": true },
+    { "name": "record", "type": "json", "required": true }
+  ]
+}
