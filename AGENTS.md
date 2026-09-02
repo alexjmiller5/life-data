@@ -125,22 +125,26 @@ Beta gotchas, all hit at build time (2026-09-02):
 - The old AI Agent CF token predates these products: use the platform token
   (below) for any pipelines/catalog/r2-sql wrangler ops.
 
-Credentials (AI Agent vault, by ID):
-- `AI Agent Life Data Platform Token` (`rda2kie5ioizhezvq4ngnivuam`):
-  Pipelines/Catalog/R2/Workers/D1 WRITE - agent platform ops + the
-  catalog's compaction service credential. Do not rotate casually: the
-  Pipelines sink derives its R2 credentials from it.
-- `AI Agent Life Data SQL Read Token` (`3hklteqrlhhkr5yiu5z6gvdmia`):
-  R2 SQL + Catalog + R2 Storage READ only - this is the Worker's
-  `R2_SQL_TOKEN` secret (least privilege: the hub only reads).
-- `AI Agent Life Data Hub Token` (`3qq7d6cltvwh3yzken2b46einm`): the
-  **ADMIN** token (= the Worker's `HUB_TOKEN` secret). Full access + the only
-  credential that can mint/revoke tokens. 1P-only; never on a device.
-- Scoped client tokens (in the hub's `_tokens` D1 table, SHA-256 at rest,
-  minted via `life token create <name> --scopes ...`): `macs` (full; 1P
-  `c3p5fucbr72czishuveaa3zsqi`, wired via nix), `phone` (streams:append; 1P
-  `hvcmbf35ann32ljcwrdvs4hxtu`, pasted into OwnTracks), `notion-automations`
-  (tables:read; lives in that project's ENV item → Modal secret). Scopes:
-  `full` (everything but token mgmt), `tables:read` (schema/rows/cursor
-  pulls + stream/archive GETs), `streams:append`. Revoke = one command,
-  nothing else rotates.
+Credentials, two layers:
+- **Hub tokens** (the platform's own auth):
+  - `AI Agent Life Data Hub Token` (AI Agent vault,
+    `3qq7d6cltvwh3yzken2b46einm`): the ADMIN token (= the Worker's
+    `HUB_TOKEN` secret) AND the agent estate's daily credential - Alex's
+    Macs/agents are the sole CLI users, so per his 2026-09-02 decision they
+    use admin directly (a separate scoped machine token added no real
+    isolation: the SA on those machines can read this item regardless).
+  - Scoped client tokens (hub `_tokens` D1 table, SHA-256 at rest; managed
+    with `life token create/revoke/list` under the admin token): `phone` -
+    streams:append, in OwnTracks + Alex's Personal vault ("Life Data
+    OwnTracks Token"); `notion-automations` - tables:read, in that project's
+    ENV item → Modal secret. Scopes: `full` (everything but token mgmt),
+    `tables:read` (schema/rows/cursor pulls + stream/archive GETs),
+    `streams:append`. Lost/retired client = revoke one name.
+- **Cloudflare API tokens** (the service's own infrastructure, `Life Data`
+  vault): `Life Data Platform Token` (`2vjluucdosnw5oxgc4iit4tfp4`;
+  Pipelines/Catalog/R2/Workers/D1 write - platform ops + compaction service
+  credential; do NOT rotate casually, the Pipelines sink derives its R2
+  credentials from it) and `Life Data SQL Read Token`
+  (`qxri5llxvud5dq7l3727pfchxe`; read-only, = the Worker's `R2_SQL_TOKEN`
+  secret). The claude-code SA cannot read project vaults - agents needing
+  these use the op-temp-sa flow or desktop auth (see 1password skill).
