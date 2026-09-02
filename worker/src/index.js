@@ -380,6 +380,26 @@ async function handleStreams(request, env, url, tenantName) {
     }
     return json(await streamAppend(env, stream, body, new Date(), url, tenantName));
   }
+  if (op === "replay" && request.method === "POST") {
+    // Projection rebuild: tee records into the pipeline WITHOUT writing
+    // landing — for replaying existing landing objects into a recreated
+    // table. Same enrichment as batch. Landing is never duplicated.
+    const records = await request.json();
+    if (!Array.isArray(records) || records.length === 0 || records.length > 1000) {
+      return json({ error: "body must be a JSON array of 1..1000 records" }, 400);
+    }
+    const ingested = new Date().toISOString();
+    const enriched = records.map((record) => ({
+      ...record,
+      ...resolveTags(record, url, tenantName),
+    }));
+    for (let i = 0; i < enriched.length; i += 100) {
+      await env.EVENTS.send(
+        enriched.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))
+      );
+    }
+    return json({ replayed: records.length });
+  }
   if (op === "batch" && request.method === "POST") {
     // Bulk import: ONE landing object holding the whole batch, pipeline sends
     // in chunks, and — unlike append — the latest.json pointer is left alone,
