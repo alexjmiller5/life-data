@@ -400,22 +400,25 @@ async function handleArchiveGet(request, env, url) {
     headers.set("Content-Length", String(head.size));
     return new Response(null, { headers });
   }
-  const obj = await env.ARCHIVE.get(key, {
-    range: request.headers.get("Range") ?? undefined,
-    onlyIf: request.headers,
-  });
+  // range: pass the Headers object only when a Range header exists — R2
+  // parses it natively. No onlyIf: conditional requests aren't needed and
+  // passing arbitrary headers there caused 500s.
+  const rangeHeader = request.headers.get("Range");
+  const obj = rangeHeader
+    ? await env.ARCHIVE.get(key, { range: request.headers })
+    : await env.ARCHIVE.get(key);
   if (!obj) return json({ error: "not found" }, 404);
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
   headers.set("Accept-Ranges", "bytes");
-  headers.set("Content-Length", String(obj.range ? obj.range.length : obj.size));
-  if (obj.range) {
-    headers.set(
-      "Content-Range",
-      `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}/${obj.size}`
-    );
+  if (rangeHeader && obj.range) {
+    const start = obj.range.offset ?? Math.max(0, obj.size - (obj.range.suffix ?? 0));
+    const length = obj.range.length ?? obj.size - start;
+    headers.set("Content-Length", String(length));
+    headers.set("Content-Range", `bytes ${start}-${start + length - 1}/${obj.size}`);
     return new Response(obj.body, { status: 206, headers });
   }
+  headers.set("Content-Length", String(obj.size));
   return new Response(obj.body, { headers });
 }
 

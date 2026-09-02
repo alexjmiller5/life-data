@@ -368,7 +368,9 @@ def archive_query_duckdb(sql: str, config: dict) -> str:
     )
     if out.returncode != 0:
         raise RuntimeError(f"duckdb failed: {out.stderr.strip()[:500]}")
-    return out.stdout.strip()
+    # drop the CREATE SECRET statement's own result line
+    lines = [ln for ln in out.stdout.strip().splitlines() if ln.strip() != '[{"Success":true}]']
+    return "\n".join(lines)
 
 
 # --- sync --------------------------------------------------------------------
