@@ -302,6 +302,22 @@ class _Handler(BaseHTTPRequestHandler):
             self._deny()
             return
         parts = self.path.strip("/").split("/")
+        if parts[:2] == ["v1", "tokens"]:
+            body = json.loads(raw or "{}")
+        if parts == ["v1", "tokens", "create"]:
+            _Handler.tokens = getattr(_Handler, "tokens", {})
+            _Handler.tokens[body["name"]] = body["scopes"]
+            self._json({"name": body["name"], "token": "lt_" + "x" * 40, "scopes": body["scopes"]})
+            return
+        if parts == ["v1", "tokens", "revoke"]:
+            _Handler.tokens.pop(body["name"], None)
+            self._json({"revoked": body["name"]})
+            return
+        if parts == ["v1", "tokens", "list"]:
+            self._json(
+                [{"name": n, "scopes": s} for n, s in getattr(_Handler, "tokens", {}).items()]
+            )
+            return
         if parts == ["v1", "archive", "query"]:
             self._json({"result": {"rows": [{"stream": "location", "n": 4}]}})
             return
@@ -453,4 +469,23 @@ def test_cli_archive_query_proxies_sql_through_hub(monkeypatch, tmp_path, capsys
     assert main(["archive", "query", "SELECT count(*) AS n FROM life.events"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["result"]["rows"][0]["n"] == 4
+    server.shutdown()
+
+
+# --- scoped tokens -----------------------------------------------------------
+
+
+def test_cli_token_create_list_revoke(monkeypatch, tmp_path, capsys):
+    server = _serve(tmp_path / "server5.db")
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    assert main(["token", "create", "phone", "--scopes", "streams:append"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["name"] == "phone" and out["token"].startswith("lt_")
+    assert main(["token", "list"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed[0]["name"] == "phone" and listed[0]["scopes"] == "streams:append"
+    assert main(["token", "revoke", "phone"]) == 0
+    assert json.loads(capsys.readouterr().out)["revoked"] == "phone"
     server.shutdown()

@@ -133,5 +133,14 @@ Credentials (AI Agent vault, by ID):
 - `AI Agent Life Data SQL Read Token` (`3hklteqrlhhkr5yiu5z6gvdmia`):
   R2 SQL + Catalog + R2 Storage READ only - this is the Worker's
   `R2_SQL_TOKEN` secret (least privilege: the hub only reads).
-- `AI Agent Life Data Hub Token` (`3qq7d6cltvwh3yzken2b46einm`): the bearer
-  token every client presents (CLI, watch daemon, OwnTracks).
+- `AI Agent Life Data Hub Token` (`3qq7d6cltvwh3yzken2b46einm`): the
+  **ADMIN** token (= the Worker's `HUB_TOKEN` secret). Full access + the only
+  credential that can mint/revoke tokens. 1P-only; never on a device.
+- Scoped client tokens (in the hub's `_tokens` D1 table, SHA-256 at rest,
+  minted via `life token create <name> --scopes ...`): `macs` (full; 1P
+  `c3p5fucbr72czishuveaa3zsqi`, wired via nix), `phone` (streams:append; 1P
+  `hvcmbf35ann32ljcwrdvs4hxtu`, pasted into OwnTracks), `notion-automations`
+  (tables:read; lives in that project's ENV item → Modal secret). Scopes:
+  `full` (everything but token mgmt), `tables:read` (schema/rows/cursor
+  pulls + stream/archive GETs), `streams:append`. Revoke = one command,
+  nothing else rotates.

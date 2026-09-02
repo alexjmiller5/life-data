@@ -25,10 +25,30 @@ function tokensMatch(a, b) {
   return diff === 0;
 }
 
-// THE AUTH SEAM. Returns a tenant handle or null. Single-tenant today.
+// THE AUTH SEAM. Returns a tenant handle {db, archive, scopes} or null.
 // Accepts Bearer (the CLI, dashboards) and HTTP Basic with the token as the
 // password (clients that only speak Basic, e.g. OwnTracks).
-function authenticate(request, env) {
+//
+// Two tiers: the HUB_TOKEN Worker secret is the ADMIN/root credential (full
+// access + token management; lives only in 1Password and on the owner's
+// machines). Everything else authenticates against the _tokens table in D1 —
+// scoped, individually revocable, minted via /v1/tokens/* with the admin
+// token. Tokens are stored as SHA-256 hashes; a lost D1 leaks no secrets.
+async function sha256hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const TOKENS_TABLE = `CREATE TABLE IF NOT EXISTS _tokens (
+  hash TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  scopes TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  revoked_at TEXT,
+  last_used_at TEXT
+)`;
+
+async function authenticate(request, env, ctx) {
   const header = request.headers.get("Authorization") || "";
   let token = "";
   if (header.startsWith("Bearer ")) {
@@ -40,9 +60,74 @@ function authenticate(request, env) {
       return null;
     }
   }
-  if (!env.HUB_TOKEN || !tokensMatch(token, env.HUB_TOKEN)) return null;
-  return { db: env.DB, archive: env.ARCHIVE };
+  if (!token || !env.HUB_TOKEN) return null;
+  if (tokensMatch(token, env.HUB_TOKEN)) {
+    return { db: env.DB, archive: env.ARCHIVE, scopes: ["admin"] };
+  }
+  await env.DB.prepare(TOKENS_TABLE).run();
+  const row = await env.DB.prepare(
+    "SELECT name, scopes FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
+  )
+    .bind(await sha256hex(token))
+    .first();
+  if (!row) return null;
+  ctx.waitUntil(
+    env.DB.prepare(
+      "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?"
+    )
+      .bind(row.name)
+      .run()
+  );
+  return { db: env.DB, archive: env.ARCHIVE, scopes: row.scopes.split(",") };
 }
+
+// Route family → scopes that may use it. "admin" implies everything;
+// "full" implies everything except token management.
+function allowed(pathname, method, scopes) {
+  if (scopes.includes("admin")) return true;
+  if (pathname.startsWith("/v1/tokens/")) return false; // admin only
+  if (pathname === "/v1/backup") return scopes.includes("full");
+  if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
+    return scopes.includes("full") || scopes.includes("streams:append");
+  }
+  const readOnly =
+    pathname === "/v1/schema/pull" ||
+    pathname === "/v1/rows/pull" ||
+    pathname === "/v1/cursor" ||
+    (method === "GET" &&
+      (pathname.startsWith("/v1/streams/") || pathname.startsWith("/v1/archive/")));
+  if (readOnly) return scopes.includes("full") || scopes.includes("tables:read");
+  return scopes.includes("full"); // schema/push, rows/push, archive/query
+}
+
+const TOKEN_ROUTES = {
+  "/v1/tokens/create": async (body, db) => {
+    const value =
+      "lt_" + [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    await db.prepare(TOKENS_TABLE).run();
+    await db
+      .prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)")
+      .bind(await sha256hex(value), body.name, body.scopes || "full")
+      .run();
+    return { name: body.name, scopes: body.scopes || "full", token: value }; // value shown ONCE
+  },
+  "/v1/tokens/revoke": async (body, db) => {
+    await db
+      .prepare(
+        "UPDATE _tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?"
+      )
+      .bind(body.name)
+      .run();
+    return { revoked: body.name };
+  },
+  "/v1/tokens/list": async (_body, db) => {
+    await db.prepare(TOKENS_TABLE).run();
+    const { results } = await db
+      .prepare("SELECT name, scopes, created_at, revoked_at, last_used_at FROM _tokens ORDER BY created_at")
+      .all();
+    return results ?? [];
+  },
+};
 
 function ident(name) {
   if (!CHUNK_COLUMNS_SAFE.test(name)) throw new Error(`unsafe identifier: ${name}`);
@@ -304,14 +389,22 @@ async function handleArchiveGet(request, env, url) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true });
 
-    const tenant = authenticate(request, env);
+    const tenant = await authenticate(request, env, ctx);
     if (!tenant) return json({ error: "forbidden" }, 403);
+    if (!allowed(url.pathname, request.method, tenant.scopes)) {
+      return json({ error: "insufficient scope" }, 403);
+    }
 
     try {
+      if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
+        const route = TOKEN_ROUTES[url.pathname];
+        if (!route) return json({ error: "not found" }, 404);
+        return json(await route(await request.json(), tenant.db));
+      }
       if (url.pathname === "/v1/archive/query" && request.method === "POST") {
         // proxy to R2 SQL with the hub's own service credential, so clients
         // never hold a provider token. Table: life.events (stream, ingested_at, record.*)

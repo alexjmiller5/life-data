@@ -298,6 +298,15 @@ class HttpHub:
     def archive_query(self, sql: str) -> dict:
         return self._post("/v1/archive/query", {"sql": sql})
 
+    def token_create(self, name: str, scopes: str) -> dict:
+        return self._post("/v1/tokens/create", {"name": name, "scopes": scopes})
+
+    def token_revoke(self, name: str) -> dict:
+        return self._post("/v1/tokens/revoke", {"name": name})
+
+    def token_list(self) -> list:
+        return self._post("/v1/tokens/list", {})
+
 
 def hub_from_config(config: dict | None = None) -> HttpHub:
     cfg = config or load_config()
@@ -503,6 +512,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="query raw landing/parquet objects with local duckdb via stream('name') sources",
     )
+    p_token = sub.add_parser("token", help="scoped client tokens (admin token required)")
+    k_sub = p_token.add_subparsers(dest="token_command", required=True)
+    p_tc = k_sub.add_parser("create", help="mint a scoped token (value shown ONCE)")
+    p_tc.add_argument("name")
+    p_tc.add_argument(
+        "--scopes", default="full", help="comma list: full, tables:read, streams:append"
+    )
+    p_tr = k_sub.add_parser("revoke", help="revoke a token by name")
+    p_tr.add_argument("name")
+    k_sub.add_parser("list", help="list tokens (names/scopes, never values)")
     p_table = sub.add_parser("table", help="table operations")
     t_sub = p_table.add_subparsers(dest="table_command", required=True)
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
@@ -539,6 +558,14 @@ def main(argv: list[str] | None = None) -> int:
             print(archive_query_duckdb(args.statement, load_config()))
         else:
             print(json.dumps(hub_from_config().archive_query(args.statement), indent=2))
+    elif args.command == "token":
+        hub = hub_from_config()
+        if args.token_command == "create":
+            print(json.dumps(hub.token_create(args.name, args.scopes), indent=2))
+        elif args.token_command == "revoke":
+            print(json.dumps(hub.token_revoke(args.name)))
+        else:
+            print(json.dumps(hub.token_list(), indent=2))
     elif args.command == "table":
         create_table(path, args.name, args.columns)
         print(f"created table {args.name}")
