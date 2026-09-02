@@ -35,7 +35,7 @@ def op_read(ref: str) -> str:
 
 
 def mint_deploy_token() -> str:
-    """Project-scoped CF token for CI: Workers Scripts + D1 only.
+    """Project-scoped CF token for CI: Workers Scripts + D1 + Pipelines.
     Needs 'User API Tokens: Edit' on the AI Agent token. Recreates if it
     already exists (a token's value is only shown at creation)."""
     admin = op_read(OP_CF_TOKEN)
@@ -69,7 +69,7 @@ def mint_deploy_token() -> str:
             ],
         },
     ).raise_for_status()
-    log(f"✓ scoped deploy token '{token_name}' minted (Workers Scripts + D1)")
+    log(f"✓ scoped deploy token '{token_name}' minted")
     return r.json()["result"]["value"]
 
 
