@@ -417,6 +417,13 @@ def test_cli_export_writes_sql_to_stdout(monkeypatch, tmp_path, capsys):
     assert "CREATE TABLE pets" in capsys.readouterr().out
 
 
+def test_http_hub_default_timeout_covers_slow_stream_tees():
+    """The hub's pipeline tee can stall past 30s; a short client timeout makes
+    a fully-successful batch look failed and invites duplicating retries."""
+    hub = HttpHub("http://127.0.0.1:1")
+    assert hub.timeout >= 120
+
+
 def test_http_hub_sends_a_real_user_agent(db, http_hub):
     """Cloudflare's edge bot-protection 403s the default Python-urllib agent."""
     _mk_people(db, ["Ada"])

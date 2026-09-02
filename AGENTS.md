@@ -122,6 +122,17 @@ Beta gotchas, all hit at build time (2026-09-02):
   failed", pipeline → failed state). Recreate sink + pipeline.
 - The stream BUFFERS across sink failures/recreation — buffered events
   redeliver once a working sink exists. Landing remains the true raw record.
+- **Delivery into `life.events` is AT-LEAST-ONCE and eventually consistent**:
+  a send can land in the table minutes later and can be duplicated by
+  redelivery (a 23-record replay once materialized as 46 rows). Never
+  "verify" a tee by querying the table right away, and never re-send/replay
+  because the count looks short — check the landing manifest instead (landing
+  is exactly-once), wait out the sink roll, and treat residual projection
+  duplicates as a query-time concern (dedupe on a record-level key).
+- `EVENTS.send` can stall past 30s while still succeeding — the client's
+  default timeout is 120s for this reason. A client-side timeout on
+  append/batch does NOT mean the write failed: check the manifest before any
+  retry (retrying a landed batch duplicates both landing and events).
 - The old AI Agent CF token predates these products: use the platform token
   (below) for any pipelines/catalog/r2-sql wrangler ops.
 

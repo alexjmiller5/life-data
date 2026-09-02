@@ -228,7 +228,7 @@ class LocalHub:
 class HttpHub:
     """Hub reached over HTTP — the deployed service. Knows nothing about any provider."""
 
-    def __init__(self, base_url: str, headers: dict | None = None, timeout: int = 30):
+    def __init__(self, base_url: str, headers: dict | None = None, timeout: int = 120):
         self.base = base_url.rstrip("/")
         # A real User-Agent is REQUIRED, not cosmetic: Cloudflare's edge bot
         # protection 403s (error 1010) the default "Python-urllib/x.y" agent
