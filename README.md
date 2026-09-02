@@ -25,9 +25,11 @@ continuous-sync daemon:
 imports = [ life-data.homeModules.default ];
 lifeData = {
   enable = true;
-  tokenCommand = "op read 'op://vault/item/credential'";  # or any command
-  # hubUrl = "https://your-hub.example.com";              # self-hosters
-  # watch.setup = ''...'';  # env prep for the daemon (launchd has no shell env)
+  # each context authenticates independently:
+  cli.tokenCommand = "op read 'op://vault/item/credential'";   # your shell's env
+  watch.tokenCommand = "SESSION=$(cat /path) fetch hub-token"; # self-sufficient —
+  # the daemon has no shell env; add its tools via watch.packages = [ ... ];
+  # hubUrl = "https://your-hub.example.com";                   # self-hosters
 };
 ```
 
