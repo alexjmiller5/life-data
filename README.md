@@ -16,6 +16,21 @@ editing this repo.
 nix profile install github:alexjmiller5/life-data
 ```
 
+Or, with home-manager, the flake ships a module — one toggle installs the
+CLI (plus DuckDB for `--raw` queries), declares `config.json`, and runs the
+continuous-sync daemon:
+
+```nix
+# flake input: life-data.url = "github:alexjmiller5/life-data";
+imports = [ life-data.homeModules.default ];
+lifeData = {
+  enable = true;
+  tokenCommand = "op read 'op://vault/item/credential'";  # or any command
+  # hubUrl = "https://your-hub.example.com";              # self-hosters
+  # watch.setup = ''...'';  # env prep for the daemon (launchd has no shell env)
+};
+```
+
 ## Use
 
 ```bash
