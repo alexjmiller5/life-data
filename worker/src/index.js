@@ -354,6 +354,27 @@ async function handleStreams(request, env, url) {
     }
     return json(await streamAppend(env, stream, body, new Date()));
   }
+  if (op === "batch" && request.method === "POST") {
+    // Bulk import: ONE landing object holding the whole batch, pipeline sends
+    // in chunks, and — unlike append — the latest.json pointer is left alone,
+    // so historical imports never masquerade as the current position.
+    const records = await request.json();
+    if (!Array.isArray(records) || records.length === 0 || records.length > 1000) {
+      return json({ error: "body must be a JSON array of 1..1000 records" }, 400);
+    }
+    const now = new Date();
+    const key = `landing/${stream}/${now.toISOString().replace(/[:]/g, "-")}-batch-${crypto.randomUUID().slice(0, 8)}.json`;
+    await env.ARCHIVE.put(key, JSON.stringify(records), {
+      httpMetadata: { contentType: "application/json" },
+    });
+    const ingested = now.toISOString();
+    for (let i = 0; i < records.length; i += 100) {
+      await env.EVENTS.send(
+        records.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))
+      );
+    }
+    return json({ count: records.length, key });
+  }
   if (op === "tail" && request.method === "GET") {
     const latest = await env.ARCHIVE.get(`state/${stream}/latest.json`);
     return latest

@@ -295,6 +295,9 @@ class HttpHub:
     def stream_manifest(self, name: str) -> dict:
         return self._get(f"/v1/streams/{name}/manifest")
 
+    def stream_batch(self, name: str, records: list) -> dict:
+        return self._post(f"/v1/streams/{name}/batch", records)
+
     def archive_query(self, sql: str) -> dict:
         return self._post("/v1/archive/query", {"sql": sql})
 
@@ -503,6 +506,11 @@ def main(argv: list[str] | None = None) -> int:
     p_sappend.add_argument("name")
     p_stail = s_sub.add_parser("tail", help="print the latest record")
     p_stail.add_argument("name")
+    p_simport = s_sub.add_parser(
+        "import", help="bulk-import records (NDJSON or a JSON array on stdin), batched"
+    )
+    p_simport.add_argument("name")
+    p_simport.add_argument("--chunk", type=int, default=500)
     p_archive = sub.add_parser("archive", help="analytical queries over streams (DuckDB)")
     a_sub = p_archive.add_subparsers(dest="archive_command", required=True)
     p_aq = a_sub.add_parser("query", help="SQL over the archive (life.events), results as JSON")
@@ -551,6 +559,18 @@ def main(argv: list[str] | None = None) -> int:
         hub = hub_from_config()
         if args.stream_command == "append":
             print(json.dumps(hub.stream_append(args.name, sys.stdin.read())))
+        elif args.stream_command == "import":
+            raw = sys.stdin.read().strip()
+            records = (
+                json.loads(raw)
+                if raw.startswith("[")
+                else [json.loads(line) for line in raw.splitlines() if line.strip()]
+            )
+            total = 0
+            for i in range(0, len(records), args.chunk):
+                total += hub.stream_batch(args.name, records[i : i + args.chunk])["count"]
+                print(f"  {total}/{len(records)}", file=sys.stderr)
+            print(json.dumps({"imported": total}))
         else:
             print(json.dumps(hub.stream_tail(args.name), indent=2))
     elif args.command == "archive":

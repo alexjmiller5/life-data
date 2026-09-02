@@ -264,6 +264,7 @@ class _Handler(BaseHTTPRequestHandler):
     token = "testtoken"
     last_user_agent = None
     streams: ClassVar[dict] = {}
+    batches: ClassVar[dict] = {}
 
     def log_message(self, *a):
         pass
@@ -320,6 +321,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if parts == ["v1", "archive", "query"]:
             self._json({"result": {"rows": [{"stream": "location", "n": 4}]}})
+            return
+        if len(parts) == 4 and parts[:2] == ["v1", "streams"] and parts[3] == "batch":
+            records = json.loads(raw)
+            _Handler.batches.setdefault(parts[2], []).append(records)
+            self._json({"count": len(records), "key": "landing/x-batch.json"})
             return
         if len(parts) == 4 and parts[:2] == ["v1", "streams"] and parts[3] == "append":
             _Handler.streams.setdefault(parts[2], []).append(raw.decode())
@@ -488,4 +494,19 @@ def test_cli_token_create_list_revoke(monkeypatch, tmp_path, capsys):
     assert listed[0]["name"] == "phone" and listed[0]["scopes"] == "streams:append"
     assert main(["token", "revoke", "phone"]) == 0
     assert json.loads(capsys.readouterr().out)["revoked"] == "phone"
+    server.shutdown()
+
+
+def test_cli_stream_import_batches_ndjson(monkeypatch, tmp_path, capsys):
+    server = _serve(tmp_path / "server6.db")
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    ndjson = "\n".join(json.dumps({"n": i}) for i in range(1205))
+    monkeypatch.setattr("sys.stdin", io.StringIO(ndjson))
+    assert main(["stream", "import", "history"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["imported"] == 1205
+    assert len(_Handler.batches["history"]) == 3  # 500-record chunks
+    assert sum(len(b) for b in _Handler.batches["history"]) == 1205
     server.shutdown()
