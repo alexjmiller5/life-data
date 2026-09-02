@@ -104,7 +104,7 @@ in
       // lib.optionalAttrs (cfg.hubUrl != null) { hub_url = cfg.hubUrl; }
     );
 
-    launchd.agents.life-data-watch = lib.mkIf (cfg.watch.enable && pkgs.stdenv.isDarwin) {
+    launchd.agents.life-data-watch = lib.mkIf (cfg.watch.enable && pkgs.stdenv.hostPlatform.isDarwin) {
       enable = true;
       config = {
         Label = "sh.life-data.watch";
