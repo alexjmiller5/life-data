@@ -267,9 +267,11 @@ So transition rules ("status may go want→been, never been→want") are
 ordinary zero-row SQL. A rule that references neither is evaluated
 whole-table.
 
-The engine injects `:now`. Rule SQL never reads the clock, so
-`life check --as-of <ts>` reproduces any past verdict. `random()`,
-`localtime`, and `date('now')` are rejected at compile.
+The engine injects the clock as a one-row temp table `now(ts)`, so a rule
+reads `(SELECT ts FROM now)` and never the clock itself; `life check --as-of
+<ts>` then reproduces any past verdict. A temp table rather than a bound
+parameter keeps the SQL identical under SQLite and D1. `random()`,
+`localtime`, and `'now'` are rejected at compile.
 
 ### Rules compile
 
@@ -285,7 +287,7 @@ compiled the same way.
 ```
 BEGIN
   t0 = now
-  snapshot immutable and derived columns of cataloged tables
+  snapshot every cataloged table into a temp copy (full rows: `before` needs them)
   execute the statement
   changed = rows in cataloged tables WHERE updated_at >= t0
   build `changed` and `before` from the snapshot
@@ -294,16 +296,23 @@ COMMIT, or ROLLBACK with the failure report
 ```
 
 Identifying changed rows by `updated_at` requires no SQL parsing, because
-the injected trigger already stamps every update. The snapshot is a full scan
-of the immutable and derived columns only; at current sizes (largest table
-4,761 rows) this is negligible. Ceiling to mark in code: scope by rowid past
-~1M rows.
+the injected trigger already stamps every update; new rows are found by
+rowid. The snapshot is a temp copy of each cataloged table; at current sizes
+(largest table 4,761 rows) this is negligible. Ceiling to mark in code: scope
+by rowid past ~1M rows.
 
-**Hub** (`/v1/rows/push`), same property checks and same invariants, from
-the same catalog rows in D1. For a derived column that changed, the push must
-carry a `provenance` row whose `inputs_hash` equals the hash of the row's
-current inputs. The hub never calls the command. It verifies the attestation
-is consistent, which is a pure computation.
+**Hub** (`/v1/rows/push`) runs the **property checks** from the same catalog
+rows in D1, plus **provenance verification**: for a derived column that
+changed, a `provenance` row must exist whose `inputs_hash` equals the hash of
+the pushed row's inputs. The hub never calls the command. It verifies the
+attestation is consistent, which is a pure computation. The hub does **not**
+run SQL invariants: they need the transaction's `changed`/`before` temp
+tables, which D1's per-request model cannot provide. Invariants run on the
+client where writes originate, and `life check` (on every replica and inside
+`life watch`) catches rows that arrived by any other path.
+
+`catalog_*` and `provenance` sync before every other table, so the hub always
+validates against the catalog and provenance the client already had.
 
 Critical: the hub validates and rejects **per row, and continues**. The push
 route is also how replica sync pushes, so failing a batch would let one stale
@@ -429,8 +438,8 @@ how to read the catalog.
 18. When a catalog row or a DDL statement is written, the client shall
     compile every invariant and every `sql:` derivation against the schema
     and reject the change if any fails to compile.
-19. When the hub receives a rows push, it shall validate each row against the
-    catalog independently.
+19. When the hub receives a rows push, it shall run the property checks on
+    each row against the catalog independently.
 20. If a pushed row changes a derived column, the hub shall reject it unless
     an accompanying `provenance` row's `inputs_hash` equals the hash of the
     row's current inputs.
@@ -489,6 +498,8 @@ how to read the catalog.
 | Validate in the write path, not in SQLite | Trigger and CHECK DDL replays into D1 and fires on pulled rows, wedging sync |
 | Two validators, one conformance fixture | Client is stdlib-only Python, hub is JS; shared runtime costs more than 80 lines twice |
 | Hub rejects per row, never per batch | A batch failure wedges a replica permanently |
+| Hub runs property checks and provenance, not SQL invariants | Invariants need the transaction's `changed`/`before` temp tables; D1 cannot provide them per request. `life check` covers the gap on every replica |
+| `now` is a temp table, not a bound parameter | Identical SQL under SQLite and D1 |
 | Rules as SQL returning zero rows | One format, no DSL, no severity ladder. Salesforce grew four overlapping engines because each could not express the next thing; this one will not grow a fifth kind |
 | `changed`/`before` temp tables | Transition rules without a DSL |
 | Engine-injected `:now` | Reproducible verdicts; `--as-of` |
