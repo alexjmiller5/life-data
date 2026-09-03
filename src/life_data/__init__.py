@@ -35,6 +35,7 @@ PLUMBING_STMTS = [
 ]
 PLUMBING = ";\n".join(PLUMBING_STMTS) + ";"
 
+from life_data import catalog
 
 # --- local database ----------------------------------------------------------
 
@@ -537,6 +538,52 @@ def main(argv: list[str] | None = None) -> int:
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
     p_create.add_argument("name")
     p_create.add_argument("columns", nargs="+", metavar="name:type")
+    t_set = t_sub.add_parser("set", help="describe a table in the catalog")
+    t_set.add_argument("name")
+    for f in ("kind", "purpose", "id_semantics", "provenance", "owner", "consumers", "description"):
+        t_set.add_argument(f"--{f.replace('_', '-')}", dest=f)
+    p_prop = sub.add_parser("property", help="catalog properties (the per-column contract)")
+    pr_sub = p_prop.add_subparsers(dest="property_command", required=True)
+    pr_set = pr_sub.add_parser("set", help="upsert a property: <table>.<column>")
+    pr_set.add_argument("ref")
+    pr_set.add_argument("--type", dest="type")
+    pr_set.add_argument("--label")
+    pr_set.add_argument("--sort", type=int)
+    pr_set.add_argument("--required", type=int, choices=(0, 1))
+    pr_set.add_argument("--default", dest="default_value")
+    pr_set.add_argument("--options", help="JSON array of {v,d,sort} or a comma list of values")
+    pr_set.add_argument("--options-sql", dest="options_sql")
+    pr_set.add_argument("--min-items", dest="min_items", type=int)
+    pr_set.add_argument("--max-items", dest="max_items", type=int)
+    pr_set.add_argument("--pattern")
+    pr_set.add_argument("--ref-table", dest="ref_table")
+    pr_set.add_argument("--derived-by", dest="derived_by")
+    pr_set.add_argument("--inputs", help="comma list of columns")
+    pr_set.add_argument("--immutable", type=int, choices=(0, 1))
+    pr_set.add_argument("--deprecated", type=int, choices=(0, 1))
+    pr_set.add_argument("--description")
+    pr_set.add_argument("--source")
+    pr_set.add_argument("--source-ref", dest="source_ref")
+    pr_list = pr_sub.add_parser("list", help="list properties, optionally for one table")
+    pr_list.add_argument("table", nargs="?")
+    pr_rm = pr_sub.add_parser("rm", help="soft-delete a property: <table>.<column>")
+    pr_rm.add_argument("ref")
+    p_rule = sub.add_parser("rule", help="catalog rules (invariant, doctrine, audit)")
+    ru_sub = p_rule.add_subparsers(dest="rule_command", required=True)
+    ru_set = ru_sub.add_parser("set", help="upsert a rule by id")
+    ru_set.add_argument("id")
+    ru_set.add_argument("--scope", choices=("estate", "table", "column"))
+    ru_set.add_argument("--tbl")
+    ru_set.add_argument("--col")
+    ru_set.add_argument("--kind", choices=("invariant", "doctrine", "audit"))
+    ru_set.add_argument("--text")
+    ru_set.add_argument("--sql")
+    ru_set.add_argument("--cmd")
+    ru_set.add_argument("--enforce", type=int, choices=(0, 1))
+    ru_list = ru_sub.add_parser("list", help="list rules, optionally for one table")
+    ru_list.add_argument("table", nargs="?")
+    ru_rm = ru_sub.add_parser("rm", help="soft-delete a rule")
+    ru_rm.add_argument("id")
     args = parser.parse_args(argv)
 
     path = db_path()
@@ -589,8 +636,61 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(hub.token_list(), indent=2))
     elif args.command == "table":
-        create_table(path, args.name, args.columns)
-        print(f"created table {args.name}")
+        if args.table_command == "create":
+            create_table(path, args.name, args.columns)
+            print(f"created table {args.name}")
+        else:
+            fields = {
+                k: v
+                for k, v in vars(args).items()
+                if k
+                in (
+                    "kind",
+                    "purpose",
+                    "id_semantics",
+                    "provenance",
+                    "owner",
+                    "consumers",
+                    "description",
+                )
+                and v is not None
+            }
+            if "consumers" in fields:
+                fields["consumers"] = [s.strip() for s in fields["consumers"].split(",")]
+            print(json.dumps(catalog.set_table(path, args.name, **fields), indent=2))
+    elif args.command == "property":
+        if args.property_command == "set":
+            tbl, col = args.ref.split(".", 1)
+            skip = {"command", "property_command", "ref"}
+            fields = {k: v for k, v in vars(args).items() if k not in skip and v is not None}
+            if "options" in fields:
+                raw = fields["options"].strip()
+                fields["options"] = (
+                    json.loads(raw)
+                    if raw.startswith("[")
+                    else [{"v": s.strip()} for s in raw.split(",")]
+                )
+            if "inputs" in fields:
+                fields["inputs"] = [s.strip() for s in fields["inputs"].split(",")]
+            print(json.dumps(catalog.set_property(path, tbl, col, **fields), indent=2))
+        elif args.property_command == "list":
+            with connect(path) as conn:
+                print(json.dumps(catalog.properties(conn, args.table), indent=2))
+        else:
+            tbl, col = args.ref.split(".", 1)
+            catalog.rm_property(path, tbl, col)
+            print(f"removed {args.ref}")
+    elif args.command == "rule":
+        if args.rule_command == "set":
+            skip = {"command", "rule_command", "id"}
+            fields = {k: v for k, v in vars(args).items() if k not in skip and v is not None}
+            print(json.dumps(catalog.set_rule(path, args.id, **fields), indent=2))
+        elif args.rule_command == "list":
+            with connect(path) as conn:
+                print(json.dumps(catalog.rules(conn, args.table), indent=2))
+        else:
+            catalog.rm_rule(path, args.id)
+            print(f"removed {args.id}")
     return 0
 
 
