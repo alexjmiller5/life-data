@@ -6,6 +6,7 @@ from life_data.catalog import (
     has_catalog,
     properties,
     rm_property,
+    rm_rule,
     rules,
     set_property,
     set_rule,
@@ -84,6 +85,17 @@ def test_set_rule_and_set_table(db):
         assert rules(conn, kind="doctrine")[0]["id"] == "estate-soft-delete"
     t = execute_sql(db, "SELECT purpose FROM catalog_tables WHERE id='places'")[0]
     assert t["purpose"] == "somewhere real"
+
+
+def test_set_rule_with_no_fields_revives_existing_row(db):
+    set_rule(db, "r1", scope="estate", kind="doctrine", text="x")
+    rm_rule(db, "r1")
+    set_rule(db, "r1")
+    with connect(db) as conn:
+        revived = rules(conn)[0]
+    assert revived["id"] == "r1" and revived["text"] == "x"
+    log = execute_sql(db, "SELECT action FROM catalog_log WHERE row_id = 'r1' ORDER BY created_at")
+    assert log[-1]["action"] == "set"
 
 
 def test_catalog_writes_are_logged(db):

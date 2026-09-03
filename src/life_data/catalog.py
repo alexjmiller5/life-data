@@ -182,9 +182,9 @@ def _upsert(path: Path, table: str, row_id: str, fields: dict) -> dict:
     with pkg.connect(path) as conn:
         existing = conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone()
         if existing:
-            sets = ", ".join(f"{k} = ?" for k in enc)
+            sets = ", ".join([*(f"{k} = ?" for k in enc), "deleted_at = NULL"])
             conn.execute(
-                f"UPDATE {table} SET {sets}, deleted_at = NULL WHERE id = ?",
+                f"UPDATE {table} SET {sets} WHERE id = ?",
                 [*enc.values(), row_id],
             )
         else:
