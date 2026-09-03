@@ -1,7 +1,11 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from life_data import connect, execute_sql, init
 from life_data.catalog import (
+    Violation,
     ensure_catalog,
     has_catalog,
     properties,
@@ -11,6 +15,7 @@ from life_data.catalog import (
     set_property,
     set_rule,
     set_table,
+    validate_row,
 )
 
 
@@ -104,3 +109,32 @@ def test_catalog_writes_are_logged(db):
     log = execute_sql(db, "SELECT tbl, row_id, action FROM catalog_log ORDER BY created_at")
     assert log[0] == {"tbl": "catalog_properties", "row_id": "places.status", "action": "set"}
     assert log[1] == {"tbl": "catalog_rules", "row_id": "r1", "action": "set"}
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "validation-cases.json"
+CASES = json.loads(FIXTURE.read_text())
+
+
+@pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
+def test_validate_row_conformance(case):
+    refs = case.get("refs", {})
+    extra = case.get("extra_options", {})
+    got = validate_row(
+        case["properties"],
+        case["before"],
+        case["after"],
+        in_derive=set(case.get("in_derive", [])),
+        ref_ok=lambda t, i: i in refs.get(t, []),
+        extra_options=lambda p: extra.get(p["col"], []),
+    )
+    assert [{"col": v.col, "rule": v.rule} for v in got] == case["expect"]
+
+
+def test_violation_message_names_allowed_values():
+    props = [
+        {"tbl": "t", "col": "status", "type": "select", "options": [{"v": "want"}, {"v": "been"}]}
+    ]
+    v = validate_row(props, None, {"id": "a", "status": "Been"})[0]
+    assert isinstance(v, Violation)
+    assert v.tbl == "t" and v.row_id == "a"
+    assert "want, been" in v.message
