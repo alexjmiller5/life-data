@@ -162,7 +162,8 @@ enforced structurally rather than by an asserted writer identity.
 | `id` | text | `<tbl>:<row_id>:<col>` |
 | `tbl`, `row_id`, `col` | text | The derived cell |
 | `derived_by` | text | The `derived_by` value at the time |
-| `inputs_hash` | text | sha256 of the JSON of the input columns' values at the time |
+| `inputs_hash` | text | sha256 of `json_array(CAST(input AS TEXT), ...)` as SQLite renders it, so client and hub agree byte for byte |
+| `value_hash` | text | sha256 of `CAST(col AS TEXT)` of the produced value. Binds the output: a hand edit with unchanged inputs is still detectable |
 | `source_ref` | text | What the command consulted, e.g. an external id plus a response hash; null for SQL derivations |
 | `produced_at` | text | ISO UTC ms |
 
@@ -304,7 +305,8 @@ by rowid past ~1M rows.
 **Hub** (`/v1/rows/push`) runs the **property checks** from the same catalog
 rows in D1, plus **provenance verification**: for a derived column that
 changed, a `provenance` row must exist whose `inputs_hash` equals the hash of
-the pushed row's inputs. The hub never calls the command. It verifies the
+the pushed row's inputs and whose `value_hash` equals the hash of the pushed
+value. The hub never calls the command. It verifies the
 attestation is consistent, which is a pure computation. The hub does **not**
 run SQL invariants: they need the transaction's `changed`/`before` temp
 tables, which D1's per-request model cannot provide. Invariants run on the
@@ -441,8 +443,8 @@ how to read the catalog.
 19. When the hub receives a rows push, it shall run the property checks on
     each row against the catalog independently.
 20. If a pushed row changes a derived column, the hub shall reject it unless
-    an accompanying `provenance` row's `inputs_hash` equals the hash of the
-    row's current inputs.
+    a `provenance` row exists whose `inputs_hash` equals the hash of the
+    row's inputs and whose `value_hash` equals the hash of the pushed value.
 21. If a pushed row fails validation, the hub shall reject that row, accept
     the remaining rows, return the rejected rows, and advance the cursor.
 22. The client shall report rows the hub rejected.

@@ -184,7 +184,7 @@ CATALOG_TABLES = {
     ],
     "provenance": [
         "tbl:text", "row_id:text", "col:text", "derived_by:text",
-        "inputs_hash:text", "source_ref:text", "produced_at:text",
+        "inputs_hash:text", "value_hash:text", "source_ref:text", "produced_at:text",
     ],
     "catalog_log": ["tbl:text", "row_id:text", "action:text", "payload:text"],
 }
@@ -1399,13 +1399,13 @@ git commit -m "Add life check; watch reports drift"
 - Modify: `tests/test_catalog.py`, `tests/test_core.py`
 
 **Interfaces:**
-- Produces: `inputs_hash(conn, tbl, row_id, inputs) -> str` = sha256 of `SELECT json_array(CAST(c1 AS TEXT), ...) FROM tbl WHERE id=?` text. `derive(path, tbl, col, where=None, commands=None) -> int` writes values through `write(..., in_derive={cols})` and upserts `provenance`. `stale(conn) -> list[Violation]` and `underived(conn) -> list[Violation]` feed `check`. `_user_tables` orders `catalog_*` and `provenance` first.
+- Produces: `inputs_hash(conn, tbl, row_id, inputs) -> str` = sha256 of `SELECT json_array(CAST(c1 AS TEXT), ...) FROM tbl WHERE id=?` text, and `value_hash(conn, tbl, row_id, col) -> str` = sha256 of `SELECT CAST(col AS TEXT)` (empty string for NULL). Provenance stores both: `inputs_hash` says what the value was computed from, `value_hash` binds the value itself so a hand edit with unchanged inputs is still detectable. `derive(path, tbl, col, where=None, commands=None) -> int` writes values through `write(..., in_derive={cols})` and upserts `provenance`. `stale(conn) -> list[Violation]` and `underived(conn) -> list[Violation]` feed `check`. `_user_tables` orders `catalog_*` and `provenance` first.
 - Command protocol: stdin `{"tbl","id","inputs":{...}}`, stdout JSON object; keys naming derived columns that declare the same `cmd:<name>` are written; optional `_source_ref` is stored.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-from life_data.catalog import derive, inputs_hash
+from life_data.catalog import derive, inputs_hash, value_hash
 
 
 def _movies(db):
@@ -1423,6 +1423,7 @@ def test_sql_derivation_writes_value_and_provenance(db):
     prov = execute_sql(db, "SELECT * FROM provenance WHERE id = 'movies:m1:slug'")[0]
     with connect(db) as conn:
         assert prov["inputs_hash"] == inputs_hash(conn, "movies", "m1", ["title"])
+        assert prov["value_hash"] == value_hash(conn, "movies", "m1", "slug")
 
 
 def test_cmd_derivation_runs_command_with_inputs(db, tmp_path):
@@ -1501,6 +1502,11 @@ def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def value_hash(conn, tbl: str, row_id: str, col: str) -> str:
+    text = conn.execute(f"SELECT coalesce(CAST({col} AS TEXT), '') FROM {tbl} WHERE id = ?", (row_id,)).fetchone()[0]
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def _run_command(cmd: str, payload: dict) -> dict:
     out = subprocess.run(cmd, shell=True, input=json.dumps(payload), capture_output=True,
                          text=True, check=False)
@@ -1525,9 +1531,10 @@ def derive(path: Path, tbl: str, col: str, where: str | None = None, commands: d
             f"SELECT id FROM {tbl} WHERE deleted_at IS NULL" + (f" AND ({where})" if where else "")
         ).fetchall()]
     d = target["derived_by"]
-    count = 0
-    for rid in ids:
-        def fn(conn, rid=rid):
+
+    def fn(conn):
+        count = 0
+        for rid in ids:
             if d.startswith("sql:"):
                 values = {col: conn.execute(f"SELECT ({d[4:]}) FROM {tbl} WHERE id = ?", (rid,)).fetchone()[0]}
                 source_ref = None
@@ -1547,15 +1554,17 @@ def derive(path: Path, tbl: str, col: str, where: str | None = None, commands: d
             now = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
             for k in values:
                 conn.execute(
-                    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, source_ref, produced_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, "
-                    "inputs_hash = excluded.inputs_hash, source_ref = excluded.source_ref, "
+                    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash, source_ref, produced_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, "
+                    "inputs_hash = excluded.inputs_hash, value_hash = excluded.value_hash, source_ref = excluded.source_ref, "
                     "produced_at = excluded.produced_at, deleted_at = NULL",
-                    (f"{tbl}:{rid}:{k}", tbl, rid, k, d, h, source_ref, now),
+                    (f"{tbl}:{rid}:{k}", tbl, rid, k, d, h, value_hash(conn, tbl, rid, k), source_ref, now),
                 )
-            return 1
-        count += write(path, fn, in_derive=set(cols))
-    return count
+            count += 1
+        return count
+
+    # one transaction for the whole run: one snapshot, all-or-nothing
+    return write(path, fn, in_derive=set(cols))
 
 
 def stale(conn) -> list[Violation]:
@@ -1702,13 +1711,16 @@ def validate_push(conn, table: str, rows: list[dict]) -> tuple[list[dict], list[
             if not changed:
                 continue
             prov = conn.execute(
-                "SELECT inputs_hash FROM provenance WHERE id = ? AND deleted_at IS NULL",
+                "SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL",
                 (f"{table}:{row['id']}:{col}",),
             ).fetchone()
             casts = ", ".join("CAST(? AS TEXT)" for _ in (p.get("inputs") or [])) or "NULL"
             text = conn.execute(f"SELECT json_array({casts})",
                                 [row.get(c) for c in (p.get("inputs") or [])]).fetchone()[0]
-            if not prov or prov["inputs_hash"] != hashlib.sha256(text.encode()).hexdigest():
+            vtext = conn.execute("SELECT coalesce(CAST(? AS TEXT), '')", (row.get(col),)).fetchone()[0]
+            ok = (prov and prov["inputs_hash"] == hashlib.sha256(text.encode()).hexdigest()
+                  and prov["value_hash"] == hashlib.sha256(vtext.encode()).hexdigest())
+            if not ok:
                 viol.append(Violation(table, row["id"], col, "provenance",
                                       f"{col} changed without a matching provenance record."))
         if viol:
@@ -1959,11 +1971,13 @@ export async function validatePush(db, table, rows) {
     for (const p of props.filter((p) => p.derived_by)) {
       const changed = before == null ? row[p.col] != null : !same(row[p.col], before[p.col]);
       if (!changed) continue;
-      const prov = await db.prepare("SELECT inputs_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
+      const prov = await db.prepare("SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
         .bind(`${table}:${row.id}:${p.col}`).first();
       const casts = p.inputs.map(() => "CAST(? AS TEXT)").join(", ") || "NULL";
       const text = Object.values(await db.prepare(`SELECT json_array(${casts}) AS j`).bind(...p.inputs.map((c) => row[c] ?? null)).first())[0];
-      if (!prov || prov.inputs_hash !== (await sha256hex(text))) {
+      const vtext = Object.values(await db.prepare("SELECT coalesce(CAST(? AS TEXT), '') AS v").bind(row[p.col] ?? null).first())[0];
+      const ok = prov && prov.inputs_hash === (await sha256hex(text)) && prov.value_hash === (await sha256hex(vtext));
+      if (!ok) {
         viol.push({ col: p.col, rule: "provenance", message: `${p.col} changed without a matching provenance record.` });
       }
     }
@@ -2022,7 +2036,7 @@ const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 async function seed(db) {
   for (const sql of [
     `CREATE TABLE catalog_properties (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, label TEXT, sort INTEGER, type TEXT, required INTEGER, default_value TEXT, options TEXT, options_sql TEXT, min_items INTEGER, max_items INTEGER, pattern TEXT, ref_table TEXT, derived_by TEXT, inputs TEXT, immutable INTEGER, deprecated INTEGER, description TEXT, source TEXT, source_ref TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
-    `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
+    `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, value_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `CREATE TABLE places (id TEXT PRIMARY KEY, status TEXT, slug TEXT, name TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `INSERT INTO catalog_properties (id, tbl, col, type, options) VALUES ('places.status','places','status','select','[{"v":"want"}]')`,
     `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.slug','places','slug','text','sql:lower(name)','["name"]')`,
@@ -2047,14 +2061,15 @@ test("derived column needs matching provenance", async () => {
   await seed(db);
   let out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "a" })] }, db);
   expect(out.rejected[0].rule).toBe("provenance");
-  // provenance for name='A' : sha256 of json_array('A')
-  const text = '["A"]';
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  const hash = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  await db.prepare("INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash) VALUES ('places:a:slug','places','a','slug','sql:lower(name)',?)").bind(hash).run();
+  // provenance for name='A' -> slug 'a': inputs_hash = sha256(json_array('A')), value_hash = sha256('a')
+  const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  await db.prepare("INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:slug','places','a','slug','sql:lower(name)',?,?)").bind(await hex('["A"]'), await hex("a")).run();
   out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "a" })] }, db);
   expect(out.rejected).toEqual([]);
   expect(out.upserted).toBe(1);
+  // a hand edit to the value with unchanged inputs is still caught
+  out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "hand", updated_at: "2026-09-04T00:00:00.000Z" })] }, db);
+  expect(out.rejected[0].rule).toBe("provenance");
 });
 ```
 
