@@ -217,6 +217,14 @@ def set_property(path: Path, tbl: str, col: str, **fields) -> dict:
         raise ValueError(f"unknown type {fields['type']!r}; one of {sorted(TYPES)}")
     if fields.get("derived_by") and not fields["derived_by"].startswith(("sql:", "cmd:")):
         raise ValueError("derived_by must start with 'sql:' or 'cmd:'")
+    d = fields.get("derived_by") or ""
+    if d.startswith("sql:"):
+        with _pkg().connect(path) as conn:
+            if _table_exists(conn, tbl):
+                try:
+                    conn.execute(f"SELECT ({d[4:]}) FROM {tbl} LIMIT 0")
+                except sqlite3.Error as e:
+                    raise ValueError(f"derivation does not compile: {e}") from e
     return _upsert(path, "catalog_properties", f"{tbl}.{col}", {"tbl": tbl, "col": col, **fields})
 
 
@@ -227,6 +235,10 @@ def rm_property(path: Path, tbl: str, col: str) -> None:
 def set_rule(path: Path, rule_id: str, **fields) -> dict:
     if "kind" in fields and fields["kind"] not in RULE_KINDS:
         raise ValueError(f"unknown kind {fields['kind']!r}; one of {sorted(RULE_KINDS)}")
+    if fields.get("sql"):
+        check_rule_sql(fields["sql"])
+        with _pkg().connect(path) as conn:
+            compile_sql(conn, fields["sql"], fields.get("tbl"))
     return _upsert(path, "catalog_rules", rule_id, fields)
 
 
@@ -447,7 +459,7 @@ def apply_defaults(conn: sqlite3.Connection, tbl: str, row: dict) -> dict:
     return out
 
 
-def write(path: Path, fn, *, in_derive=()):
+def write(path: Path, fn, *, in_derive=(), ddl: bool = False):
     """Run fn(conn) in one transaction; validate every changed row in every
     cataloged table; ROLLBACK and raise ValidationError on any violation."""
     pkg = _pkg()
@@ -464,6 +476,17 @@ def write(path: Path, fn, *, in_derive=()):
         try:
             result = fn(conn)
             violations = _validate_changed(conn, marks, t0, set(in_derive))
+            if ddl:
+                for rid in compile_all(conn):
+                    violations.append(
+                        Violation(
+                            "catalog",
+                            rid,
+                            None,
+                            "compile",
+                            f"{rid} no longer compiles after this DDL.",
+                        )
+                    )
         except Exception:
             conn.execute("ROLLBACK")
             raise
@@ -501,4 +524,113 @@ def _validate_changed(conn, marks, t0, in_derive) -> list[Violation]:
                 ref_ok=_ref_ok(conn),
                 extra_options=_extra_options(conn),
             )
+        changed_ids = [r["id"] for r in rows]
+        for rule in rules(conn, tbl=t, kind="invariant"):
+            if not rule.get("enforce") or rule.get("tbl") != t:
+                continue
+            hits = run_invariant(conn, rule, changed_ids=changed_ids, now=t0)
+            for h in hits:
+                out.append(Violation(t, h.get("id"), rule.get("col"), rule["id"], rule["text"]))
     return out
+
+
+# --- invariants --------------------------------------------------------------
+
+FORBIDDEN = re.compile(r"random\s*\(|localtime|'now'", re.IGNORECASE)
+
+
+def check_rule_sql(sql: str) -> None:
+    if not sql or _first(sql) != "SELECT":
+        raise ValueError("rule sql must be a single SELECT")
+    if FORBIDDEN.search(sql):
+        raise ValueError(
+            "rule sql may not use random(), localtime, or 'now' (use (SELECT ts FROM now))"
+        )
+
+
+def _first(sql: str) -> str:
+    return sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+
+
+def _uses(sql: str, name: str) -> bool:
+    return re.search(rf"\b{name}\b", sql, re.IGNORECASE) is not None
+
+
+def _with_context(conn, sql, changed_ids, now, tbl):
+    """Create the temp tables a rule may reference; return a cleanup fn."""
+    made = []
+    if _uses(sql, "now"):
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS now (ts TEXT)")
+        conn.execute("DELETE FROM now")
+        conn.execute(
+            "INSERT INTO now (ts) VALUES (?)",
+            (now or conn.execute(f"SELECT {_pkg().NOW}").fetchone()[0],),
+        )
+        made.append("now")
+    if tbl and (_uses(sql, "changed") or _uses(sql, "before")):
+        ids = list(changed_ids or [])
+        ph = ", ".join("?" for _ in ids) or "NULL"
+        conn.execute("DROP TABLE IF EXISTS changed")
+        conn.execute(f"CREATE TEMP TABLE changed AS SELECT * FROM {tbl} WHERE id IN ({ph})", ids)
+        conn.execute("DROP TABLE IF EXISTS before")
+        if _table_exists_temp(conn, f"_before_{tbl}"):
+            conn.execute(
+                f"CREATE TEMP TABLE before AS SELECT * FROM _before_{tbl} WHERE id IN ({ph})", ids
+            )
+        else:
+            conn.execute(f"CREATE TEMP TABLE before AS SELECT * FROM {tbl} WHERE 0")
+        made += ["changed", "before"]
+
+    def cleanup():
+        for t in made:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+
+    return cleanup
+
+
+def _table_exists_temp(conn, name) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM sqlite_temp_master WHERE name = ?", (name,)).fetchone()
+        is not None
+    )
+
+
+def compile_sql(conn: sqlite3.Connection, sql: str, tbl: str | None = None) -> None:
+    cleanup = _with_context(conn, sql, [], None, tbl)
+    try:
+        conn.execute(f"SELECT * FROM ({sql}) LIMIT 0")
+    except sqlite3.Error as e:
+        raise ValueError(f"sql does not compile: {e}") from e
+    finally:
+        cleanup()
+
+
+def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
+    cleanup = _with_context(conn, rule["sql"], changed_ids, now, rule.get("tbl"))
+    try:
+        return [dict(r) for r in conn.execute(rule["sql"]).fetchall()]
+    finally:
+        cleanup()
+
+
+def compile_all(conn: sqlite3.Connection) -> list[str]:
+    """Compile every invariant and sql: derivation. Returns the ids that fail."""
+    bad = []
+    # ponytail: catalog tables come up one CREATE TABLE at a time during
+    # ensure_catalog's own bootstrap DDL, so a sibling catalog table (e.g.
+    # catalog_rules) may not exist yet even though catalog_properties does.
+    if _table_exists(conn, "catalog_rules"):
+        for r in rules(conn, kind="invariant"):
+            try:
+                compile_sql(conn, r["sql"], r.get("tbl"))
+            except ValueError:
+                bad.append(r["id"])
+    if _table_exists(conn, "catalog_properties"):
+        for p in properties(conn):
+            d = p.get("derived_by") or ""
+            if d.startswith("sql:") and _table_exists(conn, p["tbl"]):
+                try:
+                    conn.execute(f"SELECT ({d[4:]}) FROM {p['tbl']} LIMIT 0")
+                except sqlite3.Error:
+                    bad.append(p["id"])
+    return bad

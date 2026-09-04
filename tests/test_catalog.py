@@ -7,12 +7,14 @@ from life_data import connect, create_table, execute_sql, init, insert_rows
 from life_data.catalog import (
     ValidationError,
     Violation,
+    check_rule_sql,
     ensure_catalog,
     has_catalog,
     properties,
     rm_property,
     rm_rule,
     rules,
+    run_invariant,
     set_property,
     set_rule,
     set_table,
@@ -249,3 +251,118 @@ def test_engine_tables_are_never_validated_against_themselves(db):
     set_property(
         db, "places", "extra", type="url"
     )  # would fail if catalog_properties were validated
+
+
+# --- invariants -----------------------------------------------------------
+
+
+def test_rule_sql_rejects_nondeterminism():
+    for bad in ("SELECT random()", "SELECT datetime('now')", "SELECT date('now','localtime')"):
+        with pytest.raises(ValueError):
+            check_rule_sql(bad)
+    check_rule_sql("SELECT id FROM t WHERE x > (SELECT ts FROM now)")
+
+
+def test_set_rule_compiles_invariant(db):
+    with pytest.raises(ValueError, match="no such table"):
+        set_rule(
+            db,
+            "bad",
+            scope="table",
+            tbl="places",
+            kind="invariant",
+            enforce=1,
+            sql="SELECT id FROM nope",
+        )
+
+
+def test_enforced_invariant_blocks_write(db):
+    create_table(db, "places", ["category:text", "tags:text"])
+    set_property(db, "places", "tags", type="multi_select", options=[{"v": "bar"}, {"v": "cafe"}])
+    set_property(db, "places", "category", type="select", options=[{"v": "bar"}, {"v": "cafe"}])
+    set_rule(
+        db,
+        "cat-in-tags",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="Category must be one of the tags.",
+        sql="SELECT id FROM places WHERE deleted_at IS NULL AND category IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE value = places.category)",
+    )
+    insert_rows(db, "places", [{"category": "bar", "tags": ["bar"]}])
+    with pytest.raises(ValidationError, match="Category must be one of the tags"):
+        insert_rows(db, "places", [{"category": "cafe", "tags": ["bar"]}])
+
+
+def test_unenforced_invariant_does_not_block(db):
+    create_table(db, "places", ["category:text", "tags:text"])
+    set_property(db, "places", "category", type="text")
+    set_rule(
+        db,
+        "cat-in-tags",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=0,
+        text="x",
+        sql="SELECT id FROM places WHERE category = 'zzz'",
+    )
+    insert_rows(db, "places", [{"category": "zzz", "tags": "[]"}])
+
+
+def test_transition_rule_uses_before_and_changed(db):
+    create_table(db, "places", ["status:text"])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}, {"v": "been"}])
+    set_rule(
+        db,
+        "no-unbeen",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="A been place never goes back to want.",
+        sql="SELECT c.id FROM changed c JOIN before b ON b.id = c.id "
+        "WHERE b.status = 'been' AND c.status = 'want'",
+    )
+    insert_rows(db, "places", [{"id": "x", "status": "want"}])
+    execute_sql(db, "UPDATE places SET status = 'been' WHERE id = 'x'")
+    with pytest.raises(ValidationError, match="never goes back"):
+        execute_sql(db, "UPDATE places SET status = 'want' WHERE id = 'x'")
+
+
+def test_now_is_injected_not_read(db):
+    create_table(db, "tasks", ["due:text"])
+    set_property(db, "tasks", "due", type="date")
+    set_rule(
+        db,
+        "not-past",
+        scope="table",
+        tbl="tasks",
+        kind="invariant",
+        enforce=0,
+        text="due in the past",
+        sql="SELECT id FROM tasks WHERE due < substr((SELECT ts FROM now), 1, 10)",
+    )
+    insert_rows(db, "tasks", [{"id": "a", "due": "2001-01-01"}])
+    with connect(db) as conn:
+        rule = rules(conn, kind="invariant")[0]
+        assert run_invariant(conn, rule, now="2000-01-01T00:00:00.000Z") == []
+        assert [r["id"] for r in run_invariant(conn, rule, now="2026-01-01T00:00:00.000Z")] == ["a"]
+
+
+def test_ddl_recompiles_rules(db):
+    create_table(db, "places", ["category:text"])
+    set_rule(
+        db,
+        "r",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="x",
+        sql="SELECT id FROM places WHERE category = 'z'",
+    )
+    with pytest.raises(ValidationError, match="no longer compiles"):
+        execute_sql(db, "ALTER TABLE places RENAME COLUMN category TO cat")
