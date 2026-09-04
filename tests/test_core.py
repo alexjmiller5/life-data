@@ -226,7 +226,43 @@ def test_sync_pushes_schema_and_rows_to_hub(db, hub):
 def test_second_sync_is_noop(db, hub):
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0}
+    assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
+
+
+def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
+    from life_data.catalog import set_property
+
+    create_table(db, "places", ["status:text"])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}])
+    insert_rows(db, "places", [{"id": "good", "status": "want"}])
+    sync(db, hub)  # catalog reaches the hub first
+    # a raw write that bypasses local validation
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO places (id, status) VALUES ('bad', 'Nope')")
+    c.commit()
+    c.close()
+    stats = sync(db, hub)
+    assert stats["rejected"][0]["id"] == "bad" and stats["rejected"][0]["rule"] == "options"
+    assert {r["id"] for r in hub.rows_pull("places", ["id"], "")} == {"good"}
+    assert sync(db, hub)["rejected"] == []  # cursor advanced; not re-pushed
+
+
+def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
+    from life_data.catalog import derive, set_property
+
+    create_table(db, "movies", ["title:text", "slug:text"])
+    set_property(db, "movies", "slug", type="text", derived_by="sql:lower(title)", inputs=["title"])
+    insert_rows(db, "movies", [{"id": "m1", "title": "A"}])
+    derive(db, "movies", "slug")
+    sync(db, hub)
+    c = sqlite3.connect(db)
+    c.execute("UPDATE movies SET slug = 'hand' WHERE id = 'm1'")
+    c.commit()
+    c.close()
+    time.sleep(0.002)
+    stats = sync(db, hub)
+    assert stats["rejected"][0]["rule"] == "provenance"
+    assert hub.rows_pull("movies", ["slug"], "")[0]["slug"] == "a"
 
 
 def test_sync_pushes_catalog_and_provenance_before_data(db, hub, monkeypatch):
@@ -371,7 +407,7 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/rows/pull":
             out = {"rows": h.rows_pull(body["table"], body["columns"], body["since"])}
         elif self.path == "/v1/rows/push":
-            out = {"upserted": h.rows_push(body["table"], body["columns"], body["rows"])}
+            out = h.rows_push(body["table"], body["columns"], body["rows"])
         elif self.path == "/v1/cursor":
             out = {"max_updated_at": h.cursor(body["tables"])}
         else:

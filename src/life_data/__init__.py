@@ -228,10 +228,12 @@ class LocalHub:
             f"SELECT {', '.join(columns)} FROM {table} WHERE updated_at > ?", [since or ""]
         )
 
-    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> int:
-        for i in range(0, len(rows), CHUNK):
-            self._query(_upsert_sql(table, columns), [json.dumps(rows[i : i + CHUNK])])
-        return len(rows)
+    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
+        with connect(self.path) as conn:
+            accepted, rejected = catalog.validate_push(conn, table, rows)
+        for i in range(0, len(accepted), CHUNK):
+            self._query(_upsert_sql(table, columns), [json.dumps(accepted[i : i + CHUNK])])
+        return {"upserted": len(accepted), "rejected": rejected}
 
     def cursor(self, tables: list[str]) -> str:
         top = ""
@@ -280,14 +282,14 @@ class HttpHub:
             "/v1/rows/pull", {"table": table, "columns": columns, "since": since or ""}
         )["rows"]
 
-    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> int:
-        total = 0
+    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
+        total, rejected = 0, []
         for i in range(0, len(rows), CHUNK):
             chunk = rows[i : i + CHUNK]
-            total += self._post(
-                "/v1/rows/push", {"table": table, "columns": columns, "rows": chunk}
-            )["upserted"]
-        return total
+            out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": chunk})
+            total += out["upserted"]
+            rejected += out.get("rejected", [])
+        return {"upserted": total, "rejected": rejected}
 
     def cursor(self, tables: list[str]) -> str:
         return self._post("/v1/cursor", {"tables": tables})["max_updated_at"] or ""
@@ -455,6 +457,7 @@ def sync(path: Path, hub) -> dict:
     last_push = _get_state(path, "last_push")
 
     pulled = pushed = 0
+    rejected = []
     for table in tables:
         cols = _columns(path, table)
         # snapshot push candidates BEFORE applying the pull, so pulled rows
@@ -469,12 +472,13 @@ def sync(path: Path, hub) -> dict:
                     conn.execute(_upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),))
         pulled += len(remote)
         if mine:
-            hub.rows_push(table, cols, mine)
+            out = hub.rows_push(table, cols, mine)
+            rejected += [{"table": table, **r} for r in out["rejected"]]
         pushed += len(mine)
 
     _set_state(path, "last_pull", hub.cursor(tables))
     _set_state(path, "last_push", _local_cursor(path, tables))
-    return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied}
+    return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 
 def _local_cursor(path: Path, tables: list[str]) -> str:
@@ -641,7 +645,10 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         n = insert_rows(path, args.table, json.load(sys.stdin))
         print(f"inserted {n} rows into {args.table}")
     elif args.command == "sync":
-        print(json.dumps(sync(path, hub_from_config())))
+        stats = sync(path, hub_from_config())
+        print(json.dumps(stats))
+        if stats["rejected"]:
+            print(json.dumps({"rejected": stats["rejected"]}, indent=2), file=sys.stderr)
     elif args.command == "check":
         findings = catalog.check(path, as_of=args.as_of)
         print(json.dumps(findings, indent=2))

@@ -818,6 +818,79 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
     return [v.as_dict() for v in out]
 
 
+def validate_push(
+    conn: sqlite3.Connection, table: str, rows: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Split pushed rows into (accepted, rejected). Property checks plus provenance
+    for derived columns. Pure over the hub's own db; never runs a derivation."""
+    props = properties(conn, table) if table not in ENGINE_TABLES else []
+    accepted, rejected = [], []
+    for row in rows:
+        existing = (
+            conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row["id"],)).fetchone()
+            if _table_exists(conn, table)
+            else None
+        )
+        before = dict(existing) if existing else None
+        derived = {p["col"] for p in props if p.get("derived_by")}
+        viol = validate_row(
+            props,
+            before,
+            row,
+            in_derive=derived,
+            ref_ok=_ref_ok(conn),
+            extra_options=_extra_options(conn),
+        )
+        for p in props:
+            if not p.get("derived_by"):
+                continue
+            col = p["col"]
+            changed = (
+                (row.get(col) is not None)
+                if before is None
+                else not _same(row.get(col), before.get(col))
+            )
+            if not changed:
+                continue
+            prov = conn.execute(
+                "SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL",
+                (f"{table}:{row['id']}:{col}",),
+            ).fetchone()
+            casts = ", ".join("CAST(? AS TEXT)" for _ in (p.get("inputs") or [])) or "NULL"
+            text = conn.execute(
+                f"SELECT json_array({casts})", [row.get(c) for c in (p.get("inputs") or [])]
+            ).fetchone()[0]
+            vtext = conn.execute(
+                "SELECT coalesce(CAST(? AS TEXT), '')", (row.get(col),)
+            ).fetchone()[0]
+            ok = (
+                prov
+                and prov["inputs_hash"] == hashlib.sha256(text.encode()).hexdigest()
+                and prov["value_hash"] == hashlib.sha256(vtext.encode()).hexdigest()
+            )
+            if not ok:
+                viol.append(
+                    Violation(
+                        table,
+                        row["id"],
+                        col,
+                        "provenance",
+                        f"{col} changed without a matching provenance record.",
+                    )
+                )
+        if viol:
+            rejected += [
+                {
+                    "id": row["id"],
+                    **{k: v for k, v in x.as_dict().items() if k in ("col", "rule", "message")},
+                }
+                for x in viol
+            ]
+        else:
+            accepted.append(row)
+    return accepted, rejected
+
+
 def compile_all(conn: sqlite3.Connection) -> list[str]:
     """Compile every invariant and sql: derivation. Returns the ids that fail."""
     bad = []
