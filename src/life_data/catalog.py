@@ -994,17 +994,23 @@ def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
 
 
 def _ref_target(conn, tables, vals, id_sets, exclude):
-    for t in tables:
+    fits = []
+    for t in sorted(tables):
         if t == exclude:
             continue
         if t not in id_sets:
             id_sets[t] = {r[0] for r in conn.execute(f"SELECT id FROM {t}").fetchall()}
         if id_sets[t] and all(v in id_sets[t] for v in vals):
-            return t
-    return None
+            fits.append(t)
+    return min(fits, key=lambda t: (len(id_sets[t]), t), default=None)
 
 
 # --- doc ---------------------------------------------------------------------
+
+
+def _cell(s: str) -> str:
+    """Escape a value for a markdown table cell: pipes break columns, newlines break rows."""
+    return str(s).replace("|", "\\|").replace("\n", " ")
 
 
 def _constraint(p: dict) -> str:
@@ -1072,8 +1078,9 @@ def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
             ]
             for p in props:
                 lines.append(
-                    f"| {p['col']} | {p.get('type', 'text')} | {'yes' if p.get('required') else ''} | "
-                    f"{_constraint(p)} | {p.get('description') or ''} |"
+                    f"| {_cell(p['col'])} | {_cell(p.get('type', 'text'))} | "
+                    f"{'yes' if p.get('required') else ''} | {_cell(_constraint(p))} | "
+                    f"{_cell(p.get('description') or '')} |"
                 )
         trules = [r for r in rules(conn, tbl=t) if r.get("tbl") == t]
         if trules:

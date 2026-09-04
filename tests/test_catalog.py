@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -686,3 +687,25 @@ def test_doc_scoped_to_one_table_omits_estate_rules(db):
         md = doc(conn, "places")
     assert "### places" in md and "### movies" not in md
     assert "## Estate rules" not in md
+
+
+def test_doc_escapes_pipe_in_cells(db):
+    set_property(db, "places", "status", type="text", description="a | b")
+    with connect(db) as conn:
+        md = doc(conn)
+    rows = [line for line in md.splitlines() if line.startswith("| status")]
+    assert rows == ["| status | text |  |  | a \\| b |"]
+    cells = re.split(r"(?<!\\)\|", rows[0])[1:-1]  # drop the leading/trailing empty splits
+    assert len(cells) == 5
+
+
+def test_infer_ref_prefers_tightest_fitting_table(db):
+    # created first, so sqlite_master order alone would pick it over people
+    create_table(db, "everything", ["name:text"])
+    insert_rows(db, "everything", [{"id": f"p{i}", "name": f"n{i}"} for i in range(50)])
+    create_table(db, "people", ["name:text"])
+    insert_rows(db, "people", [{"id": f"p{i}", "name": f"n{i}"} for i in range(25)])
+    create_table(db, "places", ["who:text"])
+    insert_rows(db, "places", [{"who": f"p{i}"} for i in range(25)])
+    props = {p["col"]: p for p in infer(db, "places")}
+    assert props["who"]["ref_table"] == "people"
