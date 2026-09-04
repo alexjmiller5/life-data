@@ -1,7 +1,9 @@
-.venv/
 __pycache__/
-*.egg-info/
-dist/
+.DS_Store
 .pytest_cache/
 .ruff_cache/
+.superpowers/
+.venv/
+*.egg-info/
+dist/
 result
