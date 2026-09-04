@@ -132,6 +132,16 @@ const TOKEN_ROUTES = {
   },
 };
 
+// Background derivation reports nothing to a caller, so its per-row failures
+// and any thrown error are the only trace it leaves. Structured, one line.
+const logDerive = (p) =>
+  p
+    .then((r) => {
+      if (r.failed.length) console.log(JSON.stringify({ derive_failed: r.failed }));
+      return r;
+    })
+    .catch((e) => console.log(JSON.stringify({ derive_error: String(e) })));
+
 async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
 }
@@ -195,11 +205,7 @@ const ROUTES = {
     }
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
-    if (accepted.length && ctx && env) {
-      ctx.waitUntil(
-        deriveStale(db, env, table, accepted).catch((e) => console.log(`derive after push failed: ${e}`))
-      );
-    }
+    if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(db, env, table, accepted)));
     return { upserted: accepted.length, rejected };
   },
 
@@ -528,7 +534,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     // One Worker, two schedules — dispatch on which trigger fired.
-    if (event.cron === SWEEP_CRON) ctx.waitUntil(sweep(env.DB, env));
+    if (event.cron === SWEEP_CRON) ctx.waitUntil(logDerive(sweep(env.DB, env)));
     else ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
   },
 };

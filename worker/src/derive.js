@@ -11,7 +11,10 @@
 // column, so a replica pulling the row also pulls the provenance that proves
 // it and the client's `derived` rule never fires.
 
-import { castText, ident, propertiesFor, sha256hex, validateRow } from "./validate.js";
+import { ident, inputsHash, propertiesFor, validateRow, valueHash } from "./validate.js";
+
+// A hung endpoint would otherwise stall the whole sequential sweep.
+const ENDPOINT_TIMEOUT_MS = 10_000;
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
@@ -34,22 +37,6 @@ async function derivationProps(db, table) {
   }
   return { typeOf, byName };
 }
-
-// Hash values the way SQLite renders them — a cataloged `number` binds through
-// REAL — so the client and the hub agree byte for byte.
-async function sqlText(db, expr, value) {
-  const row = await db.prepare(`SELECT ${expr} AS v`).bind(value ?? null).first();
-  return Object.values(row)[0];
-}
-
-async function inputsHash(db, typeOf, inputs, row) {
-  const casts = inputs.map((c) => castText(typeOf[c] === "number")).join(", ") || "NULL";
-  const stmt = db.prepare(`SELECT json_array(${casts}) AS j`).bind(...inputs.map((c) => row[c] ?? null));
-  return sha256hex(Object.values(await stmt.first())[0]);
-}
-
-const valueHash = (db, isNumber, value) =>
-  sqlText(db, `coalesce(${castText(isNumber)}, '')`, value).then(sha256hex);
 
 export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names = null, col = null } = {}) {
   const t = ident(table);
@@ -82,6 +69,7 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
           method: "POST",
           headers: { "Content-Type": "application/json", ...target.headers },
           body: JSON.stringify(body),
+          signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
         });
         if (!res.ok) throw new Error(`endpoint ${name} returned ${res.status}`);
         result = await res.json();
@@ -134,7 +122,7 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
               c,
               `http:${name}`,
               await inputsHash(db, typeOf, inputs, row),
-              await valueHash(db, typeOf[c] === "number", v),
+              await valueHash(db, typeOf, c, v),
               result._source_ref ?? null
             )
         );

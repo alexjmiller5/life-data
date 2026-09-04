@@ -24,6 +24,7 @@ from life_data.catalog import (
     set_property,
     set_rule,
     set_table,
+    validate_push,
     validate_row,
     value_hash,
 )
@@ -223,6 +224,43 @@ def test_change_without_a_timestamp_bump_is_still_validated(db):
     with pytest.raises(ValidationError, match="not an option"):
         execute_sql(db, "UPDATE t SET status = 'Nope'")
     assert execute_sql(db, "SELECT status FROM t")[0]["status"] == "want"
+
+
+def test_dropping_a_column_is_not_blocked_by_a_legacy_row(db):
+    """The snapshot diff must compare the columns the two shapes share: after a
+    DROP/RENAME COLUMN, a row whose only difference is that column is unchanged
+    and must not be dragged through validation."""
+    create_table(db, "places", ["name:text", "status:text", "junk:text"])
+    insert_rows(db, "places", [{"id": "old", "name": "legacy", "status": "Weird", "junk": "x"}])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}])
+    execute_sql(db, "ALTER TABLE places DROP COLUMN junk")
+    execute_sql(db, "ALTER TABLE places RENAME COLUMN name TO title")
+    cols = {r["name"] for r in execute_sql(db, "PRAGMA table_info(places)")}
+    assert "junk" not in cols and "title" in cols
+    with pytest.raises(ValidationError):  # touching the row still validates it
+        execute_sql(db, "UPDATE places SET title = 'touch' WHERE id = 'old'")
+
+
+def test_number_inputs_hash_the_same_from_the_table_and_from_a_pushed_row(db):
+    """The client hashes the stored REAL (4 -> '4.0'); validate_push hashes the
+    pushed JSON 4, which binds as INTEGER. Both must render identically."""
+    create_table(db, "t", ["qty:number", "double:number"])
+    set_property(db, "t", "qty", type="number")
+    set_property(db, "t", "double", type="number", derived_by="http:double", inputs=["qty"])
+    insert_rows(db, "t", [{"id": "a", "qty": 4}])
+    with connect(db) as conn:
+        # provenance as the client writes it: hashed off the stored REALs
+        conn.execute("UPDATE t SET double = 8 WHERE id = 'a'")
+        conn.execute(
+            "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) "
+            "VALUES ('t:a:double','t','a','double','http:double',?,?)",
+            (inputs_hash(conn, "t", "a", ["qty"]), value_hash(conn, "t", "a", "double")),
+        )
+        conn.execute("UPDATE t SET double = NULL WHERE id = 'a'")  # so the push is a change
+        conn.commit()
+        accepted, rejected = validate_push(conn, "t", [{"id": "a", "qty": 4, "double": 8}])
+    assert rejected == []
+    assert len(accepted) == 1
 
 
 def test_defaults_apply_on_insert(db):

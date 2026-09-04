@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { D1Shim } from "./d1shim.js";
 import { deriveRows, loadDerivations, sweep } from "../src/derive.js";
-import { ROUTES } from "../src/index.js";
+import worker, { ROUTES } from "../src/index.js";
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
@@ -42,7 +42,7 @@ const fresh = async () => seed(new D1Shim());
 function stub(reply) {
   const calls = [];
   const fetchImpl = async (url, init) => {
-    calls.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+    calls.push({ url, headers: init.headers, signal: init.signal, body: JSON.parse(init.body) });
     const r = typeof reply === "function" ? reply(url) : reply;
     return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 });
   };
@@ -68,6 +68,7 @@ test("derives a row: writes values, provenance, and bumps updated_at", async () 
   expect(calls.length).toBe(1);
   expect(calls[0].url).toBe("https://derivations.example/movie");
   expect(calls[0].headers["Modal-Key"]).toBe("key-1");
+  expect(calls[0].signal).toBeInstanceOf(AbortSignal); // a hung endpoint can't stall the sweep
   expect(calls[0].body).toEqual({ tbl: "movies", id: "78", inputs: { id: "78" } });
 
   const row = await db.prepare("SELECT * FROM movies WHERE id = '78'").first();
@@ -227,4 +228,54 @@ test("a derivation reading another's output hashes the fresh value, so it settle
   s = stub((url) => replies[url]);
   expect(await sweep(db, ENV, { fetchImpl: s.fetchImpl })).toEqual({ derived: 0, failed: [] });
   expect(s.calls.length).toBe(0);
+});
+
+// Nothing reads the background paths' return value, so the log is the only trace.
+async function captureLog(fn) {
+  const logs = [];
+  const real = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    await fn();
+  } finally {
+    console.log = real;
+  }
+  return logs.join("\n");
+}
+
+test("scheduled(): the sweep logs its failures and never throws", async () => {
+  const db = await fresh();
+  const tasks = [];
+  const ctx = { waitUntil: (p) => tasks.push(p) };
+
+  // a name the secret does not configure: per-row failures, not an exception
+  const out = await captureLog(async () => {
+    await worker.scheduled({ cron: "*/15 * * * *" }, { DB: db, DERIVATIONS: "{}" }, ctx);
+    await Promise.all(tasks);
+  });
+  expect(JSON.parse(out).derive_failed[0].error).toContain("no derivation configured");
+
+  // a malformed secret throws inside the sweep: caught and logged, not unhandled
+  tasks.length = 0;
+  const err = await captureLog(async () => {
+    await worker.scheduled({ cron: "*/15 * * * *" }, { DB: db, DERIVATIONS: "not json" }, ctx);
+    await Promise.all(tasks);
+  });
+  expect(JSON.parse(err).derive_error).toContain("SyntaxError");
+});
+
+test("push logs the derivation failures it can no longer return", async () => {
+  const db = await fresh();
+  const tasks = [];
+  const ctx = { waitUntil: (p) => tasks.push(p) };
+  const out = await captureLog(async () => {
+    await ROUTES["/v1/rows/push"](
+      { table: "movies", columns: ["id", "status", "updated_at"], rows: [{ id: "78", status: "Finished", updated_at: "2030-01-01T00:00:00.000Z" }] },
+      db,
+      { DERIVATIONS: "{}" },
+      ctx
+    );
+    await Promise.all(tasks);
+  });
+  expect(JSON.parse(out).derive_failed[0]).toMatchObject({ id: "78", error: expect.stringContaining("no derivation configured") });
 });
