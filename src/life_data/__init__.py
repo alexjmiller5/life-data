@@ -492,6 +492,10 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
                 stats = sync(path, hub)
                 if stats["pushed"] or stats["pulled"] or stats["ddl_applied"]:
                     print(json.dumps(stats), flush=True)
+                if changed:
+                    findings = catalog.check(path)
+                    if findings:
+                        print(json.dumps({"check": findings}), file=sys.stderr, flush=True)
             except RuntimeError as e:  # offline or hub down: keep watching
                 print(f"sync deferred: {e}", file=sys.stderr, flush=True)
             state = db_version(path)
@@ -515,6 +519,8 @@ def main(argv: list[str] | None = None) -> int:
     p_insert = sub.add_parser("insert", help="bulk-insert rows from a JSON array on stdin")
     p_insert.add_argument("table")
     sub.add_parser("sync", help="sync once with the hub")
+    p_check = sub.add_parser("check", help="whole-estate read-only report of catalog violations")
+    p_check.add_argument("--as-of", dest="as_of")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
@@ -625,6 +631,10 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         print(f"inserted {n} rows into {args.table}")
     elif args.command == "sync":
         print(json.dumps(sync(path, hub_from_config())))
+    elif args.command == "check":
+        findings = catalog.check(path, as_of=args.as_of)
+        print(json.dumps(findings, indent=2))
+        return 1 if findings else 0
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)

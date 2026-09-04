@@ -7,6 +7,7 @@ from life_data import connect, create_table, execute_sql, init, insert_rows
 from life_data.catalog import (
     ValidationError,
     Violation,
+    check,
     check_rule_sql,
     ensure_catalog,
     has_catalog,
@@ -401,3 +402,42 @@ def test_dropped_table_recompile_raises_validation_not_sqlite_error(db):
     )
     with pytest.raises(ValidationError, match="no longer compiles"):
         execute_sql(db, "DROP TABLE places")
+
+
+# --- check ------------------------------------------------------------------
+
+
+def test_check_reports_legacy_violations_and_unenforced_rules(db):
+    create_table(db, "places", ["status:text"])
+    insert_rows(db, "places", [{"id": "old", "status": "Weird"}])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}])
+    set_rule(
+        db,
+        "r",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=0,
+        text="no old",
+        sql="SELECT id FROM places WHERE id = 'old'",
+    )
+    findings = check(db)
+    assert {(f["row_id"], f["rule"]) for f in findings} == {("old", "options"), ("old", "r")}
+
+
+def test_cli_check_exit_code(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    from life_data import main
+
+    main(["init"])
+    main(["table", "create", "pets", "name:text"])
+    assert main(["check"]) == 0
+    main(["property", "set", "pets.name", "--type", "select", "--options", "cat,dog"])
+    import sqlite3 as s
+
+    s.connect(tmp_path / "life.db").execute(
+        "INSERT INTO pets (name) VALUES ('rat')"
+    ).connection.commit()
+    capsys.readouterr()  # discard prior commands' stdout; isolate this check's output
+    assert main(["check"]) == 1
+    assert json.loads(capsys.readouterr().out)[0]["rule"] == "options"

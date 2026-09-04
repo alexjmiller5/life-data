@@ -621,6 +621,42 @@ def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
         cleanup()
 
 
+# --- check -------------------------------------------------------------------
+
+
+def check(path: Path, as_of: str | None = None) -> list[dict]:
+    """Whole-estate, read-only report: every property violation (whole-table
+    state, not just changed rows) and every invariant regardless of enforce."""
+    pkg = _pkg()
+    out: list[Violation] = []
+    with pkg.connect(path) as conn:
+        for t in cataloged_tables(conn):
+            if not _table_exists(conn, t):
+                continue
+            props = properties(conn, t)
+            for r in conn.execute(f"SELECT * FROM {t} WHERE deleted_at IS NULL").fetchall():
+                out += validate_row(
+                    props,
+                    dict(r),
+                    dict(r),
+                    in_derive={p["col"] for p in props},
+                    ref_ok=_ref_ok(conn),
+                    extra_options=_extra_options(conn),
+                )
+        for rule in rules(conn, kind="invariant"):
+            for h in run_invariant(conn, rule, changed_ids=[], now=as_of):
+                out.append(
+                    Violation(
+                        rule.get("tbl") or "estate",
+                        h.get("id"),
+                        rule.get("col"),
+                        rule["id"],
+                        rule["text"],
+                    )
+                )
+    return [v.as_dict() for v in out]
+
+
 def compile_all(conn: sqlite3.Connection) -> list[str]:
     """Compile every invariant and sql: derivation. Returns the ids that fail."""
     bad = []
