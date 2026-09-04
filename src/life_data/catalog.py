@@ -553,8 +553,21 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
     for t, max_rowid in marks.items():
         if not _table_exists(conn, t):
             continue  # fn dropped it
+        # Changed rows come from the snapshot diff, never a clock comparison:
+        # `updated_at >= t0` both over-reports (a legacy row written in the
+        # same millisecond, or a pulled row dated ahead, is not this write's
+        # business) and under-reports (an UPDATE inside that same millisecond
+        # leaves updated_at untouched).
+        # Only the columns both shapes have: after a DROP/RENAME COLUMN a row
+        # whose sole difference is that column has not changed.
+        snap = [r[1] for r in conn.execute(f"PRAGMA temp.table_info(_before_{t})").fetchall()]
+        live = {r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()}
+        shared = [f'"{c}"' for c in snap[1:] if c in live]
         rows = conn.execute(
-            f"SELECT * FROM {t} WHERE rowid > ? OR updated_at >= ?", (max_rowid, t0)
+            f"SELECT * FROM {t} WHERE rowid > ? OR rowid IN (SELECT _rowid FROM "
+            f"(SELECT {', '.join(['rowid AS _rowid'] + shared)} FROM {t} "
+            f"EXCEPT SELECT {', '.join(['_rowid'] + shared)} FROM temp._before_{t}))",
+            (max_rowid,),
         ).fetchall()
         if not rows:
             continue
@@ -683,18 +696,27 @@ def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
 # --- derivations & provenance -------------------------------------------------
 
 
+def cast_text(expr: str, is_number: bool = False) -> str:
+    """How a value is rendered for hashing. SQLite stores a `number` column as
+    REAL, so reading one back gives '4.0'; a bound Python 4 binds as INTEGER
+    and would give '4'. Cast a bound `number` through REAL so every path -
+    client, hub validator, hub derivation engine - agrees byte for byte."""
+    return f"CAST(CAST({expr} AS REAL) AS TEXT)" if is_number else f"CAST({expr} AS TEXT)"
+
+
 def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str | None:
     """Hash the inputs as SQLite renders them, so Python and the hub agree byte
     for byte. None when the row is gone (hard-deleted out from under its
     provenance)."""
-    casts = ", ".join(f"CAST({c} AS TEXT)" for c in inputs) or "NULL"
+    # reading columns: a `number` is already stored as REAL, so no extra cast
+    casts = ", ".join(cast_text(c) for c in inputs) or "NULL"
     row = conn.execute(f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)).fetchone()
     return hashlib.sha256(row[0].encode()).hexdigest() if row else None
 
 
 def value_hash(conn, tbl: str, row_id: str, col: str) -> str | None:
     row = conn.execute(
-        f"SELECT coalesce(CAST({col} AS TEXT), '') FROM {tbl} WHERE id = ?", (row_id,)
+        f"SELECT coalesce({cast_text(col)}, '') FROM {tbl} WHERE id = ?", (row_id,)
     ).fetchone()
     return hashlib.sha256(row[0].encode()).hexdigest() if row else None
 
@@ -825,6 +847,7 @@ def validate_push(
             ref_ok=_ref_ok(conn),
             extra_options=_extra_options(conn),
         )
+        type_of = {q["col"]: q.get("type") for q in props}
         for p in props:
             if not p.get("derived_by"):
                 continue
@@ -840,12 +863,19 @@ def validate_push(
                 "SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL",
                 (f"{table}:{row['id']}:{col}",),
             ).fetchone()
-            casts = ", ".join("CAST(? AS TEXT)" for _ in (p.get("inputs") or [])) or "NULL"
+            # bound values, not columns: a `number` needs the REAL cast
+            casts = (
+                ", ".join(
+                    cast_text("?", type_of.get(c) == "number") for c in (p.get("inputs") or [])
+                )
+                or "NULL"
+            )
             text = conn.execute(
                 f"SELECT json_array({casts})", [row.get(c) for c in (p.get("inputs") or [])]
             ).fetchone()[0]
             vtext = conn.execute(
-                "SELECT coalesce(CAST(? AS TEXT), '')", (row.get(col),)
+                f"SELECT coalesce({cast_text('?', p.get('type') == 'number')}, '')",
+                (row.get(col),),
             ).fetchone()[0]
             ok = (
                 prov

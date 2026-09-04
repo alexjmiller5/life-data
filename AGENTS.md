@@ -59,7 +59,10 @@ CLI.
 - **Writes are validated.** `execute_sql` and `insert_rows` run inside
   `catalog.write()`: one transaction, every changed row checked in every table
   that has catalog properties OR is named by an invariant, `ValidationError`
-  after ROLLBACK. Only SELECT/PRAGMA/EXPLAIN/VALUES bypass it - a CTE
+  after ROLLBACK. **Changed rows come from the per-table `temp._before_<t>`
+  snapshot diff, never a timestamp comparison** - a clock collision at
+  millisecond resolution cuts both ways (an untouched legacy row looks
+  changed; an UPDATE inside the same millisecond moves no `updated_at`). Only SELECT/PRAGMA/EXPLAIN/VALUES bypass it - a CTE
   (`WITH …`) does not, since it can end in INSERT/UPDATE/DELETE; a read-only
   CTE just pays a no-op transaction. Sync's pull upsert bypasses it on purpose
   (pulled rows were validated where they were written). The hub validates
@@ -115,6 +118,29 @@ multi-tenant model is one D1 database per tenant, not a tenant column.
 Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
 any `sqlite_master` walk — reading them raises `SQLITE_AUTH`.
+
+Two cron triggers, dispatched in `scheduled()` on `event.cron`: `10 9 * * *`
+is the backup, `*/15 * * * *` is the derivation sweep (`SWEEP_CRON` in
+`index.js` must match `wrangler.jsonc`).
+
+Derivations (`worker/src/derive.js`). `derived_by = "http:<name>"` resolves
+ONLY through the `DERIVATIONS` Worker secret — a JSON object
+`{name: {url, headers}}`. **No external source may be named in `worker/src`.**
+The hub POSTs `{tbl, id, inputs:{col: value}}` and writes back the response
+keys that are derived columns of that derivation (plus `_source_ref`);
+anything else is ignored. Output runs through `validateRow` first — a value
+failing its type/options/pattern is dropped and reported in `failed`, its
+siblings still land. A write is ONE `db.batch`: the value UPDATE plus a
+provenance upsert per column, so a replica pulls row and proof together.
+Runs three ways: after `/v1/rows/push` via `ctx.waitUntil` (never delays the
+response; a failure is retried by the sweep), on the 15-minute sweep
+(underived or `inputs_hash`-stale, 50 per property), and synchronously via
+`POST /v1/derive {table, ids, col?}` (>50 ids → 400). Routes take
+`(body, db, env, ctx)` and may return a `Response` of their own. `life derive
+<tbl>.<col> [--where <sql>]` is a client-side wrapper around that route: it
+selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals —
+it never computes a derived value itself. Requires a hub token with
+`tables:write` (or `full`/admin).
 
 ## Streams
 
@@ -183,6 +209,7 @@ Credentials, two layers:
     OwnTracks Token"); `notion-automations` - tables:read, in that project's
     ENV item → Modal secret. Scopes: `full` (everything but token mgmt),
     `tables:read` (schema/rows/cursor pulls + stream/archive GETs),
+    `tables:write` (`/v1/rows/push` + `/v1/derive`, nothing else),
     `streams:append`. Lost/retired client = revoke one name.
 - **Cloudflare API tokens** (the service's own infrastructure, `Life Data`
   vault): `Life Data Platform Token` (`2vjluucdosnw5oxgc4iit4tfp4`;

@@ -89,7 +89,7 @@ export function validateRow(props, before, after, { inDerive = new Set(), refOk 
 
 const ENGINE_TABLES = new Set(["catalog_tables", "catalog_properties", "catalog_rules", "provenance", "catalog_log"]);
 
-async function sha256hex(text) {
+export async function sha256hex(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -98,7 +98,7 @@ async function tableExists(db, name) {
   return !!(await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(name).first());
 }
 
-async function propertiesFor(db, table) {
+export async function propertiesFor(db, table) {
   if (ENGINE_TABLES.has(table) || !(await tableExists(db, "catalog_properties"))) return [];
   const { results } = await db
     .prepare("SELECT * FROM catalog_properties WHERE deleted_at IS NULL AND tbl = ? ORDER BY sort, col")
@@ -116,10 +116,31 @@ async function propertiesFor(db, table) {
 // (This is why a derivation's inputs must themselves be cataloged columns.)
 const castText = (isNumber) => (isNumber ? "CAST(CAST(? AS REAL) AS TEXT)" : "CAST(? AS TEXT)");
 
+// The two hashes provenance is made of, rendered by SQLite so the client, the
+// hub validator and the derivation engine agree byte for byte. `typeOf` is a
+// {col: type} object from the catalog.
+export async function inputsHash(db, typeOf, inputs, row) {
+  const casts = inputs.map((c) => castText(typeOf[c] === "number")).join(", ") || "NULL";
+  const stmt = db.prepare(`SELECT json_array(${casts}) AS j`).bind(...inputs.map((c) => row[c] ?? null));
+  return sha256hex(Object.values(await stmt.first())[0]);
+}
+
+export async function valueHash(db, typeOf, col, value) {
+  const stmt = db.prepare(`SELECT coalesce(${castText(typeOf[col] === "number")}, '') AS v`).bind(value ?? null);
+  return sha256hex(Object.values(await stmt.first())[0]);
+}
+
+// Every identifier interpolated into SQL passes through here first.
+const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export function ident(name) {
+  if (!SAFE_IDENT.test(name)) throw new Error(`unsafe identifier: ${name}`);
+  return name;
+}
+
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
 export async function validatePush(db, table, rows) {
   const props = await propertiesFor(db, table);
-  const typeOf = new Map(props.map((p) => [p.col, p.type]));
+  const typeOf = Object.fromEntries(props.map((p) => [p.col, p.type]));
   const exists = await tableExists(db, table);
   const derivedCols = new Set(props.filter((p) => p.derived_by).map((p) => p.col));
 
@@ -152,10 +173,10 @@ export async function validatePush(db, table, rows) {
       if (!changed) continue;
       const prov = await db.prepare("SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
         .bind(`${table}:${row.id}:${p.col}`).first();
-      const casts = p.inputs.map((c) => castText(typeOf.get(c) === "number")).join(", ") || "NULL";
-      const text = Object.values(await db.prepare(`SELECT json_array(${casts}) AS j`).bind(...p.inputs.map((c) => row[c] ?? null)).first())[0];
-      const vtext = Object.values(await db.prepare(`SELECT coalesce(${castText(p.type === "number")}, '') AS v`).bind(row[p.col] ?? null).first())[0];
-      const ok = prov && prov.inputs_hash === (await sha256hex(text)) && prov.value_hash === (await sha256hex(vtext));
+      const ok =
+        prov &&
+        prov.inputs_hash === (await inputsHash(db, typeOf, p.inputs, row)) &&
+        prov.value_hash === (await valueHash(db, typeOf, p.col, row[p.col]));
       if (!ok) {
         viol.push({ col: p.col, rule: "provenance", message: `${p.col} changed without a matching provenance record.` });
       }

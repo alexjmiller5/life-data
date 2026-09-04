@@ -2,7 +2,7 @@
 // batch, and derived columns require a matching provenance row.
 import { expect, test } from "bun:test";
 import { D1Shim } from "./d1shim.js";
-import { ROUTES } from "../src/index.js";
+import { ROUTES, allowed } from "../src/index.js";
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
@@ -78,4 +78,20 @@ test("an unsafe table name is rejected before any SQL is built", async () => {
   // identifier sailed straight into validatePush's own interpolated SQL
   await expect(ROUTES["/v1/rows/push"]({ table: bad, columns: cols, rows: [] }, db)).rejects.toThrow("unsafe identifier");
   await expect(ROUTES["/v1/rows/push"]({ table: bad, columns: cols, rows: [row()] }, db)).rejects.toThrow("unsafe identifier");
+});
+
+test("tables:write reaches exactly push and derive", () => {
+  const w = ["tables:write"];
+  expect(allowed("/v1/rows/push", "POST", w)).toBe(true);
+  expect(allowed("/v1/derive", "POST", w)).toBe(true);
+  for (const p of ["/v1/schema/push", "/v1/schema/pull", "/v1/rows/pull", "/v1/cursor", "/v1/catalog", "/v1/backup", "/v1/tokens/create", "/v1/archive/query"]) {
+    expect(allowed(p, "POST", w)).toBe(false);
+  }
+  // the other scopes are unchanged
+  expect(allowed("/v1/derive", "POST", ["tables:read"])).toBe(false);
+  expect(allowed("/v1/rows/push", "POST", ["tables:read"])).toBe(false);
+  expect(allowed("/v1/rows/pull", "POST", ["tables:read"])).toBe(true);
+  expect(allowed("/v1/derive", "POST", ["full"])).toBe(true);
+  expect(allowed("/v1/derive", "POST", ["admin"])).toBe(true);
+  expect(allowed("/v1/tokens/create", "POST", ["full"])).toBe(false);
 });

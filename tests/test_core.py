@@ -391,6 +391,8 @@ class _Handler(BaseHTTPRequestHandler):
     last_user_agent = None
     streams: ClassVar[dict] = {}
     batches: ClassVar[dict] = {}
+    derive_calls: ClassVar[list] = []
+    derive_fail_id = None
 
     def log_message(self, *a):
         pass
@@ -456,6 +458,15 @@ class _Handler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["v1", "streams"] and parts[3] == "append":
             _Handler.streams.setdefault(parts[2], []).append(raw.decode())
             self._json({"key": f"landing/{parts[2]}/test.json"})
+            return
+        if parts == ["v1", "derive"]:
+            body = json.loads(raw or "{}")
+            _Handler.derive_calls.append(body)
+            ids = body["ids"]
+            failed = []
+            if _Handler.derive_fail_id in ids:
+                failed = [{"id": _Handler.derive_fail_id, "col": body.get("col"), "error": "boom"}]
+            self._json({"derived": len(ids) - len(failed), "failed": failed})
             return
         body = json.loads(raw or "{}")
         h = self.hub
@@ -642,4 +653,66 @@ def test_cli_stream_import_batches_ndjson(monkeypatch, tmp_path, capsys):
     assert out["imported"] == 1205
     assert len(_Handler.batches["history"]) == 3  # 500-record chunks
     assert sum(len(b) for b in _Handler.batches["history"]) == 1205
+
+
+# --- derive --------------------------------------------------------------
+
+
+def test_cli_derive_chunks_by_50_and_reports_totals(monkeypatch, tmp_path, capsys):
+    server = _serve(tmp_path / "server7.db")
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    _Handler.derive_calls = []
+    _Handler.derive_fail_id = None
+    main(["init"])
+    main(["table", "create", "movies", "title:text", "status:text"])
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps([{"title": f"m{i}", "status": "x"} for i in range(120)])),
+    )
+    main(["insert", "movies"])
+    capsys.readouterr()
+    assert main(["derive", "movies.title", "--where", "status = 'x'"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"derived": 120, "failed": []}
+    assert [len(c["ids"]) for c in _Handler.derive_calls] == [50, 50, 20]
+    assert all(c["table"] == "movies" and c["col"] == "title" for c in _Handler.derive_calls)
     server.shutdown()
+
+
+def test_cli_derive_reports_failures_and_exits_1(monkeypatch, tmp_path, capsys):
+    server = _serve(tmp_path / "server8.db")
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    _Handler.derive_calls = []
+    _Handler.derive_fail_id = "m2"
+    main(["init"])
+    main(["table", "create", "movies", "title:text", "status:text"])
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps([{"id": f"m{i}", "title": f"m{i}", "status": "x"} for i in range(3)])
+        ),
+    )
+    main(["insert", "movies"])
+    capsys.readouterr()
+    assert main(["derive", "movies.title", "--where", "status = 'x'"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["derived"] == 2
+    assert out["failed"] == [{"id": "m2", "col": "title", "error": "boom"}]
+    server.shutdown()
+
+
+def test_cli_derive_without_hub_token_fails_clearly(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    main(["init"])
+    main(["table", "create", "movies", "title:text"])
+    capsys.readouterr()
+    assert main(["derive", "movies.title"]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "token" in err.lower()
+    assert execute_sql(tmp_path / "life.db", "SELECT count(*) AS n FROM movies")[0]["n"] == 0
