@@ -1,0 +1,78 @@
+// The pull cursor is HUB arrival time, not a client stamp: the hub assigns
+// hub_at on every write it makes, and pulls/cursors read it.
+import { expect, test } from "bun:test";
+import { D1Shim } from "./d1shim.js";
+import { deriveRows } from "../src/derive.js";
+import { ROUTES } from "../src/index.js";
+
+const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+const ENV = { DERIVATIONS: JSON.stringify({ blurb: { url: "https://derivations.example/blurb" } }) };
+
+async function seed(db) {
+  for (const sql of [
+    `CREATE TABLE catalog_properties (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, label TEXT, sort INTEGER, type TEXT, required INTEGER, default_value TEXT, options TEXT, options_sql TEXT, min_items INTEGER, max_items INTEGER, pattern TEXT, ref_table TEXT, derived_by TEXT, inputs TEXT, immutable INTEGER, deprecated INTEGER, description TEXT, source TEXT, source_ref TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT, hub_at TEXT)`,
+    `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, value_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT, hub_at TEXT)`,
+    `CREATE TABLE people (id TEXT PRIMARY KEY, name TEXT, blurb TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT, hub_at TEXT)`,
+    `INSERT INTO catalog_properties (id, tbl, col, sort, type) VALUES ('people.name','people','name',1,'text')`,
+    `INSERT INTO catalog_properties (id, tbl, col, sort, type, derived_by, inputs) VALUES ('people.blurb','people','blurb',2,'text','http:blurb','["name"]')`,
+  ])
+    await db.prepare(sql).run();
+  return db;
+}
+
+const cols = ["id", "name", "blurb", "updated_at", "hub_at"];
+const row = (o) => ({ id: "a", name: "Ada", blurb: null, updated_at: "2026-09-04T00:00:00.000Z", hub_at: null, ...o });
+
+test("push stamps hub_at on its own clock and reports it", async () => {
+  const db = await seed(new D1Shim());
+  const out = await ROUTES["/v1/rows/push"]({ table: "people", columns: cols, rows: [row({ hub_at: "1970" })] }, db);
+  expect(out.upserted).toBe(1);
+  expect(out.hub_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  const stored = await db.prepare("SELECT hub_at FROM people WHERE id = 'a'").first();
+  expect(stored.hub_at).toBe(out.hub_at); // the client's "1970" was overwritten
+
+  // an UPDATE through the LWW guard re-stamps too
+  const later = await ROUTES["/v1/rows/push"](
+    { table: "people", columns: cols, rows: [row({ name: "Grace", updated_at: "2026-09-05T00:00:00.000Z" })] },
+    db
+  );
+  const after = await db.prepare("SELECT name, hub_at FROM people WHERE id = 'a'").first();
+  expect(after.name).toBe("Grace");
+  expect(after.hub_at).toBe(later.hub_at);
+  expect(later.hub_at >= out.hub_at).toBe(true);
+});
+
+test("pull filters by hub_at, and since='' includes NULL hub_at rows", async () => {
+  const db = await seed(new D1Shim());
+  await db.prepare("INSERT INTO people (id, name, updated_at) VALUES ('old','Legacy','2026-01-01T00:00:00.000Z')").run();
+  const push = await ROUTES["/v1/rows/push"]({ table: "people", columns: cols, rows: [row()] }, db);
+
+  const all = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: "" }, db);
+  expect(all.rows.map((r) => r.id).sort()).toEqual(["a", "old"]);
+
+  const since = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: push.hub_at }, db);
+  expect(since.rows).toEqual([]);
+
+  const earlier = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: "2020" }, db);
+  expect(earlier.rows.map((r) => r.id)).toEqual(["a"]); // NULL hub_at is older than everything
+});
+
+test("cursor is max(hub_at)", async () => {
+  const db = await seed(new D1Shim());
+  expect((await ROUTES["/v1/cursor"]({ tables: ["people"] }, db)).max_hub_at).toBe("");
+  const push = await ROUTES["/v1/rows/push"]({ table: "people", columns: cols, rows: [row()] }, db);
+  expect((await ROUTES["/v1/cursor"]({ tables: ["people", "provenance"] }, db)).max_hub_at).toBe(push.hub_at);
+});
+
+test("a hub-side derivation stamps hub_at so replicas pull it", async () => {
+  const db = await seed(new D1Shim());
+  const push = await ROUTES["/v1/rows/push"]({ table: "people", columns: cols, rows: [row()] }, db);
+  const fetchImpl = async () => new Response(JSON.stringify({ blurb: "about Ada" }));
+  const out = await deriveRows(db, ENV, "people", ["a"], { fetchImpl });
+  expect(out.derived).toBe(1);
+  const after = await db.prepare("SELECT blurb, hub_at FROM people WHERE id = 'a'").first();
+  expect(after.blurb).toBe("about Ada");
+  expect(after.hub_at >= push.hub_at).toBe(true);
+  const seen = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: push.hub_at }, db);
+  expect(seen.rows.map((r) => r.id)).toEqual(["a"]);
+});

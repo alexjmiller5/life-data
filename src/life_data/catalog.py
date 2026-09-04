@@ -955,7 +955,7 @@ def audit(path: Path, rule_id: str | None = None, commands: dict | None = None) 
 
 # --- infer -------------------------------------------------------------------
 
-SYNC_COLS = {"id", "created_at", "updated_at", "deleted_at"}
+SYNC_COLS = {"id", "created_at", "updated_at", "deleted_at", "hub_at"}
 
 
 def _is_stub_property(p: dict) -> bool:

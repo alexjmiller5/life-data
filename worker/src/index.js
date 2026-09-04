@@ -12,6 +12,8 @@ import { ident, qident, sha256hex, validatePush } from "./validate.js";
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
 
+const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+
 const PLUMBING = [
   `CREATE TABLE IF NOT EXISTS _schema_log (
     id INTEGER PRIMARY KEY,
@@ -146,10 +148,15 @@ async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
 }
 
-function upsertSql(table, cols) {
+// `stampHubAt` is the hub's role: hub_at comes from the hub's own clock (a
+// `?` bound to it), never from whatever the client sent, so arrival order is
+// one clock's order and no replica can skip another's late push.
+function upsertSql(table, cols, stampHubAt = false) {
   const t = qident(table);
   // the json path uses the RAW column name (it is a JSON key, not SQL)
-  const extracts = cols.map((x) => `json_extract(value, '$.${ident(x)}')`).join(", ");
+  const extracts = cols
+    .map((x) => (stampHubAt && x === "hub_at" ? "?" : `json_extract(value, '$.${ident(x)}')`))
+    .join(", ");
   const sets = cols.filter((x) => x !== "id").map((x) => `${qident(x)} = excluded.${qident(x)}`).join(", ");
   return (
     `INSERT INTO ${t} (${cols.map(qident).join(", ")}) SELECT ${extracts} FROM json_each(?) WHERE true ` +
@@ -190,8 +197,10 @@ const ROUTES = {
   "/v1/rows/pull": async (body, db) => {
     const cols = (body.columns ?? []).map(qident).join(", ");
     const { results } = await db
-      .prepare(`SELECT ${cols} FROM ${qident(body.table)} WHERE updated_at > ?`)
-      .bind(body.since ?? "")
+      // arrival-time cursor. A NULL hub_at is older than everything, so
+      // `since = ''` — a fresh or just-upgraded replica — pulls the lot.
+      .prepare(`SELECT ${cols} FROM ${qident(body.table)} WHERE ? = '' OR hub_at > ?`)
+      .bind(body.since ?? "", body.since ?? "")
       .all();
     return { rows: results ?? [] };
   },
@@ -200,13 +209,17 @@ const ROUTES = {
     const table = ident(body.table); // before any SQL is built from it
     const rows = body.rows ?? [];
     const { accepted, rejected } = await validatePush(db, table, rows);
+    // one hub, one clock: every row this push lands carries the same stamp
+    const stamping = (body.columns ?? []).includes("hub_at");
+    const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
     if (accepted.length) {
-      await db.prepare(upsertSql(table, body.columns)).bind(JSON.stringify(accepted)).run();
+      const args = stamping ? [hubAt, JSON.stringify(accepted)] : [JSON.stringify(accepted)];
+      await db.prepare(upsertSql(table, body.columns, stamping)).bind(...args).run();
     }
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
     if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(db, env, table, accepted)));
-    return { upserted: accepted.length, rejected };
+    return { upserted: accepted.length, rejected, hub_at: hubAt };
   },
 
   // Synchronous derivation for a named set of rows: `life derive` and the
@@ -225,10 +238,10 @@ const ROUTES = {
   "/v1/cursor": async (body, db) => {
     let top = "";
     for (const table of body.tables ?? []) {
-      const row = await db.prepare(`SELECT max(updated_at) AS m FROM ${qident(table)}`).first();
+      const row = await db.prepare(`SELECT max(hub_at) AS m FROM ${qident(table)}`).first();
       if (row?.m && row.m > top) top = row.m;
     }
-    return { max_updated_at: top };
+    return { max_hub_at: top };
   },
 };
 

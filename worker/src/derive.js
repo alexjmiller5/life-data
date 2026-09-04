@@ -100,9 +100,13 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
       const written = Object.entries(values);
       if (!written.length) continue;
       const sets = written.map(([c]) => `${qident(c)} = ?`).join(", ");
+      // a derivation is a hub write, so it re-stamps arrival time — otherwise
+      // replicas past this row's hub_at would never pull the derived value.
+      // Guarded on the column existing: a hub table predating hub_at still derives.
+      const stamp = "hub_at" in row ? `, hub_at = (${NOW})` : "";
       const stmts = [
         db
-          .prepare(`UPDATE ${qident(t)} SET ${sets}, updated_at = (${NOW}) WHERE id = ?`)
+          .prepare(`UPDATE ${qident(t)} SET ${sets}, updated_at = (${NOW})${stamp} WHERE id = ?`)
           .bind(...written.map(([, v]) => v), id),
       ];
       for (const [c, v] of written) {

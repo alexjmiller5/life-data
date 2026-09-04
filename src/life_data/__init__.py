@@ -149,7 +149,8 @@ def create_table(path: Path, name: str, columns: list[str]) -> None:
     {user_cols},
     created_at TEXT NOT NULL DEFAULT ({NOW}),
     updated_at TEXT NOT NULL DEFAULT ({NOW}),
-    deleted_at TEXT
+    deleted_at TEXT,
+    hub_at TEXT
 )"""
     trigger = f"""CREATE TRIGGER {qi(f"{name}_updated_at")} AFTER UPDATE ON {qi(name)} FOR EACH ROW
 WHEN NEW.updated_at = OLD.updated_at
@@ -227,12 +228,17 @@ def auth_headers(config: dict) -> dict:
 # --- hubs (sync targets) -----------------------------------------------------
 
 
-def _upsert_sql(table: str, cols: list[str]) -> str:
+def _upsert_sql(table: str, cols: list[str], stamp_hub_at: bool = False) -> str:
     # rows travel as ONE json parameter (D1 caps bind params at ~100/query);
-    # `WHERE true` disambiguates a SELECT-source upsert for SQLite's parser
+    # `WHERE true` disambiguates a SELECT-source upsert for SQLite's parser.
+    # `stamp_hub_at` is the HUB's role: it replaces whatever hub_at the client
+    # sent with a `?` bound to the hub's own clock, so arrival order is one
+    # clock's order. A client applying a pull carries that value through as data.
     t = qi(table)
     # the json path uses the RAW column name (it is a JSON key, not SQL)
-    exts = ", ".join(f"json_extract(value, '$.{c}')" for c in cols)
+    exts = ", ".join(
+        "?" if (stamp_hub_at and c == "hub_at") else f"json_extract(value, '$.{c}')" for c in cols
+    )
     sets = ", ".join(f"{qi(c)} = excluded.{qi(c)}" for c in cols if c != "id")
     return (
         f"INSERT INTO {t} ({', '.join(qi(c) for c in cols)}) "
@@ -280,22 +286,31 @@ class LocalHub:
         return applied
 
     def rows_pull(self, table: str, columns: list[str], since: str) -> list[dict]:
+        # arrival-time cursor. A row with a NULL hub_at is older than
+        # everything, so `since = ''` — a fresh or just-upgraded replica —
+        # pulls the whole table, NULLs included.
         return self._query(
-            f"SELECT {', '.join(qi(c) for c in columns)} FROM {qi(table)} WHERE updated_at > ?",
-            [since or ""],
+            f"SELECT {', '.join(qi(c) for c in columns)} FROM {qi(table)} "
+            "WHERE ? = '' OR hub_at > ?",
+            [since or "", since or ""],
         )
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
         with connect(self.path) as conn:
             accepted, rejected = catalog.validate_push(conn, table, rows)
+        # one hub, one clock: every row this push lands carries the same stamp
+        stamping = "hub_at" in columns
+        hub_at = self._query(f"SELECT {NOW} AS t")[0]["t"] if stamping else ""
+        sql = _upsert_sql(table, columns, stamp_hub_at=stamping)
         for i in range(0, len(accepted), CHUNK):
-            self._query(_upsert_sql(table, columns), [json.dumps(accepted[i : i + CHUNK])])
-        return {"upserted": len(accepted), "rejected": rejected}
+            blob = json.dumps(accepted[i : i + CHUNK])
+            self._query(sql, [hub_at, blob] if stamping else [blob])
+        return {"upserted": len(accepted), "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:
         top = ""
         for t in tables:
-            rows = self._query(f"SELECT max(updated_at) AS m FROM {qi(t)}")
+            rows = self._query(f"SELECT max(hub_at) AS m FROM {qi(t)}")
             top = max(top, rows[0]["m"] or "")
         return top
 
@@ -343,16 +358,17 @@ class HttpHub:
         )["rows"]
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
-        total, rejected = 0, []
+        total, rejected, hub_at = 0, [], ""
         for i in range(0, len(rows), CHUNK):
             chunk = rows[i : i + CHUNK]
             out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": chunk})
             total += out["upserted"]
             rejected += out.get("rejected", [])
-        return {"upserted": total, "rejected": rejected}
+            hub_at = max(hub_at, out.get("hub_at") or "")
+        return {"upserted": total, "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:
-        return self._post("/v1/cursor", {"tables": tables})["max_updated_at"] or ""
+        return self._post("/v1/cursor", {"tables": tables}).get("max_hub_at") or ""
 
     def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
         body = {"table": table, "ids": ids}
@@ -501,9 +517,34 @@ def _apply_local_ddl(path: Path, entry: dict) -> None:
         )
 
 
+def ensure_hub_at(path: Path) -> bool:
+    """Give every user table the hub's arrival-time column. Logged DDL, so one
+    replica adding it replays to the hub and to every other replica. Returns
+    True if anything was added — the caller then owes one full pull, because
+    every existing row still has a NULL hub_at."""
+    added = False
+    for t in _user_tables(path):
+        if "hub_at" in _columns(path, t):
+            continue
+        # The literal DEFAULT backfills every existing row, and because the DDL
+        # replays verbatim, the hub and every other replica backfill to the SAME
+        # stamp. Without it those rows keep a NULL hub_at, the hub's cursor stays
+        # empty, and every sync re-pulls the whole table forever.
+        stamp = execute_sql(path, f"SELECT {NOW} AS t")[0]["t"]
+        try:
+            execute_sql(path, f"ALTER TABLE {qi(t)} ADD COLUMN hub_at TEXT DEFAULT '{stamp}'")
+            added = True
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    return added
+
+
 def sync(path: Path, hub) -> dict:
     """State-based replica sync: schema replay, then pull, then push. LWW on updated_at."""
     hub.ensure_ready()
+    # before the schema replay, so the ALTERs travel to the hub in this sync
+    upgraded = ensure_hub_at(path)
 
     local_log = execute_sql(path, "SELECT applied_at, ddl FROM _schema_log ORDER BY applied_at, id")
     hub_log = hub.schema_pull()
@@ -517,15 +558,15 @@ def sync(path: Path, hub) -> dict:
             ddl_applied += 1
 
     tables = _user_tables(path)
-    # ponytail: one global cursor per direction; assumes ~NTP-synced clocks,
-    # which holds for one person's devices
-    last_pull = _get_state(path, "last_pull")
+    # The PULL cursor is hub-clock (`hub_at`, assigned on arrival); the PUSH
+    # cursor stays local `updated_at` (which rows of ours are new).
+    # A table that just gained hub_at has NULL for every existing row, so the
+    # stored cursor would skip all of them: one full pull sets that right.
+    last_pull = "" if upgraded else _get_state(path, "last_pull")
     last_push = _get_state(path, "last_push")
     # capture the pull cursor BEFORE pulling: the hub writes rows itself
     # (derivations on push and on cron), and anything it writes after this read
-    # gets updated_at > pull_cursor, so the next sync still sees it. The price
-    # is that the next sync echoes back the rows this one pushed - harmless,
-    # the LWW upsert no-ops them (and a newer hub version is what we want).
+    # gets hub_at > pull_cursor, so the next sync still sees it.
     pull_cursor = hub.cursor(tables)
 
     pulled = pushed = 0
@@ -541,10 +582,15 @@ def sync(path: Path, hub) -> dict:
         )
         remote = hub.rows_pull(table, cols, last_pull)
         if remote:
+            # `pulled` counts rows the LWW upsert actually APPLIED, not rows
+            # received: the sync after a push re-reads its own rows (stamped
+            # after this cursor was read) and they land on nothing.
             with connect(path) as conn:
                 for i in range(0, len(remote), CHUNK):
-                    conn.execute(_upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),))
-        pulled += len(remote)
+                    cur = conn.execute(
+                        _upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),)
+                    )
+                    pulled += cur.rowcount
         if mine:
             out = hub.rows_push(table, cols, mine)
             rejected += [{"table": table, **r} for r in out["rejected"]]
