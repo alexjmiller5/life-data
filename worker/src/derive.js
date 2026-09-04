@@ -58,14 +58,17 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
   const out = { derived: 0, failed: [] };
 
   for (const id of ids) {
-    const row = await db.prepare(`SELECT * FROM ${t} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
-    if (!row) continue;
     for (const [name, cols] of byName) {
       if (names && !names.has(name)) continue;
       // `col` narrows to the derivation that produces it; its siblings come
       // back in the same response, so they are written too rather than wasted.
       if (col && !cols.some((p) => p.col === col)) continue;
 
+      // Re-read per derivation: one derivation's output can be another's
+      // input, and hashing a stale row would leave provenance that never
+      // matches (an endless re-derive loop on the sweep).
+      const row = await db.prepare(`SELECT * FROM ${t} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
+      if (!row) break;
       const target = derivations.get(name);
       if (!target) {
         out.failed.push({ id, col: cols[0].col, error: `no derivation configured for ${name}` });
@@ -195,6 +198,10 @@ async function candidates(db, table, col, limit) {
 
 export async function sweep(db, env, { limit = 50, fetchImpl = fetch } = {}) {
   const out = { derived: 0, failed: [] };
+  const catalog = await db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_properties'")
+    .first();
+  if (!catalog) return out; // a hub with no catalog yet
   const { results: tables } = await db
     .prepare("SELECT DISTINCT tbl FROM catalog_properties WHERE deleted_at IS NULL AND derived_by LIKE 'http:%'")
     .all();

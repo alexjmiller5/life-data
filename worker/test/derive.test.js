@@ -202,3 +202,29 @@ test("POST /v1/derive: guarded identifier, capped ids, col narrows the work", as
   expect(row.title).toBe("Blade Runner");
   expect(row.blurb).toBe(null);
 });
+
+test("sweep on a hub with no catalog is a no-op", async () => {
+  expect(await sweep(new D1Shim(), ENV)).toEqual({ derived: 0, failed: [] });
+});
+
+test("a derivation reading another's output hashes the fresh value, so it settles", async () => {
+  const db = await fresh();
+  await db.prepare(
+    `INSERT INTO catalog_properties (id, tbl, col, sort, type, derived_by, inputs) VALUES ('movies.blurb','movies','blurb',4,'text','http:blurb','["title"]')`,
+  ).run();
+  const replies = {
+    "https://derivations.example/movie": { body: { title: "Blade Runner", genres: ["Sci-Fi"] } },
+    "https://derivations.example/blurb": { body: { blurb: "a blurb" } },
+  };
+  // one call, both derivations: the second must see the first's write
+  let s = stub((url) => replies[url]);
+  expect(await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: s.fetchImpl })).toEqual({ derived: 2, failed: [] });
+  // blurb's inputs_hash must be over the title this same pass wrote, not the
+  // NULL it had when the row was first read
+  const prov = await db.prepare("SELECT inputs_hash FROM provenance WHERE id='movies:78:blurb'").first();
+  expect(prov.inputs_hash).toBe(await hex('["Blade Runner"]'));
+
+  s = stub((url) => replies[url]);
+  expect(await sweep(db, ENV, { fetchImpl: s.fetchImpl })).toEqual({ derived: 0, failed: [] });
+  expect(s.calls.length).toBe(0);
+});
