@@ -11,6 +11,7 @@ from life_data.catalog import (
     check,
     check_rule_sql,
     derive,
+    doc,
     ensure_catalog,
     has_catalog,
     infer,
@@ -646,3 +647,42 @@ def test_infer_skips_cataloged_columns_and_small_tables(db):
     create_table(db, "places", ["name:text"])
     insert_rows(db, "places", [{"name": "a"}])
     assert infer(db, "places") == []
+
+
+# --- doc ------------------------------------------------------------------
+
+
+def test_doc_renders_tables_properties_and_rules(db):
+    set_table(db, "places", kind="table", purpose="somewhere real", id_semantics="Google place_id")
+    set_property(
+        db,
+        "places",
+        "status",
+        type="select",
+        required=1,
+        sort=1,
+        options=[{"v": "want", "d": "saved"}, {"v": "been"}],
+        description="lowercase",
+    )
+    set_property(
+        db, "places", "slug", type="text", sort=2, derived_by="sql:lower(name)", inputs=["name"]
+    )
+    set_rule(db, "estate-soft-delete", scope="estate", kind="doctrine", text="soft delete only")
+    with connect(db) as conn:
+        md = doc(conn)
+    assert "### places" in md and "somewhere real" in md and "Google place_id" in md
+    assert "| status | select | yes | `want` (saved), `been` | lowercase |" in md
+    assert "derived by `sql:lower(name)` from name" in md
+    assert "## Estate rules" in md and "soft delete only" in md
+    with connect(db) as conn:
+        assert doc(conn) == md  # deterministic
+
+
+def test_doc_scoped_to_one_table_omits_estate_rules(db):
+    set_table(db, "places", kind="table", purpose="somewhere real")
+    set_table(db, "movies", kind="table", purpose="watched films")
+    set_rule(db, "estate-soft-delete", scope="estate", kind="doctrine", text="soft delete only")
+    with connect(db) as conn:
+        md = doc(conn, "places")
+    assert "### places" in md and "### movies" not in md
+    assert "## Estate rules" not in md

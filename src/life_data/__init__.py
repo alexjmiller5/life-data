@@ -544,6 +544,8 @@ def main(argv: list[str] | None = None) -> int:
         "--apply", action="store_true", help="write the proposals via property set"
     )
     p_infer.add_argument("--min-rows", dest="min_rows", type=int, default=20)
+    p_doc = sub.add_parser("doc", help="render the catalog as markdown")
+    p_doc.add_argument("table", nargs="?")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
@@ -677,6 +679,9 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
                 kwargs = {k: v for k, v in p.items() if k not in ("tbl", "col")}
                 catalog.set_property(path, p["tbl"], p["col"], **kwargs)
             print(f"applied {len(proposals)}")
+    elif args.command == "doc":
+        with connect(path) as conn:
+            print(catalog.doc(conn, args.table), end="")
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)
