@@ -111,10 +111,17 @@ whole estate forever. A table that just gained the column also resets
 `last_pull` to `''` for one full pull. Clients
 never write it: `upsertSql`/`_upsert_sql` bind the hub's own `strftime` in its
 place on insert and in `DO UPDATE SET`, and hub-side derivations re-stamp it.
-A NULL `hub_at` is older than everything, so `since = ''` pulls the whole
-table. One hub clock means arrival order is total: a replica that pushes an
-edit stamped older than another replica's cursor still gets a fresh `hub_at`
-and reaches everyone. `updated_at` decides conflicts and nothing else.
+**Whether to stamp is read off the HUB's own schema (`PRAGMA table_info`),
+never off the pushed column list** - an un-upgraded client omits the column and
+its rows would land unstamped, invisible to every replica whose cursor has
+moved on; on a table that has no `hub_at` the hub degrades to the old
+`updated_at` behaviour for cursor and pull rather than erroring. The pull
+boundary is INCLUSIVE (`hub_at >= since`): a push landing in the same
+millisecond as a cursor read must not be lost, and re-reading the boundary row
+costs nothing. A NULL `hub_at` is older than everything, so `since = ''` pulls
+the whole table. One hub clock means arrival order is total: a replica that
+pushes an edit stamped older than another replica's cursor still gets a fresh
+`hub_at` and reaches everyone. `updated_at` decides conflicts and nothing else.
 
 **The pull cursor is `hub.cursor(tables)` (`max(hub_at)`) read BEFORE the pull
 loop, not after it**: the hub writes rows itself (derivations on push and on

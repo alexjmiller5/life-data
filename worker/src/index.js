@@ -148,11 +148,20 @@ async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
 }
 
-// `stampHubAt` is the hub's role: hub_at comes from the hub's own clock (a
-// `?` bound to it), never from whatever the client sent, so arrival order is
-// one clock's order and no replica can skip another's late push.
+// Does the HUB's own schema have hub_at? Never ask the pushed column list:
+// an un-upgraded client omits it and its rows would land unstamped, invisible
+// to every replica whose cursor has moved on.
+async function hasHubAt(db, table) {
+  const { results } = await db.prepare(`PRAGMA table_info(${qident(table)})`).all();
+  return (results ?? []).some((c) => c.name === "hub_at");
+}
+
+// `stampHubAt` is the hub's role: hub_at is dropped from whatever the client
+// sent and re-added bound to the hub's own clock, so arrival order is one
+// clock's order and no replica can skip another's late push.
 function upsertSql(table, cols, stampHubAt = false) {
   const t = qident(table);
+  if (stampHubAt) cols = [...cols.filter((x) => x !== "hub_at"), "hub_at"];
   // the json path uses the RAW column name (it is a JSON key, not SQL)
   const extracts = cols
     .map((x) => (stampHubAt && x === "hub_at" ? "?" : `json_extract(value, '$.${ident(x)}')`))
@@ -196,12 +205,16 @@ const ROUTES = {
 
   "/v1/rows/pull": async (body, db) => {
     const cols = (body.columns ?? []).map(qident).join(", ");
-    const { results } = await db
-      // arrival-time cursor. A NULL hub_at is older than everything, so
-      // `since = ''` — a fresh or just-upgraded replica — pulls the lot.
-      .prepare(`SELECT ${cols} FROM ${qident(body.table)} WHERE ? = '' OR hub_at > ?`)
-      .bind(body.since ?? "", body.since ?? "")
-      .all();
+    const t = qident(body.table);
+    const since = body.since ?? "";
+    // arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond as
+    // a cursor read must not be lost. A NULL hub_at is older than everything,
+    // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
+    // A table predating the migration falls back to the old client stamp.
+    const [sql, args] = (await hasHubAt(db, body.table))
+      ? [`SELECT ${cols} FROM ${t} WHERE ? = '' OR hub_at >= ?`, [since, since]]
+      : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
+    const { results } = await db.prepare(sql).bind(...args).all();
     return { rows: results ?? [] };
   },
 
@@ -210,7 +223,7 @@ const ROUTES = {
     const rows = body.rows ?? [];
     const { accepted, rejected } = await validatePush(db, table, rows);
     // one hub, one clock: every row this push lands carries the same stamp
-    const stamping = (body.columns ?? []).includes("hub_at");
+    const stamping = await hasHubAt(db, table);
     const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
     if (accepted.length) {
       const args = stamping ? [hubAt, JSON.stringify(accepted)] : [JSON.stringify(accepted)];
@@ -238,7 +251,8 @@ const ROUTES = {
   "/v1/cursor": async (body, db) => {
     let top = "";
     for (const table of body.tables ?? []) {
-      const row = await db.prepare(`SELECT max(hub_at) AS m FROM ${qident(table)}`).first();
+      const col = (await hasHubAt(db, table)) ? "hub_at" : "updated_at";
+      const row = await db.prepare(`SELECT max(${col}) AS m FROM ${qident(table)}`).first();
       if (row?.m && row.m > top) top = row.m;
     }
     return { max_hub_at: top };

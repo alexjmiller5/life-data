@@ -231,14 +231,18 @@ def auth_headers(config: dict) -> dict:
 def _upsert_sql(table: str, cols: list[str], stamp_hub_at: bool = False) -> str:
     # rows travel as ONE json parameter (D1 caps bind params at ~100/query);
     # `WHERE true` disambiguates a SELECT-source upsert for SQLite's parser.
-    # `stamp_hub_at` is the HUB's role: it replaces whatever hub_at the client
-    # sent with a `?` bound to the hub's own clock, so arrival order is one
-    # clock's order. A client applying a pull carries that value through as data.
+    # `stamp_hub_at` is the HUB's role, decided by the HUB's schema: hub_at is
+    # dropped from whatever the client sent and re-added bound to the hub's own
+    # clock, so a push that omits the column still lands stamped rows. A client
+    # applying a pull carries the hub's value through as data.
     t = qi(table)
     # the json path uses the RAW column name (it is a JSON key, not SQL)
-    exts = ", ".join(
-        "?" if (stamp_hub_at and c == "hub_at") else f"json_extract(value, '$.{c}')" for c in cols
-    )
+    if stamp_hub_at:
+        cols = [c for c in cols if c != "hub_at"]
+        exts = ", ".join([*(f"json_extract(value, '$.{c}')" for c in cols), "?"])
+        cols = [*cols, "hub_at"]
+    else:
+        exts = ", ".join(f"json_extract(value, '$.{c}')" for c in cols)
     sets = ", ".join(f"{qi(c)} = excluded.{qi(c)}" for c in cols if c != "id")
     return (
         f"INSERT INTO {t} ({', '.join(qi(c) for c in cols)}) "
@@ -285,21 +289,28 @@ class LocalHub:
             applied += 1
         return applied
 
+    def _has_hub_at(self, table: str) -> bool:
+        return any(r["name"] == "hub_at" for r in self._query(f"PRAGMA table_info({qi(table)})"))
+
     def rows_pull(self, table: str, columns: list[str], since: str) -> list[dict]:
-        # arrival-time cursor. A row with a NULL hub_at is older than
-        # everything, so `since = ''` — a fresh or just-upgraded replica —
-        # pulls the whole table, NULLs included.
+        sel = ", ".join(qi(c) for c in columns)
+        if not self._has_hub_at(table):  # predates the migration: old behaviour
+            return self._query(f"SELECT {sel} FROM {qi(table)} WHERE updated_at > ?", [since or ""])
+        # arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond
+        # as a cursor read must not be lost. A row with a NULL hub_at is older
+        # than everything, so `since = ''` pulls the whole table, NULLs included.
         return self._query(
-            f"SELECT {', '.join(qi(c) for c in columns)} FROM {qi(table)} "
-            "WHERE ? = '' OR hub_at > ?",
+            f"SELECT {sel} FROM {qi(table)} WHERE ? = '' OR hub_at >= ?",
             [since or "", since or ""],
         )
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
         with connect(self.path) as conn:
             accepted, rejected = catalog.validate_push(conn, table, rows)
-        # one hub, one clock: every row this push lands carries the same stamp
-        stamping = "hub_at" in columns
+        # one hub, one clock: every row this push lands carries the same stamp.
+        # Whether to stamp is the HUB schema's call, never the pushed column
+        # list - a client that omits hub_at must not land unstamped rows.
+        stamping = self._has_hub_at(table)
         hub_at = self._query(f"SELECT {NOW} AS t")[0]["t"] if stamping else ""
         sql = _upsert_sql(table, columns, stamp_hub_at=stamping)
         for i in range(0, len(accepted), CHUNK):
@@ -310,7 +321,8 @@ class LocalHub:
     def cursor(self, tables: list[str]) -> str:
         top = ""
         for t in tables:
-            rows = self._query(f"SELECT max(hub_at) AS m FROM {qi(t)}")
+            col = "hub_at" if self._has_hub_at(t) else "updated_at"
+            rows = self._query(f"SELECT max({col}) AS m FROM {qi(t)}")
             top = max(top, rows[0]["m"] or "")
         return top
 
@@ -358,14 +370,15 @@ class HttpHub:
         )["rows"]
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
-        total, rejected, hub_at = 0, [], ""
+        # the response also carries the hub_at the hub stamped; nothing reads it
+        # - the pull cursor never advances on a push
+        total, rejected = 0, []
         for i in range(0, len(rows), CHUNK):
             chunk = rows[i : i + CHUNK]
             out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": chunk})
             total += out["upserted"]
             rejected += out.get("rejected", [])
-            hub_at = max(hub_at, out.get("hub_at") or "")
-        return {"upserted": total, "rejected": rejected, "hub_at": hub_at}
+        return {"upserted": total, "rejected": rejected}
 
     def cursor(self, tables: list[str]) -> str:
         return self._post("/v1/cursor", {"tables": tables}).get("max_hub_at") or ""

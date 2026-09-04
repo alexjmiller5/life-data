@@ -50,8 +50,12 @@ test("pull filters by hub_at, and since='' includes NULL hub_at rows", async () 
   const all = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: "" }, db);
   expect(all.rows.map((r) => r.id).sort()).toEqual(["a", "old"]);
 
-  const since = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: push.hub_at }, db);
-  expect(since.rows).toEqual([]);
+  // the boundary is INCLUSIVE: a row stamped in the same millisecond as a
+  // cursor read comes back rather than being lost
+  const boundary = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: push.hub_at }, db);
+  expect(boundary.rows.map((r) => r.id)).toEqual(["a"]);
+  const past = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: "2099" }, db);
+  expect(past.rows).toEqual([]);
 
   const earlier = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: "2020" }, db);
   expect(earlier.rows.map((r) => r.id)).toEqual(["a"]); // NULL hub_at is older than everything
@@ -75,4 +79,37 @@ test("a hub-side derivation stamps hub_at so replicas pull it", async () => {
   expect(after.hub_at >= push.hub_at).toBe(true);
   const seen = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: push.hub_at }, db);
   expect(seen.rows.map((r) => r.id)).toEqual(["a"]);
+});
+
+test("the hub stamps from its own schema, not the pushed column list", async () => {
+  const db = await seed(new D1Shim());
+  // an un-upgraded client: hub_at is nowhere in `columns`
+  const old = ["id", "name", "blurb", "updated_at"];
+  const out = await ROUTES["/v1/rows/push"]({ table: "people", columns: old, rows: [row()] }, db);
+  expect(out.upserted).toBe(1);
+  expect(out.hub_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  const stored = await db.prepare("SELECT hub_at FROM people WHERE id = 'a'").first();
+  expect(stored.hub_at).toBe(out.hub_at);
+  // ... so a replica whose cursor has moved on still sees the row
+  const seen = await ROUTES["/v1/rows/pull"]({ table: "people", columns: cols, since: out.hub_at }, db);
+  expect(seen.rows.map((r) => r.id)).toEqual(["a"]);
+});
+
+test("cursor and pull fall back to updated_at on a table without hub_at", async () => {
+  const db = await seed(new D1Shim());
+  await db.prepare(`CREATE TABLE legacy (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT)`).run();
+  await db.prepare("INSERT INTO legacy VALUES ('a','Ada','2026-01-01T00:00:00.000Z')").run();
+  await db.prepare("INSERT INTO legacy VALUES ('g','Grace','2026-02-01T00:00:00.000Z')").run();
+  const lcols = ["id", "name", "updated_at"];
+  expect((await ROUTES["/v1/cursor"]({ tables: ["legacy"] }, db)).max_hub_at).toBe("2026-02-01T00:00:00.000Z");
+  expect((await ROUTES["/v1/rows/pull"]({ table: "legacy", columns: lcols, since: "" }, db)).rows.length).toBe(2);
+  const some = await ROUTES["/v1/rows/pull"]({ table: "legacy", columns: lcols, since: "2026-01-15T00:00:00.000Z" }, db);
+  expect(some.rows.map((r) => r.id)).toEqual(["g"]);
+  // and a push into it still works, unstamped
+  const out = await ROUTES["/v1/rows/push"](
+    { table: "legacy", columns: lcols, rows: [{ id: "n", name: "New", updated_at: "2026-03-01T00:00:00.000Z" }] },
+    db
+  );
+  expect(out.upserted).toBe(1);
+  expect(out.hub_at).toBe("");
 });

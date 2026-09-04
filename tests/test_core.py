@@ -376,6 +376,40 @@ def test_ensure_hub_at_backfills_existing_tables_and_forces_one_full_pull(db, hu
     assert sync(db, hub)["pushed"] >= 1
 
 
+def test_hub_stamps_from_its_own_schema_when_the_push_omits_hub_at(db, hub, tmp_path):
+    """An un-upgraded client (deploy window) pushes without hub_at in `columns`.
+    The hub stamps anyway, or those rows are invisible to every replica whose
+    cursor has moved on."""
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    sync(other, hub)  # `other` now has a non-empty pull cursor
+    old_client_cols = ["id", "name", "updated_at"]
+    out = hub.rows_push(
+        "people",
+        old_client_cols,
+        [{"id": "legacy", "name": "Legacy", "updated_at": "2099-01-01T00:00:00.000Z"}],
+    )
+    with connect(hub.path) as conn:
+        stamped = conn.execute("SELECT hub_at FROM people WHERE id = 'legacy'").fetchone()
+    assert stamped["hub_at"] == out["hub_at"] and out["hub_at"]
+    assert sync(other, hub)["pulled"] == 1
+    assert execute_sql(other, "SELECT name FROM people WHERE id = 'legacy'")[0]["name"] == "Legacy"
+
+
+def test_hub_falls_back_to_updated_at_on_a_table_without_hub_at(db, hub):
+    """A new hub still serves an old client's tables: cursor and pull degrade to
+    the pre-migration `updated_at` behaviour instead of erroring."""
+    with connect(hub.path) as conn:
+        conn.execute("CREATE TABLE legacy (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT)")
+        conn.execute("INSERT INTO legacy VALUES ('a', 'Ada', '2026-01-01T00:00:00.000Z')")
+        conn.execute("INSERT INTO legacy VALUES ('g', 'Grace', '2026-02-01T00:00:00.000Z')")
+    assert hub.cursor(["legacy"]) == "2026-02-01T00:00:00.000Z"
+    cols = ["id", "name", "updated_at"]
+    assert len(hub.rows_pull("legacy", cols, "")) == 2
+    assert [r["id"] for r in hub.rows_pull("legacy", cols, "2026-01-15T00:00:00.000Z")] == ["g"]
+
+
 def test_upgrade_from_a_pre_hub_at_estate_converges(db, hub, tmp_path):
     """The one-time migration: an existing replica and hub whose tables predate
     hub_at, with a last_pull holding an updated_at-shaped stamp."""
