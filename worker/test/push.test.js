@@ -44,3 +44,38 @@ test("derived column needs matching provenance", async () => {
   out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "hand", updated_at: "2026-09-04T00:00:00.000Z" })] }, db);
   expect(out.rejected[0].rule).toBe("provenance");
 });
+
+const hex = async (s) =>
+  [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+
+test("integral number columns hash as REAL, the way SQLite stored them", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  for (const sql of [
+    "ALTER TABLE places ADD COLUMN qty REAL",
+    "ALTER TABLE places ADD COLUMN double REAL",
+    `INSERT INTO catalog_properties (id, tbl, col, type) VALUES ('places.qty','places','qty','number')`,
+    `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.double','places','double','number','sql:qty*2','["qty"]')`,
+  ]) await db.prepare(sql).run();
+  // provenance as the Python client writes it: SQLite renders REAL 4 as "4.0"
+  await db.prepare(
+    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:double','places','a','double','sql:qty*2',?,?)",
+  ).bind(await hex('["4.0"]'), await hex("8.0")).run();
+  const out = await ROUTES["/v1/rows/push"](
+    { table: "places", columns: [...cols, "qty", "double"], rows: [row({ qty: 4, double: 8 })] },
+    db,
+  );
+  expect(out.rejected).toEqual([]);
+  expect(out.upserted).toBe(1);
+});
+
+test("an unsafe table name is rejected before any SQL is built", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  const bad = "places; DROP TABLE x";
+  // with nothing to upsert, ident() was never reached at all and the bogus
+  // identifier sailed straight into validatePush's own interpolated SQL
+  await expect(ROUTES["/v1/rows/push"]({ table: bad, columns: cols, rows: [] }, db)).rejects.toThrow("unsafe identifier");
+  await expect(ROUTES["/v1/rows/push"]({ table: bad, columns: cols, rows: [row()] }, db)).rejects.toThrow("unsafe identifier");
+});

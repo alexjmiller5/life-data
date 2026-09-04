@@ -50,7 +50,7 @@ export function validateRow(props, before, after, { inDerive = new Set(), refOk 
     const t = p.type ?? "text";
     if (t === "number" || t === "int") {
       const n = Number(v);
-      if (typeof v === "boolean" || v === "" || Number.isNaN(n)) { fail("type", `${label} must be a number.`); continue; }
+      if (typeof v === "boolean" || v === "" || !Number.isFinite(n)) { fail("type", `${label} must be a number.`); continue; }
       if (t === "int" && !Number.isInteger(n)) { fail("type", `${label} must be an integer.`); continue; }
     } else if (t === "bool" && ![0, 1, true, false].includes(v)) { fail("type", `${label} must be 0 or 1.`); continue; }
     else if (t === "date" && !(typeof v === "string" && DATE_RE.test(v))) { fail("type", `${label} must be YYYY-MM-DD.`); continue; }
@@ -110,9 +110,16 @@ async function propertiesFor(db, table) {
   }));
 }
 
+// SQLite stores a `number` column as REAL, so the client hashes 4 as "4.0".
+// The pushed JSON carries a bare 4, which binds as INTEGER and would render
+// "4". Cast every cataloged `number` through REAL first so both sides agree.
+// (This is why a derivation's inputs must themselves be cataloged columns.)
+const castText = (isNumber) => (isNumber ? "CAST(CAST(? AS REAL) AS TEXT)" : "CAST(? AS TEXT)");
+
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
 export async function validatePush(db, table, rows) {
   const props = await propertiesFor(db, table);
+  const typeOf = new Map(props.map((p) => [p.col, p.type]));
   const exists = await tableExists(db, table);
   const derivedCols = new Set(props.filter((p) => p.derived_by).map((p) => p.col));
 
@@ -145,9 +152,9 @@ export async function validatePush(db, table, rows) {
       if (!changed) continue;
       const prov = await db.prepare("SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
         .bind(`${table}:${row.id}:${p.col}`).first();
-      const casts = p.inputs.map(() => "CAST(? AS TEXT)").join(", ") || "NULL";
+      const casts = p.inputs.map((c) => castText(typeOf.get(c) === "number")).join(", ") || "NULL";
       const text = Object.values(await db.prepare(`SELECT json_array(${casts}) AS j`).bind(...p.inputs.map((c) => row[c] ?? null)).first())[0];
-      const vtext = Object.values(await db.prepare("SELECT coalesce(CAST(? AS TEXT), '') AS v").bind(row[p.col] ?? null).first())[0];
+      const vtext = Object.values(await db.prepare(`SELECT coalesce(${castText(p.type === "number")}, '') AS v`).bind(row[p.col] ?? null).first())[0];
       const ok = prov && prov.inputs_hash === (await sha256hex(text)) && prov.value_hash === (await sha256hex(vtext));
       if (!ok) {
         viol.push({ col: p.col, rule: "provenance", message: `${p.col} changed without a matching provenance record.` });

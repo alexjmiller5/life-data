@@ -68,5 +68,15 @@
   {"name": "first failing check wins per column", "properties": [{"tbl": "t", "col": "s", "type": "select", "required": 1, "deprecated": 1, "options": [{"v": "a"}]}],
    "before": null, "after": {"id": "a", "s": "zzz"}, "expect": [{"col": "s", "rule": "deprecated"}]},
   {"name": "pattern is checked before ref", "properties": [{"tbl": "t", "col": "p", "type": "ref", "ref_table": "people", "pattern": "^p[0-9]+$"}],
-   "before": null, "after": {"id": "a", "p": "zz"}, "refs": {"people": ["p1"]}, "expect": [{"col": "p", "rule": "pattern"}]}
+   "before": null, "after": {"id": "a", "p": "zz"}, "refs": {"people": ["p1"]}, "expect": [{"col": "p", "rule": "pattern"}]},
+  {"name": "bool is not a number", "properties": [{"tbl": "t", "col": "n", "type": "number"}],
+   "before": null, "after": {"id": "a", "n": true}, "expect": [{"col": "n", "rule": "type"}]},
+  {"name": "nan is not an int", "properties": [{"tbl": "t", "col": "n", "type": "int"}],
+   "before": null, "after": {"id": "a", "n": "nan"}, "expect": [{"col": "n", "rule": "type"}]},
+  {"name": "infinity is not a number", "properties": [{"tbl": "t", "col": "n", "type": "number"}],
+   "before": null, "after": {"id": "a", "n": "inf"}, "expect": [{"col": "n", "rule": "type"}]},
+  {"name": "underscore digit grouping is not a number", "properties": [{"tbl": "t", "col": "n", "type": "number"}],
+   "before": null, "after": {"id": "a", "n": "1_000"}, "expect": [{"col": "n", "rule": "type"}]},
+  {"name": "Infinity is not a number", "properties": [{"tbl": "t", "col": "n", "type": "number"}],
+   "before": null, "after": {"id": "a", "n": "Infinity"}, "expect": [{"col": "n", "rule": "type"}]}
 ]

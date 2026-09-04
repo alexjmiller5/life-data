@@ -6,6 +6,7 @@ into this; nothing here knows about hubs or argv.
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import subprocess
@@ -357,10 +358,17 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
 
         t = p.get("type", "text")
         if t in ("number", "int"):
+            # match JS `Number(v)`: booleans and `1_000` are not numbers there
+            if isinstance(v, bool) or (isinstance(v, str) and "_" in v):
+                fail(col, "type", f"{label} must be a number.")
+                continue
             try:
                 n = float(v)
             except (TypeError, ValueError):
                 fail(col, "type", f"{label} must be a number.")
+                continue
+            if not math.isfinite(n):
+                fail(col, "type", f"{label} must be a finite number.")
                 continue
             if t == "int" and n != int(n):
                 fail(col, "type", f"{label} must be an integer.")

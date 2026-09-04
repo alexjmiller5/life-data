@@ -219,6 +219,12 @@ is written, so one command may fill several columns (a Maps link resolving
 `id`, `name`, `city`, `country`, `address`). The UI's "Resolve" button is a
 call to this.
 
+**A derivation's `inputs` must be cataloged columns.** Client and hub both
+hash the inputs as SQLite renders them, and the hub only knows to bind a
+`number` through REAL (SQLite stores it as REAL, so 4 renders `"4.0"`, not
+`"4"`) by reading the column's catalog `type`. An uncataloged input is hashed
+by whatever type the pushed JSON happened to carry, and the two sides drift.
+
 **Determinism means provenance, not permanence.** TMDB may answer differently
 next year. That is a new fact with a new provenance row, not a violation.
 What can never happen is a value with no recorded origin.
