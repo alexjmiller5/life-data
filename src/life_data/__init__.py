@@ -492,12 +492,15 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
                 stats = sync(path, hub)
                 if stats["pushed"] or stats["pulled"] or stats["ddl_applied"]:
                     print(json.dumps(stats), flush=True)
-                if changed:
+            except RuntimeError as e:  # offline or hub down: keep watching
+                print(f"sync deferred: {e}", file=sys.stderr, flush=True)
+            if changed:
+                try:
                     findings = catalog.check(path)
                     if findings:
                         print(json.dumps({"check": findings}), file=sys.stderr, flush=True)
-            except RuntimeError as e:  # offline or hub down: keep watching
-                print(f"sync deferred: {e}", file=sys.stderr, flush=True)
+                except (sqlite3.Error, ValueError, RuntimeError) as e:  # never kill the daemon
+                    print(f"check failed: {e}", file=sys.stderr, flush=True)
             state = db_version(path)
             last_poll = time.monotonic()
         if once:

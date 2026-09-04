@@ -24,6 +24,7 @@ from life_data import (
     main,
     resolve_data_dir,
     sync,
+    watch,
 )
 
 
@@ -191,6 +192,25 @@ def test_db_changed_reports_once_per_change(db):
     assert changed is True
     changed, _ = db_changed(db, state)
     assert changed is False
+
+
+def test_watch_survives_check_failure_but_logs_it(db, hub, monkeypatch, capsys):
+    def boom(path, as_of=None):
+        raise sqlite3.OperationalError("boom")
+
+    monkeypatch.setattr("life_data.catalog.check", boom)
+    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)  # must not raise
+    assert "check failed" in capsys.readouterr().err
+
+
+def test_watch_prints_check_findings_to_stderr(db, hub, monkeypatch, capsys):
+    monkeypatch.setattr("life_data.catalog.check", lambda path, as_of=None: [{"rule": "options"}])
+    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)
+    assert json.loads(capsys.readouterr().err)["check"] == [{"rule": "options"}]
 
 
 # --- sync engine (LocalHub) --------------------------------------------------
