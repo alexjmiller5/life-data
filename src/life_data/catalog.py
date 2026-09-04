@@ -112,6 +112,11 @@ def _pkg():
     return life_data
 
 
+def qi(name: str) -> str:
+    """Quote an identifier for SQL interpolation (see life_data.qi)."""
+    return _pkg().qi(name)
+
+
 # --- catalog tables ----------------------------------------------------------
 
 
@@ -185,30 +190,31 @@ def _upsert(path: Path, table: str, row_id: str, fields: dict) -> dict:
     ensure_catalog(path)
     enc = {k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in fields.items()}
     with pkg.connect(path) as conn:
-        existing = conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone()
+        existing = conn.execute(f"SELECT 1 FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
         if existing:
-            sets = ", ".join([*(f"{k} = ?" for k in enc), "deleted_at = NULL"])
+            sets = ", ".join([*(f"{qi(k)} = ?" for k in enc), "deleted_at = NULL"])
             conn.execute(
-                f"UPDATE {table} SET {sets} WHERE id = ?",
+                f"UPDATE {qi(table)} SET {sets} WHERE id = ?",
                 [*enc.values(), row_id],
             )
         else:
             cols = ["id", *enc]
             conn.execute(
-                f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "
+                f"VALUES ({', '.join('?' for _ in cols)})",
                 [row_id, *enc.values()],
             )
         conn.execute(
             "INSERT INTO catalog_log (tbl, row_id, action, payload) VALUES (?, ?, 'set', ?)",
             (table, row_id, json.dumps(fields, sort_keys=True)),
         )
-        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
+        row = conn.execute(f"SELECT * FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
     return _parse(dict(row))
 
 
 def _soft_delete(path: Path, table: str, row_id: str) -> None:
     with _pkg().connect(path) as conn:
-        conn.execute(f"UPDATE {table} SET deleted_at = updated_at WHERE id = ?", (row_id,))
+        conn.execute(f"UPDATE {qi(table)} SET deleted_at = updated_at WHERE id = ?", (row_id,))
         conn.execute(
             "INSERT INTO catalog_log (tbl, row_id, action, payload) VALUES (?, ?, 'rm', NULL)",
             (table, row_id),
@@ -453,7 +459,7 @@ def _ref_ok(conn):
             return False
         return (
             conn.execute(
-                f"SELECT 1 FROM {ref_table} WHERE id = ? AND deleted_at IS NULL", (rid,)
+                f"SELECT 1 FROM {qi(ref_table)} WHERE id = ? AND deleted_at IS NULL", (rid,)
             ).fetchone()
             is not None
         )
@@ -484,7 +490,7 @@ def apply_defaults(conn: sqlite3.Connection, tbl: str, row: dict) -> dict:
 def _has_sync_cols(conn: sqlite3.Connection, tbl: str) -> bool:
     """The write path finds changed rows by `id` and `updated_at`; a table
     without them (raw `CREATE TABLE`) cannot be checked per row."""
-    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({qi(tbl)})").fetchall()}
     return {"id", "updated_at"} <= cols
 
 
@@ -519,9 +525,10 @@ def write(path: Path, fn, *, ddl: bool = False):
         for t in tables:
             # ponytail: whole-table snapshot per write; scope by rowid past ~1M rows
             conn.execute(
-                f"CREATE TEMP TABLE temp._before_{t} AS SELECT rowid AS _rowid, * FROM {t}"
+                f"CREATE TEMP TABLE temp.{qi(f'_before_{t}')} AS "
+                f"SELECT rowid AS _rowid, * FROM {qi(t)}"
             )
-            marks[t] = conn.execute(f"SELECT coalesce(max(rowid), 0) FROM {t}").fetchone()[0]
+            marks[t] = conn.execute(f"SELECT coalesce(max(rowid), 0) FROM {qi(t)}").fetchone()[0]
         try:
             result = fn(conn)
             violations = _validate_changed(conn, marks, t0)
@@ -560,13 +567,16 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
         # leaves updated_at untouched).
         # Only the columns both shapes have: after a DROP/RENAME COLUMN a row
         # whose sole difference is that column has not changed.
-        snap = [r[1] for r in conn.execute(f"PRAGMA temp.table_info(_before_{t})").fetchall()]
-        live = {r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()}
-        shared = [f'"{c}"' for c in snap[1:] if c in live]
+        before_t = f"temp.{qi(f'_before_{t}')}"
+        snap = [
+            r[1] for r in conn.execute(f"PRAGMA temp.table_info({qi(f'_before_{t}')})").fetchall()
+        ]
+        live = {r[1] for r in conn.execute(f"PRAGMA table_info({qi(t)})").fetchall()}
+        shared = [qi(c) for c in snap[1:] if c in live]
         rows = conn.execute(
-            f"SELECT * FROM {t} WHERE rowid > ? OR rowid IN (SELECT _rowid FROM "
-            f"(SELECT {', '.join(['rowid AS _rowid'] + shared)} FROM {t} "
-            f"EXCEPT SELECT {', '.join(['_rowid'] + shared)} FROM temp._before_{t}))",
+            f"SELECT * FROM {qi(t)} WHERE rowid > ? OR rowid IN (SELECT _rowid FROM "
+            f"(SELECT {', '.join(['rowid AS _rowid'] + shared)} FROM {qi(t)} "
+            f"EXCEPT SELECT {', '.join(['_rowid'] + shared)} FROM {before_t}))",
             (max_rowid,),
         ).fetchall()
         if not rows:
@@ -574,9 +584,7 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
         props = properties(conn, t)
         for r in rows:
             after = dict(r)
-            b = conn.execute(
-                f"SELECT * FROM temp._before_{t} WHERE id = ?", (after["id"],)
-            ).fetchone()
+            b = conn.execute(f"SELECT * FROM {before_t} WHERE id = ?", (after["id"],)).fetchone()
             before = dict(b) if b else None
             if before:
                 before.pop("_rowid", None)
@@ -638,21 +646,23 @@ def _with_context(conn, sql, changed_ids, now, tbl):
         ph = ", ".join("?" for _ in ids) or "NULL"
         conn.execute("DROP TABLE IF EXISTS temp.changed")
         conn.execute(
-            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM {tbl} WHERE id IN ({ph})", ids
+            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM {qi(tbl)} WHERE id IN ({ph})", ids
         )
         conn.execute("DROP TABLE IF EXISTS temp.before")
         if _table_exists_temp(conn, f"_before_{tbl}"):
             # explicit column list, not `*`: _before_{tbl} carries an extra
             # _rowid bookkeeping column that would break shape-sensitive
             # queries (EXCEPT/UNION) against `changed`, which has tbl's shape
-            cols = ", ".join(r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall())
+            cols = ", ".join(
+                qi(r[1]) for r in conn.execute(f"PRAGMA table_info({qi(tbl)})").fetchall()
+            )
             conn.execute(
                 f"CREATE TEMP TABLE temp.before AS SELECT {cols} "
-                f"FROM temp._before_{tbl} WHERE id IN ({ph})",
+                f"FROM temp.{qi(f'_before_{tbl}')} WHERE id IN ({ph})",
                 ids,
             )
         else:
-            conn.execute(f"CREATE TEMP TABLE temp.before AS SELECT * FROM {tbl} WHERE 0")
+            conn.execute(f"CREATE TEMP TABLE temp.before AS SELECT * FROM {qi(tbl)} WHERE 0")
         made += ["changed", "before"]
 
     def cleanup():
@@ -709,14 +719,16 @@ def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str | None:
     for byte. None when the row is gone (hard-deleted out from under its
     provenance)."""
     # reading columns: a `number` is already stored as REAL, so no extra cast
-    casts = ", ".join(cast_text(c) for c in inputs) or "NULL"
-    row = conn.execute(f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)).fetchone()
+    casts = ", ".join(cast_text(qi(c)) for c in inputs) or "NULL"
+    row = conn.execute(
+        f"SELECT json_array({casts}) FROM {qi(tbl)} WHERE id = ?", (row_id,)
+    ).fetchone()
     return hashlib.sha256(row[0].encode()).hexdigest() if row else None
 
 
 def value_hash(conn, tbl: str, row_id: str, col: str) -> str | None:
     row = conn.execute(
-        f"SELECT coalesce({cast_text(col)}, '') FROM {tbl} WHERE id = ?", (row_id,)
+        f"SELECT coalesce({cast_text(qi(col))}, '') FROM {qi(tbl)} WHERE id = ?", (row_id,)
     ).fetchone()
     return hashlib.sha256(row[0].encode()).hexdigest() if row else None
 
@@ -761,7 +773,7 @@ def underived(conn) -> list[Violation]:
         if not p.get("derived_by") or not _table_exists(conn, p["tbl"]):
             continue
         rows = conn.execute(
-            f"SELECT t.id FROM {p['tbl']} t WHERE t.deleted_at IS NULL AND NOT EXISTS "
+            f"SELECT t.id FROM {qi(p['tbl'])} t WHERE t.deleted_at IS NULL AND NOT EXISTS "
             "(SELECT 1 FROM provenance pr WHERE pr.tbl = ? AND pr.col = ? AND pr.row_id = t.id AND pr.deleted_at IS NULL)",
             (p["tbl"], p["col"]),
         ).fetchall()
@@ -787,7 +799,7 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
             if not _table_exists(conn, t):
                 continue
             props = properties(conn, t)
-            for r in conn.execute(f"SELECT * FROM {t} WHERE deleted_at IS NULL").fetchall():
+            for r in conn.execute(f"SELECT * FROM {qi(t)} WHERE deleted_at IS NULL").fetchall():
                 out += validate_row(
                     props,
                     dict(r),
@@ -833,7 +845,7 @@ def validate_push(
     accepted, rejected = [], []
     for row in rows:
         existing = (
-            conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row["id"],)).fetchone()
+            conn.execute(f"SELECT * FROM {qi(table)} WHERE id = ?", (row["id"],)).fetchone()
             if _table_exists(conn, table)
             else None
         )
@@ -943,7 +955,7 @@ def audit(path: Path, rule_id: str | None = None, commands: dict | None = None) 
 
 # --- infer -------------------------------------------------------------------
 
-SYNC_COLS = {"id", "created_at", "updated_at", "deleted_at"}
+SYNC_COLS = {"id", "created_at", "updated_at", "deleted_at", "hub_at"}
 
 
 def _is_stub_property(p: dict) -> bool:
@@ -978,18 +990,19 @@ def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
         tables = [tbl] if tbl else all_tables
         id_sets = {}
         for t in tables:
-            n = conn.execute(f"SELECT count(*) FROM {t} WHERE deleted_at IS NULL").fetchone()[0]
+            n = conn.execute(f"SELECT count(*) FROM {qi(t)} WHERE deleted_at IS NULL").fetchone()[0]
             if n < min_rows:
                 continue
             known = {p["col"] for p in properties(conn, t) if not _is_stub_property(p)}
-            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({qi(t)})").fetchall()]
             for c in cols:
                 if c in SYNC_COLS or c in known:
                     continue
                 vals = [
                     r[0]
                     for r in conn.execute(
-                        f"SELECT {c} FROM {t} WHERE deleted_at IS NULL AND {c} IS NOT NULL AND {c} != ''"
+                        f"SELECT {qi(c)} FROM {qi(t)} WHERE deleted_at IS NULL "
+                        f"AND {qi(c)} IS NOT NULL AND {qi(c)} != ''"
                     ).fetchall()
                 ]
                 prop = {"tbl": t, "col": c, "type": "text"}
@@ -1033,7 +1046,7 @@ def _ref_target(conn, tables, vals, id_sets, exclude):
         if t == exclude:
             continue
         if t not in id_sets:
-            id_sets[t] = {r[0] for r in conn.execute(f"SELECT id FROM {t}").fetchall()}
+            id_sets[t] = {r[0] for r in conn.execute(f"SELECT id FROM {qi(t)}").fetchall()}
         if id_sets[t] and all(v in id_sets[t] for v in vals):
             fits.append(t)
     return min(fits, key=lambda t: (len(id_sets[t]), t), default=None)

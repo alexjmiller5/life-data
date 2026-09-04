@@ -7,10 +7,12 @@
 // knows how the caller was authenticated.
 
 import { deriveRows, deriveStale, sweep } from "./derive.js";
-import { ident, sha256hex, validatePush } from "./validate.js";
+import { ident, qident, sha256hex, validatePush } from "./validate.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
+
+const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
 const PLUMBING = [
   `CREATE TABLE IF NOT EXISTS _schema_log (
@@ -146,13 +148,27 @@ async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
 }
 
-function upsertSql(table, cols) {
-  const t = ident(table);
-  const c = cols.map(ident);
-  const extracts = c.map((x) => `json_extract(value, '$.${x}')`).join(", ");
-  const sets = c.filter((x) => x !== "id").map((x) => `${x} = excluded.${x}`).join(", ");
+// Does the HUB's own schema have hub_at? Never ask the pushed column list:
+// an un-upgraded client omits it and its rows would land unstamped, invisible
+// to every replica whose cursor has moved on.
+async function hasHubAt(db, table) {
+  const { results } = await db.prepare(`PRAGMA table_info(${qident(table)})`).all();
+  return (results ?? []).some((c) => c.name === "hub_at");
+}
+
+// `stampHubAt` is the hub's role: hub_at is dropped from whatever the client
+// sent and re-added bound to the hub's own clock, so arrival order is one
+// clock's order and no replica can skip another's late push.
+function upsertSql(table, cols, stampHubAt = false) {
+  const t = qident(table);
+  if (stampHubAt) cols = [...cols.filter((x) => x !== "hub_at"), "hub_at"];
+  // the json path uses the RAW column name (it is a JSON key, not SQL)
+  const extracts = cols
+    .map((x) => (stampHubAt && x === "hub_at" ? "?" : `json_extract(value, '$.${ident(x)}')`))
+    .join(", ");
+  const sets = cols.filter((x) => x !== "id").map((x) => `${qident(x)} = excluded.${qident(x)}`).join(", ");
   return (
-    `INSERT INTO ${t} (${c.join(", ")}) SELECT ${extracts} FROM json_each(?) WHERE true ` +
+    `INSERT INTO ${t} (${cols.map(qident).join(", ")}) SELECT ${extracts} FROM json_each(?) WHERE true ` +
     `ON CONFLICT(id) DO UPDATE SET ${sets} WHERE excluded.updated_at > ${t}.updated_at`
   );
 }
@@ -188,11 +204,17 @@ const ROUTES = {
   },
 
   "/v1/rows/pull": async (body, db) => {
-    const cols = (body.columns ?? []).map(ident).join(", ");
-    const { results } = await db
-      .prepare(`SELECT ${cols} FROM ${ident(body.table)} WHERE updated_at > ?`)
-      .bind(body.since ?? "")
-      .all();
+    const cols = (body.columns ?? []).map(qident).join(", ");
+    const t = qident(body.table);
+    const since = body.since ?? "";
+    // arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond as
+    // a cursor read must not be lost. A NULL hub_at is older than everything,
+    // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
+    // A table predating the migration falls back to the old client stamp.
+    const [sql, args] = (await hasHubAt(db, body.table))
+      ? [`SELECT ${cols} FROM ${t} WHERE ? = '' OR hub_at >= ?`, [since, since]]
+      : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
+    const { results } = await db.prepare(sql).bind(...args).all();
     return { rows: results ?? [] };
   },
 
@@ -200,13 +222,17 @@ const ROUTES = {
     const table = ident(body.table); // before any SQL is built from it
     const rows = body.rows ?? [];
     const { accepted, rejected } = await validatePush(db, table, rows);
+    // one hub, one clock: every row this push lands carries the same stamp
+    const stamping = await hasHubAt(db, table);
+    const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
     if (accepted.length) {
-      await db.prepare(upsertSql(table, body.columns)).bind(JSON.stringify(accepted)).run();
+      const args = stamping ? [hubAt, JSON.stringify(accepted)] : [JSON.stringify(accepted)];
+      await db.prepare(upsertSql(table, body.columns, stamping)).bind(...args).run();
     }
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
     if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(db, env, table, accepted)));
-    return { upserted: accepted.length, rejected };
+    return { upserted: accepted.length, rejected, hub_at: hubAt };
   },
 
   // Synchronous derivation for a named set of rows: `life derive` and the
@@ -225,10 +251,11 @@ const ROUTES = {
   "/v1/cursor": async (body, db) => {
     let top = "";
     for (const table of body.tables ?? []) {
-      const row = await db.prepare(`SELECT max(updated_at) AS m FROM ${ident(table)}`).first();
+      const col = (await hasHubAt(db, table)) ? "hub_at" : "updated_at";
+      const row = await db.prepare(`SELECT max(${col}) AS m FROM ${qident(table)}`).first();
       if (row?.m && row.m > top) top = row.m;
     }
-    return { max_updated_at: top };
+    return { max_hub_at: top };
   },
 };
 
@@ -274,11 +301,11 @@ async function dumpSql(db) {
   for (const obj of objects ?? []) {
     lines.push(`${obj.sql};`);
     if (obj.type !== "table") continue;
-    const { results: rows } = await db.prepare(`SELECT * FROM ${ident(obj.name)}`).all();
+    const { results: rows } = await db.prepare(`SELECT * FROM ${qident(obj.name)}`).all();
     for (const row of rows ?? []) {
       const cols = Object.keys(row);
       const vals = cols.map((c) => sqlLiteral(row[c])).join(", ");
-      lines.push(`INSERT INTO ${obj.name} (${cols.join(", ")}) VALUES (${vals});`);
+      lines.push(`INSERT INTO ${qident(obj.name)} (${cols.map(qident).join(", ")}) VALUES (${vals});`);
     }
   }
   lines.push("COMMIT;");
@@ -503,7 +530,7 @@ export default {
         const out = {};
         for (const t of ["catalog_tables", "catalog_properties", "catalog_rules"]) {
           const exists = await tenant.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(t).first();
-          const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${t} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
+          const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${qident(t)} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
           out[t.replace("catalog_", "")] = results ?? [];
         }
         const text = JSON.stringify(out);

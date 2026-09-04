@@ -10,6 +10,7 @@ import pytest
 
 from life_data import (
     DEFAULT_HUB_URL,
+    NOW,
     HttpHub,
     LocalHub,
     auth_headers,
@@ -272,12 +273,10 @@ def test_sync_pushes_schema_and_rows_to_hub(db, hub):
     assert {r["name"] for r in hub.rows_pull("people", ["name"], "")} == {"Ada", "Grace"}
 
 
-def test_second_sync_echoes_its_own_push_once_then_settles(db, hub):
+def test_second_sync_is_noop(db, hub):
     _mk_people(db, ["Ada"])
-    pushed = sync(db, hub)["pushed"]
-    # the pull cursor is captured before pulling, so this sync sees the rows it
-    # pushed last time; the LWW upsert no-ops them
-    assert sync(db, hub) == {"pushed": 0, "pulled": pushed, "ddl_applied": 0, "rejected": []}
+    sync(db, hub)
+    assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
     assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
 
@@ -290,8 +289,10 @@ def test_pull_cursor_does_not_skip_rows_written_during_the_pull(db, hub):
         rows = real_pull(table, columns, since)
         if table == "people":  # a hub-side derivation lands after the pull query
             time.sleep(0.002)
-            with connect(hub.path) as conn:
-                conn.execute("INSERT INTO people (id, name) VALUES ('derived', 'Hub Derived')")
+            with connect(hub.path) as conn:  # the hub stamps hub_at on its own writes
+                conn.execute(
+                    f"INSERT INTO people (id, name, hub_at) VALUES ('derived', 'Hub Derived', {NOW})"
+                )
         return rows
 
     hub.rows_pull = pull_then_hub_writes
@@ -326,6 +327,114 @@ def test_pull_cursor_does_not_skip_a_replica_pushing_an_older_stamp(db, hub, tmp
     hub.rows_pull = real_pull
     sync(db, hub)
     assert {r["name"] for r in execute_sql(db, "SELECT name FROM people")} == {"B edit", "Grace"}
+
+
+def test_late_push_with_old_stamp_is_pulled_by_other_replicas(db, hub, tmp_path):
+    """The pull cursor is the HUB's arrival time, not a client stamp: a replica
+    that pushes late with an old `updated_at` still reaches everyone else."""
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    sync(other, hub)
+    execute_sql(other, "UPDATE people SET name = 'B edit'")  # stamped t1, offline
+    time.sleep(0.002)
+    insert_rows(db, "people", [{"name": "Grace"}])  # A's own row, newer than t1
+    sync(db, hub)
+    sync(db, hub)  # A's cursor is now past B's t1 stamp
+    sync(other, hub)  # B finally pushes: the hub stamps its arrival NOW
+    sync(db, hub)
+    assert {r["name"] for r in execute_sql(db, "SELECT name FROM people")} == {"B edit", "Grace"}
+
+
+def test_hub_at_is_assigned_by_hub_not_client(db, hub):
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    with connect(hub.path) as conn:
+        stamped = conn.execute("SELECT hub_at FROM people").fetchone()["hub_at"]
+    assert stamped and stamped > "2"
+    out = hub.rows_push(
+        "people",
+        ["id", "name", "updated_at", "hub_at"],
+        [{"id": "x", "name": "Faked", "updated_at": "2099-01-01T00:00:00.000Z", "hub_at": "1970"}],
+    )
+    with connect(hub.path) as conn:
+        row = conn.execute("SELECT hub_at FROM people WHERE id = 'x'").fetchone()
+    assert row["hub_at"] == out["hub_at"] != "1970"
+
+
+def test_ensure_hub_at_backfills_existing_tables_and_forces_one_full_pull(db, hub, tmp_path):
+    from life_data import ensure_hub_at
+
+    _mk_people(db, ["Ada"])
+    # a replica upgraded from before hub_at existed: drop the column back off
+    with connect(db) as conn:
+        conn.execute("ALTER TABLE people DROP COLUMN hub_at")
+    assert "hub_at" not in {r["name"] for r in execute_sql(db, "PRAGMA table_info(people)")}
+    assert ensure_hub_at(db) is True
+    assert "hub_at" in {r["name"] for r in execute_sql(db, "PRAGMA table_info(people)")}
+    assert ensure_hub_at(db) is False  # idempotent
+    assert sync(db, hub)["pushed"] >= 1
+
+
+def test_hub_stamps_from_its_own_schema_when_the_push_omits_hub_at(db, hub, tmp_path):
+    """An un-upgraded client (deploy window) pushes without hub_at in `columns`.
+    The hub stamps anyway, or those rows are invisible to every replica whose
+    cursor has moved on."""
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    sync(other, hub)  # `other` now has a non-empty pull cursor
+    old_client_cols = ["id", "name", "updated_at"]
+    out = hub.rows_push(
+        "people",
+        old_client_cols,
+        [{"id": "legacy", "name": "Legacy", "updated_at": "2099-01-01T00:00:00.000Z"}],
+    )
+    with connect(hub.path) as conn:
+        stamped = conn.execute("SELECT hub_at FROM people WHERE id = 'legacy'").fetchone()
+    assert stamped["hub_at"] == out["hub_at"] and out["hub_at"]
+    assert sync(other, hub)["pulled"] == 1
+    assert execute_sql(other, "SELECT name FROM people WHERE id = 'legacy'")[0]["name"] == "Legacy"
+
+
+def test_hub_falls_back_to_updated_at_on_a_table_without_hub_at(db, hub):
+    """A new hub still serves an old client's tables: cursor and pull degrade to
+    the pre-migration `updated_at` behaviour instead of erroring."""
+    with connect(hub.path) as conn:
+        conn.execute("CREATE TABLE legacy (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT)")
+        conn.execute("INSERT INTO legacy VALUES ('a', 'Ada', '2026-01-01T00:00:00.000Z')")
+        conn.execute("INSERT INTO legacy VALUES ('g', 'Grace', '2026-02-01T00:00:00.000Z')")
+    assert hub.cursor(["legacy"]) == "2026-02-01T00:00:00.000Z"
+    cols = ["id", "name", "updated_at"]
+    assert len(hub.rows_pull("legacy", cols, "")) == 2
+    assert [r["id"] for r in hub.rows_pull("legacy", cols, "2026-01-15T00:00:00.000Z")] == ["g"]
+
+
+def test_upgrade_from_a_pre_hub_at_estate_converges(db, hub, tmp_path):
+    """The one-time migration: an existing replica and hub whose tables predate
+    hub_at, with a last_pull holding an updated_at-shaped stamp."""
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    for path in (db, hub.path):  # rewind both sides to the pre-hub_at shape
+        with connect(path) as conn:
+            for t in [
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            ]:
+                if not t.startswith(("_", "sqlite_")):
+                    conn.execute(f'ALTER TABLE "{t}" DROP COLUMN hub_at')
+    stale = execute_sql(db, "SELECT max(updated_at) AS m FROM people")[0]["m"]
+    execute_sql(db, f"UPDATE _sync_state SET value = '{stale}' WHERE key = 'last_pull'")
+
+    stats = sync(db, hub)  # the ALTERs replay to the hub in this same sync
+    assert stats["ddl_applied"] >= 1
+    assert execute_sql(db, "SELECT hub_at FROM people")  # column is back
+    with connect(hub.path) as conn:
+        assert conn.execute("SELECT hub_at FROM people").fetchone()["hub_at"]
+
+    other = init(tmp_path / "other" / "life.db")
+    sync(other, hub)
+    assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada"}
+    assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
 
 def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
@@ -529,7 +638,7 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/rows/push":
             out = h.rows_push(body["table"], body["columns"], body["rows"])
         elif self.path == "/v1/cursor":
-            out = {"max_updated_at": h.cursor(body["tables"])}
+            out = {"max_hub_at": h.cursor(body["tables"])}
         else:
             self.send_response(404)
             self.end_headers()
@@ -601,7 +710,7 @@ def test_cli_export_writes_sql_to_stdout(monkeypatch, tmp_path, capsys):
     main(["table", "create", "pets", "name:text"])
     capsys.readouterr()
     assert main(["export"]) == 0
-    assert "CREATE TABLE pets" in capsys.readouterr().out
+    assert 'CREATE TABLE "pets"' in capsys.readouterr().out
 
 
 def test_http_hub_default_timeout_covers_slow_stream_tees():
@@ -766,3 +875,26 @@ def test_cli_derive_without_hub_token_fails_clearly(monkeypatch, tmp_path, capsy
     assert out == ""
     assert "token" in err.lower()
     assert execute_sql(tmp_path / "life.db", "SELECT count(*) AS n FROM movies")[0]["n"] == 0
+
+
+# --- quoted identifiers ------------------------------------------------------
+
+
+def test_qi_quotes_and_rejects_unsafe_identifiers():
+    from life_data import qi
+
+    assert qi("cast") == '"cast"'
+    for bad in ("", "1col", "a-b", "x; DROP TABLE y", 'a"b'):
+        with pytest.raises(ValueError):
+            qi(bad)
+
+
+def test_reserved_word_columns_round_trip_through_sync(db, hub, tmp_path):
+    create_table(db, "movies", ["cast:text", "order:int", "group:text", "select:text"])
+    insert_rows(db, "movies", [{"cast": "Ada", "order": 1, "group": "g", "select": "s"}])
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    assert sync(other, hub)["pulled"] >= 1
+    row = execute_sql(other, 'SELECT "cast", "order", "group", "select" FROM movies')[0]
+    assert row == {"cast": "Ada", "order": 1, "group": "g", "select": "s"}
+    assert catalog.check(other) == []
