@@ -150,6 +150,7 @@ def load_config(data_dir: Path | None = None) -> dict:
     cfg_path = (data_dir or resolve_data_dir()) / "config.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     cfg.setdefault("hub_url", DEFAULT_HUB_URL)
+    cfg.setdefault("commands", {})
     cfg["hub_url"] = os.environ.get("LIFE_HUB_URL", cfg["hub_url"]).rstrip("/")
     token = os.environ.get("LIFE_HUB_TOKEN") or cfg.get("token")
     if not token and cfg.get("token_cmd"):
@@ -406,8 +407,12 @@ def _set_state(path: Path, key: str, value: str) -> None:
 
 
 def _user_tables(path: Path) -> list[str]:
+    """catalog_* and provenance first, so a replica always has the contract
+    (and the provenance backing derived columns) before the data it governs."""
     rows = execute_sql(path, "SELECT name FROM sqlite_master WHERE type = 'table'")
-    return [r["name"] for r in rows if not r["name"].startswith(("_", "sqlite_"))]
+    names = [r["name"] for r in rows if not r["name"].startswith(("_", "sqlite_"))]
+    first = [n for n in names if n.startswith("catalog_") or n == "provenance"]
+    return sorted(first) + sorted(n for n in names if n not in first)
 
 
 def _columns(path: Path, table: str) -> list[str]:
@@ -524,6 +529,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sync", help="sync once with the hub")
     p_check = sub.add_parser("check", help="whole-estate read-only report of catalog violations")
     p_check.add_argument("--as-of", dest="as_of")
+    p_derive = sub.add_parser("derive", help="run a derivation: <table>.<column>")
+    p_derive.add_argument("ref")
+    p_derive.add_argument("--where", help="SQL predicate selecting rows")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
@@ -638,6 +646,10 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         findings = catalog.check(path, as_of=args.as_of)
         print(json.dumps(findings, indent=2))
         return 1 if findings else 0
+    elif args.command == "derive":
+        tbl, col = args.ref.split(".", 1)
+        n = catalog.derive(path, tbl, col, where=args.where, commands=load_config().get("commands"))
+        print(f"derived {args.ref} for {n} rows")
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)

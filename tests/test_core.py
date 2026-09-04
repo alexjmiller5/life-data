@@ -229,6 +229,17 @@ def test_second_sync_is_noop(db, hub):
     assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0}
 
 
+def test_sync_pushes_catalog_and_provenance_before_data(db, hub, monkeypatch):
+    from life_data import _user_tables
+    from life_data.catalog import ensure_catalog
+
+    _mk_people(db, ["Ada"])
+    ensure_catalog(db)
+    order = _user_tables(db)
+    assert order.index("provenance") < order.index("people")
+    assert order.index("catalog_properties") < order.index("people")
+
+
 def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
     _mk_people(db, ["Ada", "Grace"])
     sync(db, hub)

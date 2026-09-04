@@ -9,8 +9,10 @@ from life_data.catalog import (
     Violation,
     check,
     check_rule_sql,
+    derive,
     ensure_catalog,
     has_catalog,
+    inputs_hash,
     properties,
     rm_property,
     rm_rule,
@@ -20,6 +22,7 @@ from life_data.catalog import (
     set_rule,
     set_table,
     validate_row,
+    value_hash,
 )
 
 
@@ -441,3 +444,80 @@ def test_cli_check_exit_code(monkeypatch, tmp_path, capsys):
     capsys.readouterr()  # discard prior commands' stdout; isolate this check's output
     assert main(["check"]) == 1
     assert json.loads(capsys.readouterr().out)[0]["rule"] == "options"
+
+
+# --- derivations & provenance -------------------------------------------------
+
+
+def _movies(db):
+    create_table(db, "movies", ["title:text", "tmdb_id:text", "genres:text", "slug:text"])
+    set_property(db, "movies", "tmdb_id", type="text", required=1)
+    set_property(db, "movies", "genres", type="json", derived_by="cmd:tmdb", inputs=["tmdb_id"])
+    set_property(
+        db,
+        "movies",
+        "slug",
+        type="text",
+        derived_by="sql:lower(replace(title, ' ', '-'))",
+        inputs=["title"],
+    )
+
+
+def test_sql_derivation_writes_value_and_provenance(db):
+    _movies(db)
+    insert_rows(db, "movies", [{"id": "m1", "title": "Blade Runner", "tmdb_id": "78"}])
+    assert derive(db, "movies", "slug") == 1
+    assert execute_sql(db, "SELECT slug FROM movies")[0]["slug"] == "blade-runner"
+    prov = execute_sql(db, "SELECT * FROM provenance WHERE id = 'movies:m1:slug'")[0]
+    with connect(db) as conn:
+        assert prov["inputs_hash"] == inputs_hash(conn, "movies", "m1", ["title"])
+        assert prov["value_hash"] == value_hash(conn, "movies", "m1", "slug")
+
+
+def test_cmd_derivation_runs_command_with_inputs(db, tmp_path):
+    _movies(db)
+    script = tmp_path / "tmdb.py"
+    script.write_text(
+        "import json,sys\nd=json.load(sys.stdin)\n"
+        "print(json.dumps({'genres': ['Sci-Fi'], '_source_ref': 'tmdb:'+d['inputs']['tmdb_id']}))\n"
+    )
+    insert_rows(db, "movies", [{"id": "m1", "title": "x", "tmdb_id": "78"}])
+    assert derive(db, "movies", "genres", commands={"tmdb": f"python3 {script}"}) == 1
+    assert json.loads(execute_sql(db, "SELECT genres FROM movies")[0]["genres"]) == ["Sci-Fi"]
+    assert execute_sql(db, "SELECT source_ref FROM provenance")[0]["source_ref"] == "tmdb:78"
+
+
+def test_hand_edit_to_derived_column_is_rejected(db):
+    _movies(db)
+    insert_rows(db, "movies", [{"id": "m1", "title": "x", "tmdb_id": "78"}])
+    derive(db, "movies", "slug")
+    with pytest.raises(ValidationError, match="derived"):
+        execute_sql(db, "UPDATE movies SET slug = 'hand' WHERE id = 'm1'")
+
+
+def test_check_reports_stale_and_underived(db):
+    _movies(db)
+    insert_rows(db, "movies", [{"id": "m1", "title": "x", "tmdb_id": "78"}])
+    derive(db, "movies", "slug")
+    execute_sql(db, "UPDATE movies SET title = 'y' WHERE id = 'm1'")  # input changed
+    rules_hit = {(f["col"], f["rule"]) for f in check(db)}
+    assert ("slug", "stale") in rules_hit and ("genres", "underived") in rules_hit
+
+
+def test_cmd_derived_column_cannot_be_required(db):
+    create_table(db, "movies", ["genres:text"])
+    with pytest.raises(ValueError, match="required"):
+        set_property(
+            db, "movies", "genres", type="json", required=1, derived_by="cmd:tmdb", inputs=[]
+        )
+
+
+def test_derive_where_filters(db):
+    _movies(db)
+    insert_rows(
+        db,
+        "movies",
+        [{"id": "m1", "title": "a", "tmdb_id": "1"}, {"id": "m2", "title": "b", "tmdb_id": "2"}],
+    )
+    assert derive(db, "movies", "slug", where="id = 'm2'") == 1
+    assert execute_sql(db, "SELECT slug FROM movies WHERE id='m1'")[0]["slug"] is None

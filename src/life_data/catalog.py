@@ -4,9 +4,11 @@ Pure over a sqlite3 connection. No CLI, no network. The CLI in __init__ calls
 into this; nothing here knows about hubs or argv.
 """
 
+import hashlib
 import json
 import re
 import sqlite3
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,6 +219,10 @@ def set_property(path: Path, tbl: str, col: str, **fields) -> dict:
         raise ValueError(f"unknown type {fields['type']!r}; one of {sorted(TYPES)}")
     if fields.get("derived_by") and not fields["derived_by"].startswith(("sql:", "cmd:")):
         raise ValueError("derived_by must start with 'sql:' or 'cmd:'")
+    if fields.get("required") and str(fields.get("derived_by") or "").startswith("cmd:"):
+        raise ValueError(
+            "a cmd-derived column cannot be required: the row is valid but incomplete until derived"
+        )
     d = fields.get("derived_by") or ""
     if d.startswith("sql:"):
         with _pkg().connect(path) as conn:
@@ -621,6 +627,154 @@ def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
         cleanup()
 
 
+# --- derivations & provenance -------------------------------------------------
+
+
+def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str:
+    """Hash the inputs as SQLite renders them, so Python and the hub agree byte for byte."""
+    casts = ", ".join(f"CAST({c} AS TEXT)" for c in inputs) or "NULL"
+    text = conn.execute(
+        f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)
+    ).fetchone()[0]
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def value_hash(conn, tbl: str, row_id: str, col: str) -> str:
+    text = conn.execute(
+        f"SELECT coalesce(CAST({col} AS TEXT), '') FROM {tbl} WHERE id = ?", (row_id,)
+    ).fetchone()[0]
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _run_command(cmd: str, payload: dict) -> dict:
+    out = subprocess.run(
+        cmd, shell=True, input=json.dumps(payload), capture_output=True, text=True, check=False
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"derivation command failed: {out.stderr.strip()[:500]}")
+    result = json.loads(out.stdout or "{}")
+    if not isinstance(result, dict):
+        raise TypeError("derivation command must print a JSON object")
+    return result
+
+
+def derive(
+    path: Path, tbl: str, col: str, where: str | None = None, commands: dict | None = None
+) -> int:
+    """Run one `sql:` or `cmd:` derivation for tbl's rows in a single write():
+    one transaction, all-or-nothing, with a provenance row per written cell."""
+    pkg = _pkg()
+    with pkg.connect(path) as conn:
+        target = next((p for p in properties(conn, tbl) if p["col"] == col), None)
+        if not target or not target.get("derived_by"):
+            raise ValueError(f"{tbl}.{col} is not a derived property")
+        siblings = [p for p in properties(conn, tbl) if p.get("derived_by") == target["derived_by"]]
+        cols = [p["col"] for p in siblings]
+        inputs = target.get("inputs") or []
+        ids = [
+            r[0]
+            for r in conn.execute(
+                f"SELECT id FROM {tbl} WHERE deleted_at IS NULL"
+                + (f" AND ({where})" if where else "")
+            ).fetchall()
+        ]
+    d = target["derived_by"]
+
+    def fn(conn):
+        count = 0
+        for rid in ids:
+            if d.startswith("sql:"):
+                values = {
+                    col: conn.execute(
+                        f"SELECT ({d[4:]}) FROM {tbl} WHERE id = ?", (rid,)
+                    ).fetchone()[0]
+                }
+                source_ref = None
+            else:
+                name = d[4:]
+                cmd = (commands or {}).get(name)
+                if not cmd:
+                    raise RuntimeError(
+                        f"no command configured for derivation {name!r} (config.json: commands)"
+                    )
+                row = conn.execute(f"SELECT * FROM {tbl} WHERE id = ?", (rid,)).fetchone()
+                result = _run_command(
+                    cmd, {"tbl": tbl, "id": rid, "inputs": {c: row[c] for c in inputs}}
+                )
+                source_ref = result.pop("_source_ref", None)
+                values = {k: v for k, v in result.items() if k in cols}
+            sets = ", ".join(f"{k} = ?" for k in values)
+            vals = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()]
+            conn.execute(f"UPDATE {tbl} SET {sets} WHERE id = ?", [*vals, rid])
+            h = inputs_hash(conn, tbl, rid, inputs)
+            now = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
+            for k in values:
+                conn.execute(
+                    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash, source_ref, produced_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, "
+                    "inputs_hash = excluded.inputs_hash, value_hash = excluded.value_hash, source_ref = excluded.source_ref, "
+                    "produced_at = excluded.produced_at, deleted_at = NULL",
+                    (
+                        f"{tbl}:{rid}:{k}",
+                        tbl,
+                        rid,
+                        k,
+                        d,
+                        h,
+                        value_hash(conn, tbl, rid, k),
+                        source_ref,
+                        now,
+                    ),
+                )
+            count += 1
+        return count
+
+    # one transaction for the whole run: one snapshot, all-or-nothing
+    return write(path, fn, in_derive=set(cols))
+
+
+def stale(conn) -> list[Violation]:
+    out = []
+    for p in properties(conn):
+        if not p.get("derived_by") or not _table_exists(conn, p["tbl"]):
+            continue
+        rows = conn.execute(
+            "SELECT pr.row_id, pr.inputs_hash FROM provenance pr WHERE pr.tbl = ? AND pr.col = ? AND pr.deleted_at IS NULL",
+            (p["tbl"], p["col"]),
+        ).fetchall()
+        for r in rows:
+            if inputs_hash(conn, p["tbl"], r["row_id"], p.get("inputs") or []) != r["inputs_hash"]:
+                out.append(
+                    Violation(
+                        p["tbl"],
+                        r["row_id"],
+                        p["col"],
+                        "stale",
+                        f"{p['col']} was derived from inputs that have since changed.",
+                    )
+                )
+    return out
+
+
+def underived(conn) -> list[Violation]:
+    out = []
+    for p in properties(conn):
+        if not p.get("derived_by") or not _table_exists(conn, p["tbl"]):
+            continue
+        rows = conn.execute(
+            f"SELECT t.id FROM {p['tbl']} t WHERE t.deleted_at IS NULL AND NOT EXISTS "
+            "(SELECT 1 FROM provenance pr WHERE pr.tbl = ? AND pr.col = ? AND pr.row_id = t.id AND pr.deleted_at IS NULL)",
+            (p["tbl"], p["col"]),
+        ).fetchall()
+        for r in rows:
+            out.append(
+                Violation(
+                    p["tbl"], r["id"], p["col"], "underived", f"{p['col']} has not been derived."
+                )
+            )
+    return out
+
+
 # --- check -------------------------------------------------------------------
 
 
@@ -654,6 +808,7 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
                         rule["text"],
                     )
                 )
+        out += stale(conn) + underived(conn)
     return [v.as_dict() for v in out]
 
 
