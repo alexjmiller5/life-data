@@ -408,3 +408,97 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
                 fail(col, "ref", f"No {p['ref_table']} row: {', '.join(map(str, missing))}")
                 continue
     return out
+
+
+# --- write path --------------------------------------------------------------
+
+
+def _ref_ok(conn):
+    def ok(ref_table, rid):
+        if not _table_exists(conn, ref_table):
+            return False
+        return (
+            conn.execute(
+                f"SELECT 1 FROM {ref_table} WHERE id = ? AND deleted_at IS NULL", (rid,)
+            ).fetchone()
+            is not None
+        )
+
+    return ok
+
+
+def _extra_options(conn):
+    def extra(prop):
+        return [r[0] for r in conn.execute(prop["options_sql"]).fetchall()]
+
+    return extra
+
+
+def apply_defaults(conn: sqlite3.Connection, tbl: str, row: dict) -> dict:
+    out = dict(row)
+    for p in properties(conn, tbl):
+        d = p.get("default_value")
+        if d is None or p["col"] in out:
+            continue
+        if d.startswith("sql:"):
+            out[p["col"]] = conn.execute(f"SELECT ({d[4:]})").fetchone()[0]
+        else:
+            out[p["col"]] = d
+    return out
+
+
+def write(path: Path, fn, *, in_derive=()):
+    """Run fn(conn) in one transaction; validate every changed row in every
+    cataloged table; ROLLBACK and raise ValidationError on any violation."""
+    pkg = _pkg()
+    conn = pkg.connect(path, manual_tx=True)
+    try:
+        tables = [t for t in cataloged_tables(conn) if _table_exists(conn, t)]
+        conn.execute("BEGIN")
+        t0 = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
+        marks = {}
+        for t in tables:
+            # ponytail: whole-table snapshot per write; scope by rowid past ~1M rows
+            conn.execute(f"CREATE TEMP TABLE _before_{t} AS SELECT rowid AS _rowid, * FROM {t}")
+            marks[t] = conn.execute(f"SELECT coalesce(max(rowid), 0) FROM {t}").fetchone()[0]
+        try:
+            result = fn(conn)
+            violations = _validate_changed(conn, marks, t0, set(in_derive))
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        if violations:
+            conn.execute("ROLLBACK")
+            raise ValidationError(violations)
+        conn.execute("COMMIT")
+        return result
+    finally:
+        conn.close()
+
+
+def _validate_changed(conn, marks, t0, in_derive) -> list[Violation]:
+    out: list[Violation] = []
+    for t, max_rowid in marks.items():
+        if not _table_exists(conn, t):
+            continue  # fn dropped it
+        rows = conn.execute(
+            f"SELECT * FROM {t} WHERE rowid > ? OR updated_at >= ?", (max_rowid, t0)
+        ).fetchall()
+        if not rows:
+            continue
+        props = properties(conn, t)
+        for r in rows:
+            after = dict(r)
+            b = conn.execute(f"SELECT * FROM _before_{t} WHERE id = ?", (after["id"],)).fetchone()
+            before = dict(b) if b else None
+            if before:
+                before.pop("_rowid", None)
+            out += validate_row(
+                props,
+                before,
+                after,
+                in_derive=in_derive,
+                ref_ok=_ref_ok(conn),
+                extra_options=_extra_options(conn),
+            )
+    return out

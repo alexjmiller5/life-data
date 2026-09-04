@@ -51,8 +51,8 @@ def db_path() -> Path:
     return resolve_data_dir() / "life.db"
 
 
-def connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def connect(path: Path, manual_tx: bool = False) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, isolation_level=None if manual_tx else "")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -66,24 +66,38 @@ def init(path: Path) -> Path:
     return path
 
 
+READ_KEYWORDS = {"SELECT", "PRAGMA", "EXPLAIN", "WITH", "VALUES"}
+
+
+def _first_word(sql: str) -> str:
+    return sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+
+
 def execute_sql(path: Path, sql: str) -> list[dict]:
-    with connect(path) as conn:
-        cur = conn.execute(sql)
-        rows = [dict(r) for r in cur.fetchall()]
-        first_word = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
-        if first_word in DDL_KEYWORDS:
+    if _first_word(sql) in READ_KEYWORDS:
+        with connect(path) as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def run(conn):
+        rows = [dict(r) for r in conn.execute(sql).fetchall()]
+        if _first_word(sql) in DDL_KEYWORDS:
             conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (sql,))
-    return rows
+        return rows
+
+    return catalog.write(path, run)
 
 
 def insert_rows(path: Path, table: str, rows: list[dict]) -> int:
-    with connect(path) as conn:
+    def run(conn):
         for row in rows:
+            row = catalog.apply_defaults(conn, table, row)
             cols = list(row)
             values = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in row.values()]
             placeholders = ", ".join("?" for _ in cols)
             conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})", values)
-    return len(rows)
+        return len(rows)
+
+    return catalog.write(path, run)
 
 
 def create_table(path: Path, name: str, columns: list[str]) -> None:
@@ -587,6 +601,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     path = db_path()
+    try:
+        return _dispatch(args, path)
+    except catalog.ValidationError as e:
+        print(
+            json.dumps({"rejected": [v.as_dict() for v in e.violations]}, indent=2), file=sys.stderr
+        )
+        return 1
+
+
+def _dispatch(args: argparse.Namespace, path: Path) -> int:
     if args.command == "init":
         init(path)
         print(path)

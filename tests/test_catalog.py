@@ -3,8 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from life_data import connect, execute_sql, init
+from life_data import connect, create_table, execute_sql, init, insert_rows
 from life_data.catalog import (
+    ValidationError,
     Violation,
     ensure_catalog,
     has_catalog,
@@ -138,3 +139,113 @@ def test_violation_message_names_allowed_values():
     assert isinstance(v, Violation)
     assert v.tbl == "t" and v.row_id == "a"
     assert "want, been" in v.message
+
+
+# --- write path ---------------------------------------------------------------
+
+
+def _places(db):
+    create_table(db, "places", ["name:text", "status:text", "tags:text", "gmaps_url:text"])
+    set_property(db, "places", "name", type="text", required=1)
+    set_property(
+        db,
+        "places",
+        "status",
+        type="select",
+        required=1,
+        default_value="want",
+        options=[{"v": "want"}, {"v": "priority"}, {"v": "been"}],
+    )
+    set_property(db, "places", "tags", type="multi_select", options=[{"v": "bar"}, {"v": "cafe"}])
+
+
+def test_insert_violation_rolls_back_whole_statement(db):
+    _places(db)
+    with pytest.raises(ValidationError) as ei:
+        insert_rows(
+            db, "places", [{"name": "Casa", "status": "want"}, {"name": "Bad", "status": "Been"}]
+        )
+    assert ei.value.violations[0].col == "status" and ei.value.violations[0].rule == "options"
+    assert execute_sql(db, "SELECT count(*) AS n FROM places")[0]["n"] == 0
+
+
+def test_update_via_sql_is_validated(db):
+    _places(db)
+    insert_rows(db, "places", [{"name": "Casa", "status": "want"}])
+    with pytest.raises(ValidationError, match="not an option"):
+        execute_sql(db, "UPDATE places SET status = 'visited'")
+    assert execute_sql(db, "SELECT status FROM places")[0]["status"] == "want"
+
+
+def test_only_changed_rows_are_validated(db):
+    create_table(db, "places", ["name:text", "status:text"])
+    insert_rows(db, "places", [{"id": "old", "name": "legacy", "status": "Weird"}])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}])
+    insert_rows(db, "places", [{"id": "new", "name": "n", "status": "want"}])
+    execute_sql(db, "UPDATE places SET name = 'renamed' WHERE id = 'new'")  # legacy row untouched
+    assert execute_sql(db, "SELECT name FROM places WHERE id='new'")[0]["name"] == "renamed"
+    with pytest.raises(ValidationError):
+        execute_sql(
+            db, "UPDATE places SET name = 'touch' WHERE id = 'old'"
+        )  # touching it forces the fix
+
+
+def test_defaults_apply_on_insert(db):
+    _places(db)
+    insert_rows(db, "places", [{"name": "Casa"}])
+    assert execute_sql(db, "SELECT status FROM places")[0]["status"] == "want"
+
+
+def test_sql_default_is_evaluated(db):
+    import re
+
+    create_table(db, "tasks", ["title:text", "due:text"])
+    set_property(db, "tasks", "due", type="date", default_value="sql:date('now')")
+    insert_rows(db, "tasks", [{"title": "x"}])
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", execute_sql(db, "SELECT due FROM tasks")[0]["due"])
+
+
+def test_ref_checks_target_table(db):
+    create_table(db, "people", ["name:text"])
+    insert_rows(db, "people", [{"id": "p1", "name": "Ada"}])
+    create_table(db, "links", ["person:text"])
+    set_property(db, "links", "person", type="ref", ref_table="people")
+    insert_rows(db, "links", [{"person": "p1"}])
+    with pytest.raises(ValidationError, match="No people row"):
+        insert_rows(db, "links", [{"person": "p9"}])
+
+
+def test_options_sql_extends_allowlist(db):
+    create_table(db, "place_tags", ["name:text"])
+    insert_rows(db, "place_tags", [{"name": "sports bar"}])
+    create_table(db, "tasks", ["tag:text"])
+    set_property(
+        db,
+        "tasks",
+        "tag",
+        type="select",
+        options=[{"v": "chore"}],
+        options_sql="SELECT name FROM place_tags WHERE deleted_at IS NULL",
+    )
+    insert_rows(db, "tasks", [{"tag": "sports bar"}])
+    with pytest.raises(ValidationError):
+        insert_rows(db, "tasks", [{"tag": "dive bar"}])
+
+
+def test_reads_are_not_wrapped(db):
+    _places(db)
+    assert execute_sql(db, "SELECT 1 AS one") == [{"one": 1}]
+
+
+def test_uncataloged_table_is_unconstrained(db):
+    _places(db)
+    create_table(db, "scratch", ["v:text"])
+    insert_rows(db, "scratch", [{"v": "anything"}])
+
+
+def test_engine_tables_are_never_validated_against_themselves(db):
+    _places(db)
+    set_property(db, "catalog_properties", "type", type="select", options=[{"v": "text"}])
+    set_property(
+        db, "places", "extra", type="url"
+    )  # would fail if catalog_properties were validated
