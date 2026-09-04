@@ -59,7 +59,10 @@ CLI.
 - **Writes are validated.** `execute_sql` and `insert_rows` run inside
   `catalog.write()`: one transaction, every changed row checked in every table
   that has catalog properties OR is named by an invariant, `ValidationError`
-  after ROLLBACK. Only SELECT/PRAGMA/EXPLAIN/VALUES bypass it - a CTE
+  after ROLLBACK. **Changed rows come from the per-table `temp._before_<t>`
+  snapshot diff, never a timestamp comparison** - a clock collision at
+  millisecond resolution cuts both ways (an untouched legacy row looks
+  changed; an UPDATE inside the same millisecond moves no `updated_at`). Only SELECT/PRAGMA/EXPLAIN/VALUES bypass it - a CTE
   (`WITH …`) does not, since it can end in INSERT/UPDATE/DELETE; a read-only
   CTE just pays a no-op transaction. Sync's pull upsert bypasses it on purpose
   (pulled rows were validated where they were written). The hub validates

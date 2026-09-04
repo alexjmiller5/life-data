@@ -553,9 +553,21 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
     for t, max_rowid in marks.items():
         if not _table_exists(conn, t):
             continue  # fn dropped it
-        rows = conn.execute(
-            f"SELECT * FROM {t} WHERE rowid > ? OR updated_at >= ?", (max_rowid, t0)
-        ).fetchall()
+        # Changed rows come from the snapshot diff, never a clock comparison:
+        # `updated_at >= t0` both over-reports (a legacy row written in the
+        # same millisecond, or a pulled row dated ahead, is not this write's
+        # business) and under-reports (an UPDATE inside that same millisecond
+        # leaves updated_at untouched).
+        cols = [r[1] for r in conn.execute(f"PRAGMA temp.table_info(_before_{t})").fetchall()]
+        sel = ", ".join(["rowid AS _rowid"] + [f'"{c}"' for c in cols[1:]])
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM {t} WHERE rowid > ? OR rowid IN (SELECT _rowid FROM "
+                f"(SELECT {sel} FROM {t} EXCEPT SELECT * FROM temp._before_{t}))",
+                (max_rowid,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = conn.execute(f"SELECT * FROM {t}").fetchall()  # fn reshaped the table
         if not rows:
             continue
         props = properties(conn, t)

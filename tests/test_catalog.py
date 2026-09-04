@@ -199,6 +199,32 @@ def test_only_changed_rows_are_validated(db):
         )  # touching it forces the fix
 
 
+def test_untouched_legacy_row_is_not_validated_by_its_timestamp(db):
+    """Changed rows come from the snapshot diff, not a timestamp comparison:
+    `updated_at >= t0` also catches rows this write never touched whenever the
+    clock collides (same millisecond) or a pulled row is dated ahead."""
+    create_table(db, "places", ["name:text", "status:text"])
+    insert_rows(db, "places", [{"id": "old", "name": "legacy", "status": "Weird"}])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}])
+    conn = connect(db)  # a replica pull lands rows without re-validating them
+    conn.execute("UPDATE places SET updated_at = '2099-01-01T00:00:00.000Z' WHERE id = 'old'")
+    conn.commit()
+    conn.close()
+    insert_rows(db, "places", [{"id": "new", "name": "n", "status": "want"}])
+    assert execute_sql(db, "SELECT count(*) AS n FROM places")[0]["n"] == 2
+
+
+def test_change_without_a_timestamp_bump_is_still_validated(db):
+    """The other half: a table made by raw `life sql` has no updated_at
+    trigger, so a bad UPDATE moves no timestamp. The snapshot diff sees it."""
+    execute_sql(db, "CREATE TABLE t (id TEXT PRIMARY KEY, status TEXT, updated_at TEXT)")
+    execute_sql(db, "INSERT INTO t (id, status, updated_at) VALUES ('a','want','2020-01-01')")
+    set_property(db, "t", "status", type="select", options=[{"v": "want"}])
+    with pytest.raises(ValidationError, match="not an option"):
+        execute_sql(db, "UPDATE t SET status = 'Nope'")
+    assert execute_sql(db, "SELECT status FROM t")[0]["status"] == "want"
+
+
 def test_defaults_apply_on_insert(db):
     _places(db)
     insert_rows(db, "places", [{"name": "Casa"}])
