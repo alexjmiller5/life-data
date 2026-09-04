@@ -192,10 +192,11 @@ const ROUTES = {
   },
 
   "/v1/rows/push": async (body, db) => {
+    const table = ident(body.table); // before any SQL is built from it
     const rows = body.rows ?? [];
-    const { accepted, rejected } = await validatePush(db, body.table, rows);
+    const { accepted, rejected } = await validatePush(db, table, rows);
     if (accepted.length) {
-      await db.prepare(upsertSql(body.table, body.columns)).bind(JSON.stringify(accepted)).run();
+      await db.prepare(upsertSql(table, body.columns)).bind(JSON.stringify(accepted)).run();
     }
     return { upserted: accepted.length, rejected };
   },
