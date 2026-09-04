@@ -570,9 +570,6 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sync", help="sync once with the hub")
     p_check = sub.add_parser("check", help="whole-estate read-only report of catalog violations")
     p_check.add_argument("--as-of", dest="as_of")
-    p_derive = sub.add_parser("derive", help="run a derivation: <table>.<column>")
-    p_derive.add_argument("ref")
-    p_derive.add_argument("--where", help="SQL predicate selecting rows")
     p_audit = sub.add_parser("audit", help="run audit rules' commands, report findings")
     p_audit.add_argument("id", nargs="?", help="run only this rule")
     p_infer = sub.add_parser("infer", help="propose catalog properties for uncataloged columns")
@@ -700,10 +697,6 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         findings = catalog.check(path, as_of=args.as_of)
         print(json.dumps(findings, indent=2))
         return 1 if findings else 0
-    elif args.command == "derive":
-        tbl, col = args.ref.split(".", 1)
-        n = catalog.derive(path, tbl, col, where=args.where, commands=load_config().get("commands"))
-        print(f"derived {args.ref} for {n} rows")
     elif args.command == "audit":
         findings = catalog.audit(path, rule_id=args.id, commands=load_config().get("commands"))
         print(json.dumps(findings, indent=2))

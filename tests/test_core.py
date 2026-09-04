@@ -297,12 +297,22 @@ def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
 
 
 def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
-    from life_data.catalog import derive, set_property
+    from life_data.catalog import inputs_hash, set_property, value_hash
 
     create_table(db, "movies", ["title:text", "slug:text"])
-    set_property(db, "movies", "slug", type="text", derived_by="sql:lower(title)", inputs=["title"])
+    set_property(db, "movies", "slug", type="text", derived_by="http:slug", inputs=["title"])
     insert_rows(db, "movies", [{"id": "m1", "title": "A"}])
-    derive(db, "movies", "slug")
+    # the hub's derive engine wrote the value and its provenance; stand in for it
+    with connect(db) as conn:
+        conn.execute("UPDATE movies SET slug = 'a' WHERE id = 'm1'")
+        conn.execute(
+            "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) "
+            "VALUES ('movies:m1:slug', 'movies', 'm1', 'slug', 'http:slug', ?, ?)",
+            (
+                inputs_hash(conn, "movies", "m1", ["title"]),
+                value_hash(conn, "movies", "m1", "slug"),
+            ),
+        )
     sync(db, hub)
     c = sqlite3.connect(db)
     c.execute("UPDATE movies SET slug = 'hand' WHERE id = 'm1'")

@@ -42,7 +42,7 @@ export function validateRow(props, before, after, { inDerive = new Set(), refOk 
     const fail = (rule, message) => out.push({ col, rule, message });
 
     if (p.deprecated && !empty(v)) { fail("deprecated", `${col} is deprecated. Never write it.`); continue; }
-    if (p.derived_by && changed && !inDerive.has(col)) { fail("derived", `${col} is derived by ${p.derived_by}. Run life derive.`); continue; }
+    if (p.derived_by && changed && !inDerive.has(col)) { fail("derived", `${col} is derived by ${p.derived_by} on the hub. Never write it.`); continue; }
     if (p.immutable && before != null && changed) { fail("immutable", `${col} is set once and never changed.`); continue; }
     if (p.required && empty(v)) { fail("required", `${label} is required.`); continue; }
     if (empty(v)) continue;

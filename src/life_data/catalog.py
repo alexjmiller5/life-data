@@ -218,20 +218,12 @@ def _soft_delete(path: Path, table: str, row_id: str) -> None:
 def set_property(path: Path, tbl: str, col: str, **fields) -> dict:
     if "type" in fields and fields["type"] not in TYPES:
         raise ValueError(f"unknown type {fields['type']!r}; one of {sorted(TYPES)}")
-    if fields.get("derived_by") and not fields["derived_by"].startswith(("sql:", "cmd:")):
-        raise ValueError("derived_by must start with 'sql:' or 'cmd:'")
-    if fields.get("required") and str(fields.get("derived_by") or "").startswith("cmd:"):
+    if fields.get("derived_by") and not fields["derived_by"].startswith("http:"):
+        raise ValueError("derived_by must start with 'http:' (derivations run on the hub)")
+    if fields.get("required") and fields.get("derived_by"):
         raise ValueError(
-            "a cmd-derived column cannot be required: the row is valid but incomplete until derived"
+            "a derived column cannot be required: it is filled by the hub after the row lands"
         )
-    d = fields.get("derived_by") or ""
-    if d.startswith("sql:"):
-        with _pkg().connect(path) as conn:
-            if _table_exists(conn, tbl):
-                try:
-                    conn.execute(f"SELECT ({d[4:]}) FROM {tbl} LIMIT 0")
-                except sqlite3.Error as e:
-                    raise ValueError(f"derivation does not compile: {e}") from e
     return _upsert(path, "catalog_properties", f"{tbl}.{col}", {"tbl": tbl, "col": col, **fields})
 
 
@@ -352,7 +344,9 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
             fail(col, "deprecated", f"{col} is deprecated. Never write it.")
             continue
         if p.get("derived_by") and changed and col not in in_derive:
-            fail(col, "derived", f"{col} is derived by {p['derived_by']}. Run life derive.")
+            fail(
+                col, "derived", f"{col} is derived by {p['derived_by']} on the hub. Never write it."
+            )
             continue
         if p.get("immutable") and before is not None and changed:
             fail(col, "immutable", f"{col} is set once and never changed.")
@@ -512,7 +506,7 @@ def _validated_tables(conn: sqlite3.Connection) -> list[str]:
     return sorted(named - ENGINE_TABLES)
 
 
-def write(path: Path, fn, *, in_derive=(), ddl: bool = False):
+def write(path: Path, fn, *, ddl: bool = False):
     """Run fn(conn) in one transaction; validate every changed row in every
     cataloged table; ROLLBACK and raise ValidationError on any violation."""
     pkg = _pkg()
@@ -530,7 +524,7 @@ def write(path: Path, fn, *, in_derive=(), ddl: bool = False):
             marks[t] = conn.execute(f"SELECT coalesce(max(rowid), 0) FROM {t}").fetchone()[0]
         try:
             result = fn(conn)
-            violations = _validate_changed(conn, marks, t0, set(in_derive))
+            violations = _validate_changed(conn, marks, t0)
             if ddl:
                 for rid in compile_all(conn):
                     violations.append(
@@ -554,7 +548,7 @@ def write(path: Path, fn, *, in_derive=(), ddl: bool = False):
         conn.close()
 
 
-def _validate_changed(conn, marks, t0, in_derive) -> list[Violation]:
+def _validate_changed(conn, marks, t0) -> list[Violation]:
     out: list[Violation] = []
     for t, max_rowid in marks.items():
         if not _table_exists(conn, t):
@@ -577,7 +571,6 @@ def _validate_changed(conn, marks, t0, in_derive) -> list[Violation]:
                 props,
                 before,
                 after,
-                in_derive=in_derive,
                 ref_ok=_ref_ok(conn),
                 extra_options=_extra_options(conn),
             )
@@ -704,99 +697,6 @@ def value_hash(conn, tbl: str, row_id: str, col: str) -> str | None:
         f"SELECT coalesce(CAST({col} AS TEXT), '') FROM {tbl} WHERE id = ?", (row_id,)
     ).fetchone()
     return hashlib.sha256(row[0].encode()).hexdigest() if row else None
-
-
-def _run_command(cmd: str, payload: dict) -> dict:
-    out = subprocess.run(
-        cmd, shell=True, input=json.dumps(payload), capture_output=True, text=True, check=False
-    )
-    if out.returncode != 0:
-        raise RuntimeError(f"derivation command failed: {out.stderr.strip()[:500]}")
-    result = json.loads(out.stdout or "{}")
-    if not isinstance(result, dict):
-        raise TypeError("derivation command must print a JSON object")
-    return result
-
-
-def derive(
-    path: Path, tbl: str, col: str, where: str | None = None, commands: dict | None = None
-) -> int:
-    """Run one `sql:` or `cmd:` derivation for tbl's rows in a single write():
-    one transaction, all-or-nothing, with a provenance row per written cell."""
-    pkg = _pkg()
-    with pkg.connect(path) as conn:
-        target = next((p for p in properties(conn, tbl) if p["col"] == col), None)
-        if not target or not target.get("derived_by"):
-            raise ValueError(f"{tbl}.{col} is not a derived property")
-        siblings = [p for p in properties(conn, tbl) if p.get("derived_by") == target["derived_by"]]
-        cols = [p["col"] for p in siblings]
-        inputs = target.get("inputs") or []
-        ids = [
-            r[0]
-            for r in conn.execute(
-                f"SELECT id FROM {tbl} WHERE deleted_at IS NULL"
-                + (f" AND ({where})" if where else "")
-            ).fetchall()
-        ]
-    d = target["derived_by"]
-
-    def fn(conn):
-        count = 0
-        for rid in ids:
-            # a row can vanish (hard or soft delete) between the read-only id
-            # listing above and this transaction; skip it rather than crash
-            row = conn.execute(f"SELECT * FROM {tbl} WHERE id = ?", (rid,)).fetchone()
-            if row is None or row["deleted_at"] is not None:
-                continue
-            if d.startswith("sql:"):
-                values = {
-                    col: conn.execute(
-                        f"SELECT ({d[4:]}) FROM {tbl} WHERE id = ?", (rid,)
-                    ).fetchone()[0]
-                }
-                source_ref = None
-            else:
-                name = d[4:]
-                cmd = (commands or {}).get(name)
-                if not cmd:
-                    raise RuntimeError(
-                        f"no command configured for derivation {name!r} (config.json: commands)"
-                    )
-                result = _run_command(
-                    cmd, {"tbl": tbl, "id": rid, "inputs": {c: row[c] for c in inputs}}
-                )
-                source_ref = result.pop("_source_ref", None)
-                values = {k: v for k, v in result.items() if k in cols}
-            if not values:  # a cmd: derivation returned no known columns for this row
-                continue
-            sets = ", ".join(f"{k} = ?" for k in values)
-            vals = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()]
-            conn.execute(f"UPDATE {tbl} SET {sets} WHERE id = ?", [*vals, rid])
-            h = inputs_hash(conn, tbl, rid, inputs)
-            now = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
-            for k in values:
-                conn.execute(
-                    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash, source_ref, produced_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, "
-                    "inputs_hash = excluded.inputs_hash, value_hash = excluded.value_hash, source_ref = excluded.source_ref, "
-                    "produced_at = excluded.produced_at, deleted_at = NULL",
-                    (
-                        f"{tbl}:{rid}:{k}",
-                        tbl,
-                        rid,
-                        k,
-                        d,
-                        h,
-                        value_hash(conn, tbl, rid, k),
-                        source_ref,
-                        now,
-                    ),
-                )
-            count += 1
-        return count
-
-    # one transaction for the whole run: one snapshot, all-or-nothing
-    return write(path, fn, in_derive=set(cols))
 
 
 def stale(conn) -> list[Violation]:
@@ -1205,7 +1105,7 @@ def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
 
 
 def compile_all(conn: sqlite3.Connection) -> list[str]:
-    """Compile every invariant and sql: derivation. Returns the ids that fail."""
+    """Compile every invariant. Returns the ids that fail."""
     bad = []
     # ponytail: catalog tables come up one CREATE TABLE at a time during
     # ensure_catalog's own bootstrap DDL, so a sibling catalog table (e.g.
@@ -1216,12 +1116,4 @@ def compile_all(conn: sqlite3.Connection) -> list[str]:
                 compile_sql(conn, r["sql"], r.get("tbl"))
             except ValueError:
                 bad.append(r["id"])
-    if _table_exists(conn, "catalog_properties"):
-        for p in properties(conn):
-            d = p.get("derived_by") or ""
-            if d.startswith("sql:") and _table_exists(conn, p["tbl"]):
-                try:
-                    conn.execute(f"SELECT ({d[4:]}) FROM {p['tbl']} LIMIT 0")
-                except sqlite3.Error:
-                    bad.append(p["id"])
     return bad

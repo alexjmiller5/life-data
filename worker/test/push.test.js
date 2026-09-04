@@ -12,7 +12,7 @@ async function seed(db) {
     `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, value_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `CREATE TABLE places (id TEXT PRIMARY KEY, status TEXT, slug TEXT, name TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `INSERT INTO catalog_properties (id, tbl, col, type, options) VALUES ('places.status','places','status','select','[{"v":"want"}]')`,
-    `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.slug','places','slug','text','sql:lower(name)','["name"]')`,
+    `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.slug','places','slug','text','http:slug','["name"]')`,
   ]) await db.prepare(sql).run();
 }
 
@@ -36,7 +36,7 @@ test("derived column needs matching provenance", async () => {
   expect(out.rejected[0].rule).toBe("provenance");
   // provenance for name='A' -> slug 'a': inputs_hash = sha256(json_array('A')), value_hash = sha256('a')
   const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  await db.prepare("INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:slug','places','a','slug','sql:lower(name)',?,?)").bind(await hex('["A"]'), await hex("a")).run();
+  await db.prepare("INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:slug','places','a','slug','http:slug',?,?)").bind(await hex('["A"]'), await hex("a")).run();
   out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "a" })] }, db);
   expect(out.rejected).toEqual([]);
   expect(out.upserted).toBe(1);
@@ -56,11 +56,11 @@ test("integral number columns hash as REAL, the way SQLite stored them", async (
     "ALTER TABLE places ADD COLUMN qty REAL",
     "ALTER TABLE places ADD COLUMN double REAL",
     `INSERT INTO catalog_properties (id, tbl, col, type) VALUES ('places.qty','places','qty','number')`,
-    `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.double','places','double','number','sql:qty*2','["qty"]')`,
+    `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.double','places','double','number','http:double','["qty"]')`,
   ]) await db.prepare(sql).run();
   // provenance as the Python client writes it: SQLite renders REAL 4 as "4.0"
   await db.prepare(
-    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:double','places','a','double','sql:qty*2',?,?)",
+    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:double','places','a','double','http:double',?,?)",
   ).bind(await hex('["4.0"]'), await hex("8.0")).run();
   const out = await ROUTES["/v1/rows/push"](
     { table: "places", columns: [...cols, "qty", "double"], rows: [row({ qty: 4, double: 8 })] },
