@@ -57,18 +57,26 @@ CLI.
   `chflags nohidden .venv/lib/python*/site-packages/*.pth`.
 - `just` verbs: `run`, `test`, `check`, `fmt`, `deploy`.
 - **Writes are validated.** `execute_sql` and `insert_rows` run inside
-  `catalog.write()`: one transaction, every changed row in a cataloged table
-  checked, `ValidationError` after ROLLBACK. Reads (SELECT/PRAGMA/EXPLAIN/
-  WITH) bypass it. Sync's pull upsert bypasses it on purpose (pulled rows were
-  validated where they were written). The hub validates pushed rows per row
-  and never fails a batch.
+  `catalog.write()`: one transaction, every changed row checked in every table
+  that has catalog properties OR is named by an invariant, `ValidationError`
+  after ROLLBACK. Only SELECT/PRAGMA/EXPLAIN/VALUES bypass it - a CTE
+  (`WITH …`) does not, since it can end in INSERT/UPDATE/DELETE; a read-only
+  CTE just pays a no-op transaction. Sync's pull upsert bypasses it on purpose
+  (pulled rows were validated where they were written). The hub validates
+  pushed rows per row and never fails a batch.
 - **Checks are pure; producers may touch the world.** Invariant SQL is one
   SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
   now)`; `changed`/`before` are temp tables the engine provides). Derivations
   (`derived_by: sql:|cmd:`) and audits run only via `life derive` /
   `life audit` and record `provenance`. A derived column rejects direct
   writes everywhere; the hub verifies `provenance.inputs_hash` against the
-  pushed inputs and never runs the command.
+  pushed inputs and never runs the command. **A derivation's `inputs` must be
+  cataloged columns** - both sides hash values as SQLite renders them, and the
+  hub needs the catalog `type` to know a `number` binds through REAL (4 →
+  `"4.0"`, not `"4"`).
+- Every temp table the rule engine makes (`now`, `changed`, `before`,
+  `_before_<t>`) is schema-qualified `temp.` - unqualified names fall through
+  to `main`, so an unqualified DROP would delete a user table of that name.
 - `catalog_*` and `provenance` sync before every other table.
 - `just test` runs pytest AND `bun test` in `worker/`.
 

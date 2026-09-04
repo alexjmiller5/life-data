@@ -709,3 +709,133 @@ def test_infer_ref_prefers_tightest_fitting_table(db):
     insert_rows(db, "places", [{"who": f"p{i}"} for i in range(25)])
     props = {p["col"]: p for p in infer(db, "places")}
     assert props["who"]["ref_table"] == "people"
+
+
+# --- write-path escapes and temp-table safety --------------------------------
+
+
+def test_cte_write_is_validated(db):
+    create_table(db, "places", ["name:text", "status:select(want|been)"])
+    with pytest.raises(ValidationError):
+        execute_sql(
+            db,
+            "WITH v(n,s) AS (VALUES('x','TOTALLY_BAD')) "
+            "INSERT INTO places (name,status) SELECT n,s FROM v",
+        )
+    assert execute_sql(db, "SELECT count(*) AS c FROM places")[0]["c"] == 0
+
+
+def test_cte_read_still_works(db):
+    create_table(db, "places", ["name:text"])
+    insert_rows(db, "places", [{"id": "p1", "name": "x"}])
+    rows = execute_sql(db, "WITH v AS (SELECT name FROM places) SELECT * FROM v")
+    assert [r["name"] for r in rows] == ["x"]
+
+
+def test_temp_context_never_drops_a_user_table_named_changed(db):
+    create_table(db, "changed", ["name:text"])
+    create_table(db, "notes", ["body:text"])
+    insert_rows(db, "changed", [{"id": "c1", "name": "keep"}])
+    set_rule(
+        db,
+        "r",
+        scope="table",
+        tbl="notes",
+        kind="invariant",
+        enforce=1,
+        text="x",
+        sql="SELECT id FROM changed WHERE 0",
+    )
+    insert_rows(db, "notes", [{"id": "n1", "body": "b"}])
+    assert [r["name"] for r in execute_sql(db, "SELECT name FROM changed")] == ["keep"]
+
+
+def test_inputs_hash_renders_reals_the_way_sqlite_stored_them(db):
+    import hashlib
+
+    create_table(db, "orders", ["qty:number"])
+    insert_rows(db, "orders", [{"id": "o1", "qty": 4}])
+    with connect(db) as conn:
+        assert inputs_hash(conn, "orders", "o1", ["qty"]) == hashlib.sha256(b'["4.0"]').hexdigest()
+        assert value_hash(conn, "orders", "o1", "qty") == hashlib.sha256(b"4.0").hexdigest()
+
+
+def test_check_reports_orphan_provenance_after_a_hard_delete(db):
+    import sqlite3 as s
+
+    _movies(db)
+    insert_rows(db, "movies", [{"id": "m1", "title": "x", "tmdb_id": "78"}])
+    derive(db, "movies", "slug")
+    conn = s.connect(db)
+    conn.execute("DELETE FROM movies WHERE id = 'm1'")
+    conn.commit()
+    conn.close()
+    findings = check(db)
+    assert ("m1", "orphan") in {(f["row_id"], f["rule"]) for f in findings}
+
+
+def test_set_rule_requires_sql_for_an_invariant(db):
+    create_table(db, "places", ["status:text"])
+    with pytest.raises(ValueError, match="sql"):
+        set_rule(db, "r", scope="table", tbl="places", kind="invariant", enforce=1, text="x")
+
+
+def test_check_reports_rule_error_instead_of_crashing(db):
+    import sqlite3 as s
+
+    create_table(db, "places", ["status:text"])
+    set_rule(
+        db,
+        "r",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=0,
+        text="x",
+        sql="SELECT id FROM places WHERE status = 'z'",
+    )
+    conn = s.connect(db)
+    conn.execute("DROP TABLE places")
+    conn.commit()
+    conn.close()
+    errs = [f for f in check(db) if f["rule"] == "rule-error"]
+    assert errs and errs[0]["message"].startswith("r failed to run:")
+
+
+def test_enforced_invariant_runs_for_a_table_with_no_properties(db):
+    execute_sql(
+        db,
+        "CREATE TABLE widgets (id TEXT PRIMARY KEY, kind TEXT, "
+        "created_at TEXT, updated_at TEXT, deleted_at TEXT)",
+    )
+    set_rule(
+        db,
+        "no-bad",
+        scope="table",
+        tbl="widgets",
+        kind="invariant",
+        enforce=1,
+        text="kind must not be bad",
+        sql="SELECT id FROM widgets WHERE kind = 'bad'",
+    )
+    with pytest.raises(ValidationError, match="kind must not be bad"):
+        execute_sql(
+            db,
+            "INSERT INTO widgets (id, kind, updated_at) "
+            "VALUES ('w1','bad','2026-01-01T00:00:00.000Z')",
+        )
+    assert execute_sql(db, "SELECT count(*) AS c FROM widgets")[0]["c"] == 0
+
+
+def test_set_rule_rejects_an_enforced_estate_invariant(db):
+    create_table(db, "places", ["status:text"])
+    with pytest.raises(ValueError, match="estate"):
+        set_rule(
+            db,
+            "r",
+            scope="estate",
+            kind="invariant",
+            enforce=1,
+            text="x",
+            sql="SELECT id FROM places WHERE 0",
+        )

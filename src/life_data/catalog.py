@@ -241,6 +241,13 @@ def rm_property(path: Path, tbl: str, col: str) -> None:
 def set_rule(path: Path, rule_id: str, **fields) -> dict:
     if "kind" in fields and fields["kind"] not in RULE_KINDS:
         raise ValueError(f"unknown kind {fields['kind']!r}; one of {sorted(RULE_KINDS)}")
+    if fields.get("kind") == "invariant" and not fields.get("sql"):
+        raise ValueError("an invariant needs sql: the SELECT whose rows are the violations")
+    if fields.get("scope") == "estate" and fields.get("enforce"):
+        raise ValueError(
+            "an estate-scoped rule cannot be enforced: only life check runs it. "
+            "Write a per-table rule to enforce on the write path."
+        )
     if fields.get("sql"):
         check_rule_sql(fields["sql"])
         with _pkg().connect(path) as conn:
@@ -465,19 +472,30 @@ def apply_defaults(conn: sqlite3.Connection, tbl: str, row: dict) -> dict:
     return out
 
 
+def _validated_tables(conn: sqlite3.Connection) -> list[str]:
+    """Tables the write path checks: those with catalog properties, plus any
+    table an invariant names (a rule on a raw `life sql` table still runs)."""
+    named = set(cataloged_tables(conn))
+    if _table_exists(conn, "catalog_rules"):
+        named |= {r["tbl"] for r in rules(conn, kind="invariant") if r.get("tbl")}
+    return sorted(named - ENGINE_TABLES)
+
+
 def write(path: Path, fn, *, in_derive=(), ddl: bool = False):
     """Run fn(conn) in one transaction; validate every changed row in every
     cataloged table; ROLLBACK and raise ValidationError on any violation."""
     pkg = _pkg()
     conn = pkg.connect(path, manual_tx=True)
     try:
-        tables = [t for t in cataloged_tables(conn) if _table_exists(conn, t)]
+        tables = [t for t in _validated_tables(conn) if _table_exists(conn, t)]
         conn.execute("BEGIN")
         t0 = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
         marks = {}
         for t in tables:
             # ponytail: whole-table snapshot per write; scope by rowid past ~1M rows
-            conn.execute(f"CREATE TEMP TABLE _before_{t} AS SELECT rowid AS _rowid, * FROM {t}")
+            conn.execute(
+                f"CREATE TEMP TABLE temp._before_{t} AS SELECT rowid AS _rowid, * FROM {t}"
+            )
             marks[t] = conn.execute(f"SELECT coalesce(max(rowid), 0) FROM {t}").fetchone()[0]
         try:
             result = fn(conn)
@@ -518,7 +536,9 @@ def _validate_changed(conn, marks, t0, in_derive) -> list[Violation]:
         props = properties(conn, t)
         for r in rows:
             after = dict(r)
-            b = conn.execute(f"SELECT * FROM _before_{t} WHERE id = ?", (after["id"],)).fetchone()
+            b = conn.execute(
+                f"SELECT * FROM temp._before_{t} WHERE id = ?", (after["id"],)
+            ).fetchone()
             before = dict(b) if b else None
             if before:
                 before.pop("_rowid", None)
@@ -565,36 +585,42 @@ def _uses(sql: str, name: str) -> bool:
 def _with_context(conn, sql, changed_ids, now, tbl):
     """Create the temp tables a rule may reference; return a cleanup fn."""
     made = []
+    # every temp DDL/DML below is schema-qualified `temp.`: unqualified names
+    # resolve temp-first but fall through to main, so an unqualified DROP would
+    # destroy a USER table named `now`/`changed`/`before` on the first run
     if _uses(sql, "now"):
-        conn.execute("CREATE TEMP TABLE IF NOT EXISTS now (ts TEXT)")
-        conn.execute("DELETE FROM now")
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS temp.now (ts TEXT)")
+        conn.execute("DELETE FROM temp.now")
         conn.execute(
-            "INSERT INTO now (ts) VALUES (?)",
+            "INSERT INTO temp.now (ts) VALUES (?)",
             (now or conn.execute(f"SELECT {_pkg().NOW}").fetchone()[0],),
         )
         made.append("now")
     if tbl and (_uses(sql, "changed") or _uses(sql, "before")):
         ids = list(changed_ids or [])
         ph = ", ".join("?" for _ in ids) or "NULL"
-        conn.execute("DROP TABLE IF EXISTS changed")
-        conn.execute(f"CREATE TEMP TABLE changed AS SELECT * FROM {tbl} WHERE id IN ({ph})", ids)
-        conn.execute("DROP TABLE IF EXISTS before")
+        conn.execute("DROP TABLE IF EXISTS temp.changed")
+        conn.execute(
+            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM {tbl} WHERE id IN ({ph})", ids
+        )
+        conn.execute("DROP TABLE IF EXISTS temp.before")
         if _table_exists_temp(conn, f"_before_{tbl}"):
             # explicit column list, not `*`: _before_{tbl} carries an extra
             # _rowid bookkeeping column that would break shape-sensitive
             # queries (EXCEPT/UNION) against `changed`, which has tbl's shape
             cols = ", ".join(r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall())
             conn.execute(
-                f"CREATE TEMP TABLE before AS SELECT {cols} FROM _before_{tbl} WHERE id IN ({ph})",
+                f"CREATE TEMP TABLE temp.before AS SELECT {cols} "
+                f"FROM temp._before_{tbl} WHERE id IN ({ph})",
                 ids,
             )
         else:
-            conn.execute(f"CREATE TEMP TABLE before AS SELECT * FROM {tbl} WHERE 0")
+            conn.execute(f"CREATE TEMP TABLE temp.before AS SELECT * FROM {tbl} WHERE 0")
         made += ["changed", "before"]
 
     def cleanup():
         for t in made:
-            conn.execute(f"DROP TABLE IF EXISTS {t}")
+            conn.execute(f"DROP TABLE IF EXISTS temp.{t}")
 
     return cleanup
 
@@ -620,8 +646,11 @@ def compile_sql(conn: sqlite3.Connection, sql: str, tbl: str | None = None) -> N
 
 
 def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
-    cleanup = _with_context(conn, rule["sql"], changed_ids, now, rule.get("tbl"))
+    def cleanup():
+        pass
+
     try:
+        cleanup = _with_context(conn, rule["sql"], changed_ids, now, rule.get("tbl"))
         return [dict(r) for r in conn.execute(rule["sql"]).fetchall()]
     finally:
         cleanup()
@@ -630,20 +659,20 @@ def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
 # --- derivations & provenance -------------------------------------------------
 
 
-def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str:
-    """Hash the inputs as SQLite renders them, so Python and the hub agree byte for byte."""
+def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str | None:
+    """Hash the inputs as SQLite renders them, so Python and the hub agree byte
+    for byte. None when the row is gone (hard-deleted out from under its
+    provenance)."""
     casts = ", ".join(f"CAST({c} AS TEXT)" for c in inputs) or "NULL"
-    text = conn.execute(
-        f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)
-    ).fetchone()[0]
-    return hashlib.sha256(text.encode()).hexdigest()
+    row = conn.execute(f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)).fetchone()
+    return hashlib.sha256(row[0].encode()).hexdigest() if row else None
 
 
-def value_hash(conn, tbl: str, row_id: str, col: str) -> str:
-    text = conn.execute(
+def value_hash(conn, tbl: str, row_id: str, col: str) -> str | None:
+    row = conn.execute(
         f"SELECT coalesce(CAST({col} AS TEXT), '') FROM {tbl} WHERE id = ?", (row_id,)
-    ).fetchone()[0]
-    return hashlib.sha256(text.encode()).hexdigest()
+    ).fetchone()
+    return hashlib.sha256(row[0].encode()).hexdigest() if row else None
 
 
 def _run_command(cmd: str, payload: dict) -> dict:
@@ -749,7 +778,18 @@ def stale(conn) -> list[Violation]:
             (p["tbl"], p["col"]),
         ).fetchall()
         for r in rows:
-            if inputs_hash(conn, p["tbl"], r["row_id"], p.get("inputs") or []) != r["inputs_hash"]:
+            h = inputs_hash(conn, p["tbl"], r["row_id"], p.get("inputs") or [])
+            if h is None:
+                out.append(
+                    Violation(
+                        p["tbl"],
+                        r["row_id"],
+                        p["col"],
+                        "orphan",
+                        "provenance exists for a row that no longer exists",
+                    )
+                )
+            elif h != r["inputs_hash"]:
                 out.append(
                     Violation(
                         p["tbl"],
@@ -804,7 +844,20 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
                     extra_options=_extra_options(conn),
                 )
         for rule in rules(conn, kind="invariant"):
-            for h in run_invariant(conn, rule, changed_ids=[], now=as_of):
+            try:
+                hits = run_invariant(conn, rule, changed_ids=[], now=as_of)
+            except (sqlite3.Error, ValueError, TypeError) as e:
+                out.append(
+                    Violation(
+                        rule.get("tbl") or "estate",
+                        None,
+                        rule.get("col"),
+                        "rule-error",
+                        f"{rule['id']} failed to run: {e}",
+                    )
+                )
+                continue
+            for h in hits:
                 out.append(
                     Violation(
                         rule.get("tbl") or "estate",

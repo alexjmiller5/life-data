@@ -238,6 +238,20 @@ def test_watch_survives_check_failure_but_logs_it(db, hub, monkeypatch, capsys):
     assert "check failed" in capsys.readouterr().err
 
 
+def test_watch_survives_any_check_error(db, hub, monkeypatch, capsys):
+    """A hard-deleted derived row used to raise TypeError, which the old
+    guard did not catch, and the watch daemon died."""
+
+    def boom(path, as_of=None):
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    monkeypatch.setattr("life_data.catalog.check", boom)
+    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)  # must not raise
+    assert "check failed" in capsys.readouterr().err
+
+
 def test_watch_prints_check_findings_to_stderr(db, hub, monkeypatch, capsys):
     monkeypatch.setattr("life_data.catalog.check", lambda path, as_of=None: [{"rule": "options"}])
     monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))

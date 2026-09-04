@@ -67,7 +67,10 @@ def init(path: Path) -> Path:
     return path
 
 
-READ_KEYWORDS = {"SELECT", "PRAGMA", "EXPLAIN", "WITH", "VALUES"}
+# `WITH` is deliberately absent: a CTE can end in INSERT/UPDATE/DELETE, so
+# every WITH statement goes through the validator (a read-only CTE pays a
+# no-op transaction).
+READ_KEYWORDS = {"SELECT", "PRAGMA", "EXPLAIN", "VALUES"}
 
 
 def _first_word(sql: str) -> str:
@@ -508,7 +511,7 @@ def sync(path: Path, hub) -> dict:
         if mine:
             out = hub.rows_push(table, cols, mine)
             rejected += [{"table": table, **r} for r in out["rejected"]]
-        pushed += len(mine)
+            pushed += out["upserted"]
 
     _set_state(path, "last_pull", hub.cursor(tables))
     _set_state(path, "last_push", _local_cursor(path, tables))
@@ -542,7 +545,7 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
                     findings = catalog.check(path)
                     if findings:
                         print(json.dumps({"check": findings}), file=sys.stderr, flush=True)
-                except (sqlite3.Error, ValueError, RuntimeError) as e:  # never kill the daemon
+                except Exception as e:  # noqa: BLE001 - never kill the daemon
                     print(f"check failed: {e}", file=sys.stderr, flush=True)
             state = db_version(path)
             last_poll = time.monotonic()
