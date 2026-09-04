@@ -16,4 +16,17 @@ export class D1Shim {
       async run() { stmt.run(...args); return {}; },
     };
   }
+  // D1's batch: every statement in one transaction, in order.
+  async batch(stmts) {
+    this.db.exec("BEGIN");
+    try {
+      const out = [];
+      for (const s of stmts) out.push(await s.run());
+      this.db.exec("COMMIT");
+      return out;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
 }

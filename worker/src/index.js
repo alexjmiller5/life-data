@@ -6,9 +6,11 @@
 // changing that function and nothing else — no route, no query, no sync logic
 // knows how the caller was authenticated.
 
-import { validatePush } from "./validate.js";
+import { deriveRows, deriveStale, sweep } from "./derive.js";
+import { ident, sha256hex, validatePush } from "./validate.js";
 
-const CHUNK_COLUMNS_SAFE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Must match the trigger in wrangler.jsonc.
+const SWEEP_CRON = "*/15 * * * *";
 
 const PLUMBING = [
   `CREATE TABLE IF NOT EXISTS _schema_log (
@@ -36,11 +38,6 @@ function tokensMatch(a, b) {
 // machines). Everything else authenticates against the _tokens table in D1 —
 // scoped, individually revocable, minted via /v1/tokens/* with the admin
 // token. Tokens are stored as SHA-256 hashes; a lost D1 leaks no secrets.
-async function sha256hex(text) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 const TOKENS_TABLE = `CREATE TABLE IF NOT EXISTS _tokens (
   hash TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
@@ -92,6 +89,9 @@ function allowed(pathname, method, scopes) {
   if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
     return scopes.includes("full") || scopes.includes("streams:append");
   }
+  if (pathname === "/v1/rows/push" || pathname === "/v1/derive") {
+    return scopes.includes("full") || scopes.includes("tables:write");
+  }
   const readOnly =
     pathname === "/v1/schema/pull" ||
     pathname === "/v1/rows/pull" ||
@@ -100,7 +100,7 @@ function allowed(pathname, method, scopes) {
     ((method === "GET" || method === "HEAD") &&
       (pathname.startsWith("/v1/streams/") || pathname.startsWith("/v1/archive/")));
   if (readOnly) return scopes.includes("full") || scopes.includes("tables:read");
-  return scopes.includes("full"); // schema/push, rows/push, archive/query
+  return scopes.includes("full"); // schema/push, archive/query
 }
 
 const TOKEN_ROUTES = {
@@ -131,11 +131,6 @@ const TOKEN_ROUTES = {
     return results ?? [];
   },
 };
-
-function ident(name) {
-  if (!CHUNK_COLUMNS_SAFE.test(name)) throw new Error(`unsafe identifier: ${name}`);
-  return name;
-}
 
 async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
@@ -191,14 +186,30 @@ const ROUTES = {
     return { rows: results ?? [] };
   },
 
-  "/v1/rows/push": async (body, db) => {
+  "/v1/rows/push": async (body, db, env, ctx) => {
     const table = ident(body.table); // before any SQL is built from it
     const rows = body.rows ?? [];
     const { accepted, rejected } = await validatePush(db, table, rows);
     if (accepted.length) {
       await db.prepare(upsertSql(table, body.columns)).bind(JSON.stringify(accepted)).run();
     }
+    // Derivation happens in the background: the push response never waits on
+    // an external endpoint, and a failure here is retried by the cron sweep.
+    if (accepted.length && ctx && env) {
+      ctx.waitUntil(
+        deriveStale(db, env, table, accepted).catch((e) => console.log(`derive after push failed: ${e}`))
+      );
+    }
     return { upserted: accepted.length, rejected };
+  },
+
+  // Synchronous derivation for a named set of rows: `life derive` and the
+  // migration backfill. Capped so one call stays inside a request's budget.
+  "/v1/derive": async (body, db, env) => {
+    const table = ident(body.table);
+    const ids = body.ids ?? [];
+    if (ids.length > 50) return json({ error: "at most 50 ids per call" }, 400);
+    return deriveRows(db, env, table, ids, { col: body.col ?? null });
   },
 
   // Backups normally run on the cron; this makes the path triggerable and
@@ -289,7 +300,7 @@ async function runBackup(env, now) {
 //
 // Streams are append-only: the hub stores whatever JSON body arrives, byte for
 // byte, as a landing object (raw is sacred; landing is never deleted). Keys
-// are time-prefixed so lexicographic order == chronological order. The Modal
+// are time-prefixed so lexicographic order == chronological order. The
 // compactor reads landing via the S3 API and writes year=YYYY Parquet
 // partitions; nothing here knows about any particular source.
 
@@ -508,14 +519,17 @@ export default {
         return json({ keys: await runBackup(env, new Date()) });
       }
       await ensureReady(tenant.db);
-      return json(await ROUTES[url.pathname](await request.json(), tenant.db));
+      const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
+      return out instanceof Response ? out : json(out);
     } catch (e) {
       return json({ error: String(e) }, 500);
     }
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
+    // One Worker, two schedules — dispatch on which trigger fired.
+    if (event.cron === SWEEP_CRON) ctx.waitUntil(sweep(env.DB, env));
+    else ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
   },
 };
 

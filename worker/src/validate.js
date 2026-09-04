@@ -89,7 +89,7 @@ export function validateRow(props, before, after, { inDerive = new Set(), refOk 
 
 const ENGINE_TABLES = new Set(["catalog_tables", "catalog_properties", "catalog_rules", "provenance", "catalog_log"]);
 
-async function sha256hex(text) {
+export async function sha256hex(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -98,7 +98,7 @@ async function tableExists(db, name) {
   return !!(await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(name).first());
 }
 
-async function propertiesFor(db, table) {
+export async function propertiesFor(db, table) {
   if (ENGINE_TABLES.has(table) || !(await tableExists(db, "catalog_properties"))) return [];
   const { results } = await db
     .prepare("SELECT * FROM catalog_properties WHERE deleted_at IS NULL AND tbl = ? ORDER BY sort, col")
@@ -114,7 +114,14 @@ async function propertiesFor(db, table) {
 // The pushed JSON carries a bare 4, which binds as INTEGER and would render
 // "4". Cast every cataloged `number` through REAL first so both sides agree.
 // (This is why a derivation's inputs must themselves be cataloged columns.)
-const castText = (isNumber) => (isNumber ? "CAST(CAST(? AS REAL) AS TEXT)" : "CAST(? AS TEXT)");
+export const castText = (isNumber) => (isNumber ? "CAST(CAST(? AS REAL) AS TEXT)" : "CAST(? AS TEXT)");
+
+// Every identifier interpolated into SQL passes through here first.
+const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export function ident(name) {
+  if (!SAFE_IDENT.test(name)) throw new Error(`unsafe identifier: ${name}`);
+  return name;
+}
 
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
 export async function validatePush(db, table, rows) {

@@ -27,6 +27,8 @@
 		"ARCHIVE_BUCKET": "life-data-archive"
 	},
 	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
-	// belongs to (daily / weekly / monthly / yearly).
-	"triggers": { "crons": ["10 9 * * *"] }
+	// belongs to (daily / weekly / monthly / yearly). Every 15 minutes the
+	// derivation sweep picks up underived and stale rows (SWEEP_CRON in
+	// src/index.js must match).
+	"triggers": { "crons": ["10 9 * * *", "*/15 * * * *"] }
 }

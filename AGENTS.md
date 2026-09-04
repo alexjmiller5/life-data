@@ -116,6 +116,25 @@ Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
 any `sqlite_master` walk — reading them raises `SQLITE_AUTH`.
 
+Two cron triggers, dispatched in `scheduled()` on `event.cron`: `10 9 * * *`
+is the backup, `*/15 * * * *` is the derivation sweep (`SWEEP_CRON` in
+`index.js` must match `wrangler.jsonc`).
+
+Derivations (`worker/src/derive.js`). `derived_by = "http:<name>"` resolves
+ONLY through the `DERIVATIONS` Worker secret — a JSON object
+`{name: {url, headers}}`. **No external source may be named in `worker/src`.**
+The hub POSTs `{tbl, id, inputs:{col: value}}` and writes back the response
+keys that are derived columns of that derivation (plus `_source_ref`);
+anything else is ignored. Output runs through `validateRow` first — a value
+failing its type/options/pattern is dropped and reported in `failed`, its
+siblings still land. A write is ONE `db.batch`: the value UPDATE plus a
+provenance upsert per column, so a replica pulls row and proof together.
+Runs three ways: after `/v1/rows/push` via `ctx.waitUntil` (never delays the
+response; a failure is retried by the sweep), on the 15-minute sweep
+(underived or `inputs_hash`-stale, 50 per property), and synchronously via
+`POST /v1/derive {table, ids, col?}` (>50 ids → 400). Routes take
+`(body, db, env, ctx)` and may return a `Response` of their own.
+
 ## Streams
 
 Append-only events, hub-backed by design (tables are local-first; streams are
@@ -183,6 +202,7 @@ Credentials, two layers:
     OwnTracks Token"); `notion-automations` - tables:read, in that project's
     ENV item → Modal secret. Scopes: `full` (everything but token mgmt),
     `tables:read` (schema/rows/cursor pulls + stream/archive GETs),
+    `tables:write` (`/v1/rows/push` + `/v1/derive`, nothing else),
     `streams:append`. Lost/retired client = revoke one name.
 - **Cloudflare API tokens** (the service's own infrastructure, `Life Data`
   vault): `Life Data Platform Token` (`2vjluucdosnw5oxgc4iit4tfp4`;
