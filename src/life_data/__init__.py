@@ -504,11 +504,12 @@ def sync(path: Path, hub) -> dict:
     last_push = _get_state(path, "last_push")
     # capture the pull cursor BEFORE pulling: the hub writes rows itself
     # (derivations on push and on cron), and anything it writes after this read
-    # gets updated_at > pull_cursor, so the next sync still sees it
+    # gets updated_at > pull_cursor, so the next sync still sees it. The price
+    # is that the next sync echoes back the rows this one pushed - harmless,
+    # the LWW upsert no-ops them (and a newer hub version is what we want).
     pull_cursor = hub.cursor(tables)
 
     pulled = pushed = 0
-    pushed_top = ""
     rejected = []
     for table in tables:
         cols = _columns(path, table)
@@ -527,10 +528,8 @@ def sync(path: Path, hub) -> dict:
             out = hub.rows_push(table, cols, mine)
             rejected += [{"table": table, **r} for r in out["rejected"]]
             pushed += out["upserted"]
-            pushed_top = max([pushed_top] + [r["updated_at"] for r in mine])
 
-    # rows we just pushed are already ours, so the cursor may skip past them
-    _set_state(path, "last_pull", max(pull_cursor, pushed_top))
+    _set_state(path, "last_pull", pull_cursor)
     _set_state(path, "last_push", _local_cursor(path, tables))
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 

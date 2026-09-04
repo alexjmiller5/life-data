@@ -272,9 +272,12 @@ def test_sync_pushes_schema_and_rows_to_hub(db, hub):
     assert {r["name"] for r in hub.rows_pull("people", ["name"], "")} == {"Ada", "Grace"}
 
 
-def test_second_sync_is_noop(db, hub):
+def test_second_sync_echoes_its_own_push_once_then_settles(db, hub):
     _mk_people(db, ["Ada"])
-    sync(db, hub)
+    pushed = sync(db, hub)["pushed"]
+    # the pull cursor is captured before pulling, so this sync sees the rows it
+    # pushed last time; the LWW upsert no-ops them
+    assert sync(db, hub) == {"pushed": 0, "pulled": pushed, "ddl_applied": 0, "rejected": []}
     assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
 
@@ -298,6 +301,31 @@ def test_pull_cursor_does_not_skip_rows_written_during_the_pull(db, hub):
     assert (
         execute_sql(db, "SELECT name FROM people WHERE id = 'derived'")[0]["name"] == "Hub Derived"
     )
+
+
+def test_pull_cursor_does_not_skip_a_replica_pushing_an_older_stamp(db, hub, tmp_path):
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    sync(other, hub)
+    execute_sql(other, "UPDATE people SET name = 'B edit'")  # stamped t1, still local to B
+    time.sleep(0.002)
+    insert_rows(db, "people", [{"name": "Grace"}])  # A's own row, stamped after t1
+    real_pull = hub.rows_pull
+    fired = []
+
+    def pull_then_b_pushes(table, columns, since):
+        rows = real_pull(table, columns, since)
+        if table == "people" and not fired:
+            fired.append(table)
+            sync(other, hub)  # B's t1 edit reaches the hub after A's pull query
+        return rows
+
+    hub.rows_pull = pull_then_b_pushes
+    sync(db, hub)  # ... and A pushes its newer row in this same sync
+    hub.rows_pull = real_pull
+    sync(db, hub)
+    assert {r["name"] for r in execute_sql(db, "SELECT name FROM people")} == {"B edit", "Grace"}
 
 
 def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
