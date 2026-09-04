@@ -244,6 +244,13 @@ def set_rule(path: Path, rule_id: str, **fields) -> dict:
         raise ValueError(f"unknown kind {fields['kind']!r}; one of {sorted(RULE_KINDS)}")
     if fields.get("kind") == "invariant" and not fields.get("sql"):
         raise ValueError("an invariant needs sql: the SELECT whose rows are the violations")
+    if fields.get("enforce") and fields.get("tbl"):
+        with _pkg().connect(path) as conn:
+            if _table_exists(conn, fields["tbl"]) and not _has_sync_cols(conn, fields["tbl"]):
+                raise ValueError(
+                    f"{fields['tbl']} cannot be enforced: it lacks the sync columns "
+                    "(id, updated_at) that life table create injects"
+                )
     if fields.get("scope") == "estate" and fields.get("enforce"):
         raise ValueError(
             "an estate-scoped rule cannot be enforced: only life check runs it. "
@@ -480,12 +487,28 @@ def apply_defaults(conn: sqlite3.Connection, tbl: str, row: dict) -> dict:
     return out
 
 
+def _has_sync_cols(conn: sqlite3.Connection, tbl: str) -> bool:
+    """The write path finds changed rows by `id` and `updated_at`; a table
+    without them (raw `CREATE TABLE`) cannot be checked per row."""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+    return {"id", "updated_at"} <= cols
+
+
 def _validated_tables(conn: sqlite3.Connection) -> list[str]:
     """Tables the write path checks: those with catalog properties, plus any
-    table an invariant names (a rule on a raw `life sql` table still runs)."""
+    table an ENFORCED invariant names (a rule on a raw `life sql` table still
+    runs) - but only when that table can actually be checked, so a check-only
+    rule on a legacy table never breaks every write in the database."""
     named = set(cataloged_tables(conn))
     if _table_exists(conn, "catalog_rules"):
-        named |= {r["tbl"] for r in rules(conn, kind="invariant") if r.get("tbl")}
+        named |= {
+            r["tbl"]
+            for r in rules(conn, kind="invariant")
+            if r.get("tbl")
+            and r.get("enforce")
+            and _table_exists(conn, r["tbl"])
+            and _has_sync_cols(conn, r["tbl"])
+        }
     return sorted(named - ENGINE_TABLES)
 
 

@@ -839,3 +839,35 @@ def test_set_rule_rejects_an_enforced_estate_invariant(db):
             text="x",
             sql="SELECT id FROM places WHERE 0",
         )
+
+
+def test_unenforced_rule_on_a_legacy_table_does_not_break_other_writes(db):
+    create_table(db, "places", ["name:text"])
+    execute_sql(db, "CREATE TABLE legacy (k TEXT)")  # no id/updated_at
+    set_rule(
+        db,
+        "legacy-r",
+        scope="table",
+        tbl="legacy",
+        kind="invariant",
+        enforce=0,
+        text="x",
+        sql="SELECT k FROM legacy WHERE k = 'bad'",
+    )
+    insert_rows(db, "places", [{"id": "p1", "name": "ok"}])
+    assert execute_sql(db, "SELECT count(*) AS c FROM places")[0]["c"] == 1
+
+
+def test_set_rule_rejects_enforcing_a_table_without_sync_columns(db):
+    execute_sql(db, "CREATE TABLE legacy (k TEXT)")
+    with pytest.raises(ValueError, match="sync columns"):
+        set_rule(
+            db,
+            "legacy-r",
+            scope="table",
+            tbl="legacy",
+            kind="invariant",
+            enforce=1,
+            text="x",
+            sql="SELECT k FROM legacy WHERE k = 'bad'",
+        )
