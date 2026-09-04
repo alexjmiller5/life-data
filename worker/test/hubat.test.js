@@ -113,3 +113,12 @@ test("cursor and pull fall back to updated_at on a table without hub_at", async 
   expect(out.upserted).toBe(1);
   expect(out.hub_at).toBe("");
 });
+
+test("cursor keeps the legacy max_updated_at key equal to max_hub_at for pre-hub_at clients", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  const push = await ROUTES["/v1/rows/push"]({ table: "people", columns: cols, rows: [row({ id: "a" })] }, db);
+  const c = await ROUTES["/v1/cursor"]({ tables: ["people"] }, db);
+  expect(c.max_updated_at).toBe(c.max_hub_at);
+  expect(c.max_hub_at).toBe(push.hub_at);
+});

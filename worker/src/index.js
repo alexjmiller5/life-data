@@ -255,7 +255,9 @@ const ROUTES = {
       const row = await db.prepare(`SELECT max(${col}) AS m FROM ${qident(table)}`).first();
       if (row?.m && row.m > top) top = row.m;
     }
-    return { max_hub_at: top };
+    // max_updated_at kept for clients from before the hub_at cursor: same value, so an
+    // old client keeps syncing (full-pull semantics) until it is upgraded.
+    return { max_hub_at: top, max_updated_at: top };
   },
 };
 
