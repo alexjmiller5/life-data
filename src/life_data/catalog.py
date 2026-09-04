@@ -574,8 +574,13 @@ def _with_context(conn, sql, changed_ids, now, tbl):
         conn.execute(f"CREATE TEMP TABLE changed AS SELECT * FROM {tbl} WHERE id IN ({ph})", ids)
         conn.execute("DROP TABLE IF EXISTS before")
         if _table_exists_temp(conn, f"_before_{tbl}"):
+            # explicit column list, not `*`: _before_{tbl} carries an extra
+            # _rowid bookkeeping column that would break shape-sensitive
+            # queries (EXCEPT/UNION) against `changed`, which has tbl's shape
+            cols = ", ".join(r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall())
             conn.execute(
-                f"CREATE TEMP TABLE before AS SELECT * FROM _before_{tbl} WHERE id IN ({ph})", ids
+                f"CREATE TEMP TABLE before AS SELECT {cols} FROM _before_{tbl} WHERE id IN ({ph})",
+                ids,
             )
         else:
             conn.execute(f"CREATE TEMP TABLE before AS SELECT * FROM {tbl} WHERE 0")
@@ -596,8 +601,11 @@ def _table_exists_temp(conn, name) -> bool:
 
 
 def compile_sql(conn: sqlite3.Connection, sql: str, tbl: str | None = None) -> None:
-    cleanup = _with_context(conn, sql, [], None, tbl)
+    def cleanup():
+        pass
+
     try:
+        cleanup = _with_context(conn, sql, [], None, tbl)
         conn.execute(f"SELECT * FROM ({sql}) LIMIT 0")
     except sqlite3.Error as e:
         raise ValueError(f"sql does not compile: {e}") from e

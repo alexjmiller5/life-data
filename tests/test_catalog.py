@@ -366,3 +366,38 @@ def test_ddl_recompiles_rules(db):
     )
     with pytest.raises(ValidationError, match="no longer compiles"):
         execute_sql(db, "ALTER TABLE places RENAME COLUMN category TO cat")
+
+
+def test_before_and_changed_share_shape_for_set_ops(db):
+    create_table(db, "places", ["status:text"])
+    set_property(db, "places", "status", type="text")
+    set_rule(
+        db,
+        "frozen",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="rows may not change",
+        sql="SELECT id FROM (SELECT * FROM before EXCEPT SELECT * FROM changed)",
+    )
+    insert_rows(db, "places", [{"id": "x", "status": "a"}])
+    execute_sql(db, "UPDATE places SET status = 'z' WHERE id = 'nope'")  # touches no row
+    with pytest.raises(ValidationError, match="rows may not change"):
+        execute_sql(db, "UPDATE places SET status = 'b' WHERE id = 'x'")
+
+
+def test_dropped_table_recompile_raises_validation_not_sqlite_error(db):
+    create_table(db, "places", ["status:text"])
+    set_rule(
+        db,
+        "watch",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="x",
+        sql="SELECT id FROM changed",
+    )
+    with pytest.raises(ValidationError, match="no longer compiles"):
+        execute_sql(db, "DROP TABLE places")
