@@ -32,8 +32,8 @@ files and a separate repo's YAML prompt.
   it governs.
 - Enforcement at the source, on every write path, so a violating row cannot
   be created or propagated.
-- Columns whose value comes from a function (an API, a computation over other
-  columns) are protected from hand edits and carry a recorded provenance.
+- Columns whose value comes from an external source are protected from hand
+  edits and carry a recorded provenance.
 - Machine-readable enough to drive a UI: a create form generated from the
   catalog, not hand-coded.
 - Documentation generated from the catalog, so the agent-facing skill cannot
@@ -43,8 +43,8 @@ files and a separate repo's YAML prompt.
 
 - **No network call and no model on the write path.** Checks are
   deterministic, offline, and reproducible. Code that touches the world
-  lives in derivations and audits, which run explicitly and never gate a
-  write.
+  lives in derivations (hub-side) and audits, which run explicitly and never
+  gate a write.
 - **No CHECK constraints or SQLite triggers for validation.** DDL replays
   through `_schema_log` into D1, and a validation trigger would fire on
   sync-*pulled* rows, letting a retired option wedge convergence.
@@ -72,7 +72,7 @@ Four kinds follow from that line:
 |---|---|---|---|---|
 | `invariant` | a predicate over the data | SQL returning zero rows | client, hub, UI | yes |
 | `doctrine` | prose | none | agent context | no |
-| `derivation` | a function producing a column's value | a SQL expression, or a command | client, or a job | rejects *direct* writes to its column |
+| `derivation` | a function producing a column's value from an external source | an HTTP endpoint | hub | rejects *direct* writes to its column |
 | `audit` | a check against the world | a command | scheduled | never; produces findings |
 
 Arbitrary code is allowed in derivations and audits. Never in invariants.
@@ -124,14 +124,14 @@ injected and the DDL replays to every replica.
 | `label` | text | Display name for a UI |
 | `sort` | integer | Form and doc ordering |
 | `type` | text | See type system |
-| `required` | integer | 0/1. May not be null or empty after any write. Never 1 on a command-derived column |
+| `required` | integer | 0/1. May not be null or empty after any write. Never 1 on a derived column |
 | `default_value` | text | Literal, or `sql:<expr>`. Named so because `default` is a SQLite keyword |
 | `options` | text | JSON array of `{v, d, sort}`: value, description, order |
 | `options_sql` | text | SELECT returning one column of allowed values; unioned with `options` |
 | `min_items`, `max_items` | integer | Cardinality for `multi_select` and `multi_ref` |
 | `pattern` | text | Regex, full match |
 | `ref_table` | text | Target table for `ref` / `multi_ref` |
-| `derived_by` | text | `sql:<expr>` or `cmd:<name>`. Present = this column is derived |
+| `derived_by` | text | `http:<name>`; the hub resolves the name to an endpoint. Present = this column is derived, and only the hub writes it |
 | `inputs` | text | JSON array of columns the derivation reads. Hashed into provenance |
 | `immutable` | integer | 0/1. Settable on insert, never changed afterwards, by anyone |
 | `deprecated` | integer | 0/1. Never write |
@@ -164,7 +164,7 @@ enforced structurally rather than by an asserted writer identity.
 | `derived_by` | text | The `derived_by` value at the time |
 | `inputs_hash` | text | sha256 of `json_array(CAST(input AS TEXT), ...)` as SQLite renders it, so client and hub agree byte for byte |
 | `value_hash` | text | sha256 of `CAST(col AS TEXT)` of the produced value. Binds the output: a hand edit with unchanged inputs is still detectable |
-| `source_ref` | text | What the command consulted, e.g. an external id plus a response hash; null for SQL derivations |
+| `source_ref` | text | What the endpoint consulted, e.g. an external id plus a response hash |
 | `produced_at` | text | ISO UTC ms |
 
 ## Type system
@@ -185,7 +185,7 @@ Notion property mapping, used when migrating a database:
 | url, email, phone_number | `url` / `email` / `phone` |
 | relation | `ref` / `multi_ref`, or a `links` row when the edge has its own properties |
 | files | `text` (R2 key) or `json` array |
-| formula, rollup | a `sql:` derivation, or not stored at all |
+| formula, rollup | not stored at all, or an ordinary column |
 | created_time, last_edited_time | already injected as `created_at` / `updated_at` |
 | people, created_by, last_edited_by, button, verification | dropped |
 
@@ -194,30 +194,25 @@ mapping) graduate to a real table, and the property becomes a `ref`.
 
 ## Derivations
 
-A derived property declares `derived_by` and `inputs`. Its value is written
-only by `life derive`, which evaluates the function and records a
-`provenance` row. A direct write that changes a derived column is rejected on
-every path. There is no writer identity to assert: the CLI knows whether it is
-inside a derive.
+**A derivation is a column whose value comes from an EXTERNAL source** (first
+case: TMDB genres). Derivations run only on the hub, never on a client; the
+only body is `http:<name>` (the hub resolves the name to an endpoint from its
+own config; same JSON protocol: POST `{tbl, id, inputs}`, receive an object of
+column values plus optional `_source_ref`). There are no `sql:` derivations (a
+column computable from other columns is either not stored or is an ordinary
+column) and no `cmd:` derivations (nothing runs on a client machine). Evidence
+of why a row exists (photos, messages) is the existing `links` table and is
+unrelated to derivations.
 
-**Two bodies, one gradient.**
+A derived property declares `derived_by` and `inputs`. A client never writes
+it: any client write that changes a derived column is rejected, on the local
+write path and again at the hub, which additionally verifies the `provenance`
+record. There is no writer identity to assert.
 
-- `sql:<expr>` for a function pure over the row and the database (category
-  from tags, `date_went` from evidence links). Runs everywhere, may run at
-  write time, and the hub can recompute it to verify.
-- `cmd:<name>` when the world is involved (genres from TMDB, address from a
-  Maps link). Runs client-side or in a job, never on the write path. The
-  command is user state, referenced by name, resolved the same way
-  `token_cmd` is. The product never learns the word TMDB.
-
-Each derivation declares exactly how much reproducibility it gives up, and
-for what.
-
-**A command takes the row's inputs as JSON on stdin and returns a JSON
-object.** Every key that names a derived column declaring that same command
-is written, so one command may fill several columns (a Maps link resolving
-`id`, `name`, `city`, `country`, `address`). The UI's "Resolve" button is a
-call to this.
+**One response may fill several columns.** Every key of the response that
+names a column declaring that same `http:<name>` is written (a Maps endpoint
+resolving `name`, `city`, `country`, `address`). The UI's "Resolve" button is
+a request to re-derive.
 
 **A derivation's `inputs` must be cataloged columns.** Client and hub both
 hash the inputs as SQLite renders them, and the hub only knows to bind a
@@ -234,10 +229,14 @@ What can never happen is a value with no recorded origin.
 drift (the external source changed its answer) is an `audit`, because only a
 re-fetch can know.
 
-**Command-derived columns are never `required` at insert.** A row missing one
-is valid but incomplete. "Underived" is a `life check` finding that a job
-clears by running `life derive`. That is Synapse's cleanup-task pattern made
-structural.
+**Derived columns are never `required` at insert.** A row missing one is valid
+but incomplete. "Underived" is a `life check` finding the hub clears.
+
+**The hub-side derive engine is future work**, to be built with the movies
+migration. It will: derive on push (a landed row with an underived column),
+sweep on a cron for stale and underived cells, and expose `POST /v1/derive`
+for a manual re-derive; each write records the `provenance` row in the same
+step.
 
 ## Validation
 
@@ -246,7 +245,7 @@ structural.
 Per changed row, per cataloged property, in this order:
 
 1. `deprecated=1` and the write sets a non-null value → reject
-2. `derived_by` set and the value changed outside `life derive` → reject
+2. `derived_by` set and a client write changed the value → reject
 3. `immutable=1`, the row already existed, and the value changed → reject
 4. `required=1` and the value is null or empty → reject
 5. Type: numeric parses; `bool` ∈ {0,1}; `date` matches `YYYY-MM-DD`;
@@ -284,8 +283,7 @@ parameter keeps the SQL identical under SQLite and D1. `random()`,
 
 Every catalog edit and every DDL statement runs each invariant's SQL against
 the schema with `LIMIT 0`. A rule that references a column that no longer
-exists fails there, not silently at the next write. `sql:` derivations are
-compiled the same way.
+exists fails there, not silently at the next write.
 
 ### Where it runs
 
@@ -312,7 +310,7 @@ by rowid past ~1M rows.
 rows in D1, plus **provenance verification**: for a derived column that
 changed, a `provenance` row must exist whose `inputs_hash` equals the hash of
 the pushed row's inputs and whose `value_hash` equals the hash of the pushed
-value. The hub never calls the command. It verifies the
+value. On the push path the hub never calls the endpoint; it verifies the
 attestation is consistent, which is a pure computation. The hub does **not**
 run SQL invariants: they need the transaction's `changed`/`before` temp
 tables, which D1's per-request model cannot provide. Invariants run on the
@@ -359,8 +357,8 @@ hide".
 A create form is generated from it: required fields marked, selects
 populated from `options` with their `d` text as helper copy, defaults
 prefilled, `pattern` and cardinality checked before submit, derived fields
-rendered read-only with their derivation named and a Resolve action where the
-derivation is a command, and invariant failures displayed using the rule's
+rendered read-only with their derivation named and a Resolve action, and
+invariant failures displayed using the rule's
 `text`. One definition drives the form, the CLI and the hub.
 
 Findings from the mockup, now decisions:
@@ -382,12 +380,14 @@ Findings from the mockup, now decisions:
 | `life property list [tbl]` | Show the contract |
 | `life property rm <tbl>.<col>` | Soft-delete |
 | `life rule set <id> --kind invariant --tbl ... --sql ... --text ...` | Upsert a rule |
-| `life derive <tbl>.<col> [--where ...]` | Run a derivation, write values, record provenance |
 | `life audit [id]` | Run audits, report findings |
 | `life check [--as-of <ts>]` | Every property check, every invariant, staleness, underived; report, never modify |
 | `life infer [tbl]` | Propose properties and rules from existing data |
 | `life doc [tbl]` | Render the catalog as markdown |
 | `life table create` | Extended type syntax; writes catalog rows as a side effect |
+
+Deriving is not a client command. It returns as a request to the hub
+(`POST /v1/derive`) when the hub-side derive engine is built.
 
 `life infer` is how the catalog gets populated honestly: a column never null
 in 2,511 rows proposes `required`; a text column with 14 distinct values
@@ -429,12 +429,12 @@ how to read the catalog.
    `deleted_at IS NULL`, the client shall reject the write.
 10. While a property is `deprecated`, the client shall reject any write
     setting it to a non-null value.
-11. If a property is derived and a statement outside `life derive` changes
-    its value, the client shall reject the write.
+11. If a property is derived and a client write changes its value, the
+    client shall reject the write.
 12. If a property is `immutable` and the row existed before the statement,
     the client shall reject any write that changes its value.
-13. When `life derive` writes a derived value, it shall record a `provenance`
-    row with the hash of the declared inputs in the same transaction.
+13. When the hub derives a value, it shall record a `provenance` row with the
+    hash of the declared inputs in the same step.
 14. When a statement touches a table with `enforce=1` invariants, the client
     shall run each invariant's SQL and roll back if any returns rows.
 15. While validating, the client shall expose the changed rows as `changed`
@@ -444,8 +444,8 @@ how to read the catalog.
     read the clock; the client shall reject at compile any rule using
     `random()`, `localtime`, or `date('now')`.
 18. When a catalog row or a DDL statement is written, the client shall
-    compile every invariant and every `sql:` derivation against the schema
-    and reject the change if any fails to compile.
+    compile every invariant against the schema and reject the change if any
+    fails to compile.
 19. When the hub receives a rows push, it shall run the property checks on
     each row against the catalog independently.
 20. If a pushed row changes a derived column, the hub shall reject it unless
@@ -490,8 +490,9 @@ how to read the catalog.
    hub) + `GET /v1/catalog`
 2. `catalog_rules` (`invariant` with `changed`/`before`/`:now`, `doctrine`)
    + rules compile + `life check`
-3. Derivations: `derived_by`, `inputs`, `provenance`, `life derive`, hub
-   provenance verification, staleness in `life check`
+3. Derivations: `derived_by`, `inputs`, `provenance`, hub provenance
+   verification, staleness in `life check`; the hub-side derive engine ships
+   with the movies migration
 4. `audit` + `life audit`
 5. `life infer`, then seed the estate and fix the drift it surfaces
 6. `life doc`, regenerate `life-map`, delete the hand-maintained contracts
@@ -501,7 +502,7 @@ how to read the catalog.
 | Decision | Why |
 |---|---|
 | Checks pure, producers may touch the world | A verdict that depends on a third party being up is a lie about the data; and a check that only some consumers can run fractures the contract |
-| Derivation instead of `owner` | Write authority by asserted identity is honor-system locally. A derived column is enforced structurally: only `life derive` writes it, and the hub verifies provenance |
+| Derivation instead of `owner` | Write authority by asserted identity is honor-system locally. A derived column is enforced structurally: a client can never write it, and the hub verifies provenance |
 | Provenance hash, not the value, is what the hub verifies | Lets the hub verify a nondeterministic process deterministically, with no network |
 | Validate in the write path, not in SQLite | Trigger and CHECK DDL replays into D1 and fires on pulled rows, wedging sync |
 | Two validators, one conformance fixture | Client is stdlib-only Python, hub is JS; shared runtime costs more than 80 lines twice |
@@ -511,8 +512,8 @@ how to read the catalog.
 | Rules as SQL returning zero rows | One format, no DSL, no severity ladder. Salesforce grew four overlapping engines because each could not express the next thing; this one will not grow a fifth kind |
 | `changed`/`before` temp tables | Transition rules without a DSL |
 | Engine-injected `:now` | Reproducible verdicts; `--as-of` |
-| Command-derived columns never required at insert | Otherwise every insert needs the network |
-| Derivation commands are user state referenced by name | Same seam as `token_cmd`; the product ships mechanism, every function is the user's |
+| Derived columns never required at insert | Otherwise every insert waits on the hub |
+| Derivations are hub-only and external-only: no local functions, no `sql:` kind | Owner's decision 2026-09-04. A column computable from other columns is either not stored or an ordinary column; nothing runs on a client machine |
 | Catalog tables prefixed `catalog_` | Avoids colliding with a user table named `rules` or `properties` |
 | `enforce=1` invariants evaluated whole-table when they reference neither `changed` nor `before` | A legacy violation blocks writes until fixed or `enforce` flipped off; `life check` reports it first |
 
@@ -521,5 +522,3 @@ how to read the catalog.
 - Whether `life doc` fully generates the `life-map` skill body or writes into
   a marked block.
 - Whether the catalog edit log is a stream or a local table.
-- Whether `sql:` derivations run automatically at write time or only via
-  `life derive`. Leaning automatic, since they are pure and instant.

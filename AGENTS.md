@@ -66,14 +66,14 @@ CLI.
   pushed rows per row and never fails a batch.
 - **Checks are pure; producers may touch the world.** Invariant SQL is one
   SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
-  now)`; `changed`/`before` are temp tables the engine provides). Derivations
-  (`derived_by: sql:|cmd:`) and audits run only via `life derive` /
-  `life audit` and record `provenance`. A derived column rejects direct
-  writes everywhere; the hub verifies `provenance.inputs_hash` against the
-  pushed inputs and never runs the command. **A derivation's `inputs` must be
-  cataloged columns** - both sides hash values as SQLite renders them, and the
-  hub needs the catalog `type` to know a `number` binds through REAL (4 →
-  `"4.0"`, not `"4"`).
+  now)`; `changed`/`before` are temp tables the engine provides). Audits run
+  via `life audit`. **Derivations are `http:<name>` and run on the hub only**:
+  a client never writes a derived column (any write that changes one is
+  rejected locally and again at the hub), and the hub verifies
+  `provenance.inputs_hash`/`value_hash` against the pushed row. **A
+  derivation's `inputs` must be cataloged columns** - both sides hash values as
+  SQLite renders them, and the hub needs the catalog `type` to know a `number`
+  binds through REAL (4 → `"4.0"`, not `"4"`).
 - Every temp table the rule engine makes (`now`, `changed`, `before`,
   `_before_<t>`) is schema-qualified `temp.` - unqualified names fall through
   to `main`, so an unqualified DROP would delete a user table of that name.
