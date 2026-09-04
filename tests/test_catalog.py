@@ -521,3 +521,31 @@ def test_derive_where_filters(db):
     )
     assert derive(db, "movies", "slug", where="id = 'm2'") == 1
     assert execute_sql(db, "SELECT slug FROM movies WHERE id='m1'")[0]["slug"] is None
+
+
+def test_derive_skips_rows_deleted_before_write(db):
+    _movies(db)
+    insert_rows(
+        db,
+        "movies",
+        [{"id": "m1", "title": "a", "tmdb_id": "1"}, {"id": "m2", "title": "b", "tmdb_id": "2"}],
+    )
+    derive(db, "movies", "slug")
+    execute_sql(db, "UPDATE movies SET deleted_at = updated_at WHERE id = 'm1'")
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM movies WHERE id = 'm2'")
+    conn.commit()
+    conn.close()
+    assert derive(db, "movies", "slug", where="id IN ('m1', 'm2')") == 0
+
+
+def test_cmd_derivation_returning_no_columns_is_skipped(db, tmp_path):
+    _movies(db)
+    script = tmp_path / "empty.py"
+    script.write_text("import sys,json\nsys.stdin.read()\nprint(json.dumps({}))\n")
+    insert_rows(db, "movies", [{"id": "m1", "title": "x", "tmdb_id": "78"}])
+    assert derive(db, "movies", "genres", commands={"tmdb": f"python3 {script}"}) == 0
+    assert execute_sql(db, "SELECT genres FROM movies")[0]["genres"] is None
+    assert execute_sql(db, "SELECT * FROM provenance") == []

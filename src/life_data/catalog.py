@@ -683,6 +683,11 @@ def derive(
     def fn(conn):
         count = 0
         for rid in ids:
+            # a row can vanish (hard or soft delete) between the read-only id
+            # listing above and this transaction; skip it rather than crash
+            row = conn.execute(f"SELECT * FROM {tbl} WHERE id = ?", (rid,)).fetchone()
+            if row is None or row["deleted_at"] is not None:
+                continue
             if d.startswith("sql:"):
                 values = {
                     col: conn.execute(
@@ -697,12 +702,13 @@ def derive(
                     raise RuntimeError(
                         f"no command configured for derivation {name!r} (config.json: commands)"
                     )
-                row = conn.execute(f"SELECT * FROM {tbl} WHERE id = ?", (rid,)).fetchone()
                 result = _run_command(
                     cmd, {"tbl": tbl, "id": rid, "inputs": {c: row[c] for c in inputs}}
                 )
                 source_ref = result.pop("_source_ref", None)
                 values = {k: v for k, v in result.items() if k in cols}
+            if not values:  # a cmd: derivation returned no known columns for this row
+                continue
             sets = ", ".join(f"{k} = ?" for k in values)
             vals = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values.values()]
             conn.execute(f"UPDATE {tbl} SET {sets} WHERE id = ?", [*vals, rid])
