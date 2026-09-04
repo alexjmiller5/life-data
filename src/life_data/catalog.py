@@ -394,16 +394,17 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
             if p.get("max_items") and len(items) > p["max_items"]:
                 fail(col, "max_items", f"{label} allows at most {p['max_items']}.")
                 continue
-            if t == "multi_ref" and ref_ok and p.get("ref_table"):
-                missing = [x for x in items if not ref_ok(p["ref_table"], x)]
-                if missing:
-                    fail(col, "ref", f"No {p['ref_table']} row: {', '.join(map(str, missing))}")
-                    continue
-        elif t == "ref" and ref_ok and p.get("ref_table") and not ref_ok(p["ref_table"], v):
-            fail(col, "ref", f"No {p['ref_table']} row with id {v}.")
-            continue
 
         if p.get("pattern") and isinstance(v, str) and not re.fullmatch(p["pattern"], v):
             fail(col, "pattern", f"{label} is not in the expected form.")
             continue
+
+        if t == "ref" and ref_ok and p.get("ref_table") and not ref_ok(p["ref_table"], v):
+            fail(col, "ref", f"No {p['ref_table']} row with id {v}.")
+            continue
+        if t == "multi_ref" and ref_ok and p.get("ref_table"):
+            missing = [x for x in _as_list(v) if not ref_ok(p["ref_table"], x)]
+            if missing:
+                fail(col, "ref", f"No {p['ref_table']} row: {', '.join(map(str, missing))}")
+                continue
     return out

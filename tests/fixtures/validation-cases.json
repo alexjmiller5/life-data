@@ -66,5 +66,7 @@
   {"name": "immutable set on insert is fine", "properties": [{"tbl": "t", "col": "amount", "type": "number", "immutable": 1}],
    "before": null, "after": {"id": "a", "amount": 10}, "expect": []},
   {"name": "first failing check wins per column", "properties": [{"tbl": "t", "col": "s", "type": "select", "required": 1, "deprecated": 1, "options": [{"v": "a"}]}],
-   "before": null, "after": {"id": "a", "s": "zzz"}, "expect": [{"col": "s", "rule": "deprecated"}]}
+   "before": null, "after": {"id": "a", "s": "zzz"}, "expect": [{"col": "s", "rule": "deprecated"}]},
+  {"name": "pattern is checked before ref", "properties": [{"tbl": "t", "col": "p", "type": "ref", "ref_table": "people", "pattern": "^p[0-9]+$"}],
+   "before": null, "after": {"id": "a", "p": "zz"}, "refs": {"people": ["p1"]}, "expect": [{"col": "p", "rule": "pattern"}]}
 ]
