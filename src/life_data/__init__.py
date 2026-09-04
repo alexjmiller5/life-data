@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -35,6 +36,7 @@ PLUMBING_STMTS = [
 ]
 PLUMBING = ";\n".join(PLUMBING_STMTS) + ";"
 
+from life_data import catalog
 
 # --- local database ----------------------------------------------------------
 
@@ -50,8 +52,8 @@ def db_path() -> Path:
     return resolve_data_dir() / "life.db"
 
 
-def connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def connect(path: Path, manual_tx: bool = False) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, isolation_level=None if manual_tx else "")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -65,28 +67,66 @@ def init(path: Path) -> Path:
     return path
 
 
+# `WITH` is deliberately absent: a CTE can end in INSERT/UPDATE/DELETE, so
+# every WITH statement goes through the validator (a read-only CTE pays a
+# no-op transaction).
+READ_KEYWORDS = {"SELECT", "PRAGMA", "EXPLAIN", "VALUES"}
+
+
+def _first_word(sql: str) -> str:
+    return sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+
+
 def execute_sql(path: Path, sql: str) -> list[dict]:
-    with connect(path) as conn:
-        cur = conn.execute(sql)
-        rows = [dict(r) for r in cur.fetchall()]
-        first_word = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
-        if first_word in DDL_KEYWORDS:
+    if _first_word(sql) in READ_KEYWORDS:
+        with connect(path) as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def run(conn):
+        rows = [dict(r) for r in conn.execute(sql).fetchall()]
+        if _first_word(sql) in DDL_KEYWORDS:
             conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (sql,))
-    return rows
+        return rows
+
+    return catalog.write(path, run, ddl=_first_word(sql) in DDL_KEYWORDS)
 
 
 def insert_rows(path: Path, table: str, rows: list[dict]) -> int:
-    with connect(path) as conn:
+    def run(conn):
         for row in rows:
+            row = catalog.apply_defaults(conn, table, row)
             cols = list(row)
             values = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in row.values()]
             placeholders = ", ".join("?" for _ in cols)
             conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})", values)
-    return len(rows)
+        return len(rows)
+
+    return catalog.write(path, run)
+
+
+COLSPEC = re.compile(r"^(?P<col>\w+):(?P<type>\w+)(?P<req>!)?(?:\((?P<opts>[^)]*)\))?$")
+# an unrecognized type keeps its raw storage type; the catalog property still
+# gets a best-guess catalog type from the storage SQLite ends up with.
+_STORAGE_TO_CATALOG_TYPE = {"REAL": "number", "INTEGER": "int"}
 
 
 def create_table(path: Path, name: str, columns: list[str]) -> None:
-    user_cols = ",\n    ".join(f"{c.split(':')[0]} {c.split(':', 1)[1].upper()}" for c in columns)
+    """Create a table plus a `catalog_properties` row per column.
+
+    Each column is `col:type[!][(a|b|c)]`: `type` is a catalog type (mapped
+    to its SQLite storage via `catalog.STORAGE`) or a raw SQLite type used
+    as-is; `!` marks the column required; `(a|b|c)` sets select/multi_select
+    options.
+    """
+    specs = []
+    for c in columns:
+        m = COLSPEC.match(c)
+        if not m:
+            raise ValueError(f"bad column spec {c!r}; expected col:type[!][(a|b)]")
+        specs.append(m.groupdict())
+    user_cols = ",\n    ".join(
+        f"{s['col']} {catalog.STORAGE.get(s['type'].lower(), s['type'].upper())}" for s in specs
+    )
     ddl = f"""CREATE TABLE {name} (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     {user_cols},
@@ -101,6 +141,18 @@ BEGIN
 END"""
     execute_sql(path, ddl)
     execute_sql(path, trigger)
+    if name in catalog.ENGINE_TABLES:
+        return
+    for i, s in enumerate(specs):
+        t = s["type"].lower()
+        storage = catalog.STORAGE.get(t, s["type"].upper())
+        cat_type = t if t in catalog.TYPES else _STORAGE_TO_CATALOG_TYPE.get(storage, "text")
+        fields = {"type": cat_type, "sort": (i + 1) * 10}
+        if s["req"]:
+            fields["required"] = 1
+        if s["opts"] is not None:
+            fields["options"] = [{"v": o.strip()} for o in s["opts"].split("|") if o.strip()]
+        catalog.set_property(path, name, s["col"], **fields)
 
 
 def dump_sql(path: Path) -> str:
@@ -135,6 +187,7 @@ def load_config(data_dir: Path | None = None) -> dict:
     cfg_path = (data_dir or resolve_data_dir()) / "config.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     cfg.setdefault("hub_url", DEFAULT_HUB_URL)
+    cfg.setdefault("commands", {})
     cfg["hub_url"] = os.environ.get("LIFE_HUB_URL", cfg["hub_url"]).rstrip("/")
     token = os.environ.get("LIFE_HUB_TOKEN") or cfg.get("token")
     if not token and cfg.get("token_cmd"):
@@ -212,10 +265,12 @@ class LocalHub:
             f"SELECT {', '.join(columns)} FROM {table} WHERE updated_at > ?", [since or ""]
         )
 
-    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> int:
-        for i in range(0, len(rows), CHUNK):
-            self._query(_upsert_sql(table, columns), [json.dumps(rows[i : i + CHUNK])])
-        return len(rows)
+    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
+        with connect(self.path) as conn:
+            accepted, rejected = catalog.validate_push(conn, table, rows)
+        for i in range(0, len(accepted), CHUNK):
+            self._query(_upsert_sql(table, columns), [json.dumps(accepted[i : i + CHUNK])])
+        return {"upserted": len(accepted), "rejected": rejected}
 
     def cursor(self, tables: list[str]) -> str:
         top = ""
@@ -264,14 +319,14 @@ class HttpHub:
             "/v1/rows/pull", {"table": table, "columns": columns, "since": since or ""}
         )["rows"]
 
-    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> int:
-        total = 0
+    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
+        total, rejected = 0, []
         for i in range(0, len(rows), CHUNK):
             chunk = rows[i : i + CHUNK]
-            total += self._post(
-                "/v1/rows/push", {"table": table, "columns": columns, "rows": chunk}
-            )["upserted"]
-        return total
+            out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": chunk})
+            total += out["upserted"]
+            rejected += out.get("rejected", [])
+        return {"upserted": total, "rejected": rejected}
 
     def cursor(self, tables: list[str]) -> str:
         return self._post("/v1/cursor", {"tables": tables})["max_updated_at"] or ""
@@ -391,8 +446,12 @@ def _set_state(path: Path, key: str, value: str) -> None:
 
 
 def _user_tables(path: Path) -> list[str]:
+    """catalog_* and provenance first, so a replica always has the contract
+    (and the provenance backing derived columns) before the data it governs."""
     rows = execute_sql(path, "SELECT name FROM sqlite_master WHERE type = 'table'")
-    return [r["name"] for r in rows if not r["name"].startswith(("_", "sqlite_"))]
+    names = [r["name"] for r in rows if not r["name"].startswith(("_", "sqlite_"))]
+    first = [n for n in names if n.startswith("catalog_") or n == "provenance"]
+    return sorted(first) + sorted(n for n in names if n not in first)
 
 
 def _columns(path: Path, table: str) -> list[str]:
@@ -435,6 +494,7 @@ def sync(path: Path, hub) -> dict:
     last_push = _get_state(path, "last_push")
 
     pulled = pushed = 0
+    rejected = []
     for table in tables:
         cols = _columns(path, table)
         # snapshot push candidates BEFORE applying the pull, so pulled rows
@@ -449,12 +509,13 @@ def sync(path: Path, hub) -> dict:
                     conn.execute(_upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),))
         pulled += len(remote)
         if mine:
-            hub.rows_push(table, cols, mine)
-        pushed += len(mine)
+            out = hub.rows_push(table, cols, mine)
+            rejected += [{"table": table, **r} for r in out["rejected"]]
+            pushed += out["upserted"]
 
     _set_state(path, "last_pull", hub.cursor(tables))
     _set_state(path, "last_push", _local_cursor(path, tables))
-    return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied}
+    return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 
 def _local_cursor(path: Path, tables: list[str]) -> str:
@@ -479,6 +540,13 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
                     print(json.dumps(stats), flush=True)
             except RuntimeError as e:  # offline or hub down: keep watching
                 print(f"sync deferred: {e}", file=sys.stderr, flush=True)
+            if changed:
+                try:
+                    findings = catalog.check(path)
+                    if findings:
+                        print(json.dumps({"check": findings}), file=sys.stderr, flush=True)
+                except Exception as e:  # noqa: BLE001 - never kill the daemon
+                    print(f"check failed: {e}", file=sys.stderr, flush=True)
             state = db_version(path)
             last_poll = time.monotonic()
         if once:
@@ -500,6 +568,18 @@ def main(argv: list[str] | None = None) -> int:
     p_insert = sub.add_parser("insert", help="bulk-insert rows from a JSON array on stdin")
     p_insert.add_argument("table")
     sub.add_parser("sync", help="sync once with the hub")
+    p_check = sub.add_parser("check", help="whole-estate read-only report of catalog violations")
+    p_check.add_argument("--as-of", dest="as_of")
+    p_audit = sub.add_parser("audit", help="run audit rules' commands, report findings")
+    p_audit.add_argument("id", nargs="?", help="run only this rule")
+    p_infer = sub.add_parser("infer", help="propose catalog properties for uncataloged columns")
+    p_infer.add_argument("table", nargs="?")
+    p_infer.add_argument(
+        "--apply", action="store_true", help="write the proposals via property set"
+    )
+    p_infer.add_argument("--min-rows", dest="min_rows", type=int, default=20)
+    p_doc = sub.add_parser("doc", help="render the catalog as markdown")
+    p_doc.add_argument("table", nargs="?")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
@@ -537,9 +617,65 @@ def main(argv: list[str] | None = None) -> int:
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
     p_create.add_argument("name")
     p_create.add_argument("columns", nargs="+", metavar="name:type")
+    t_set = t_sub.add_parser("set", help="describe a table in the catalog")
+    t_set.add_argument("name")
+    for f in ("kind", "purpose", "id_semantics", "provenance", "owner", "consumers", "description"):
+        t_set.add_argument(f"--{f.replace('_', '-')}", dest=f)
+    p_prop = sub.add_parser("property", help="catalog properties (the per-column contract)")
+    pr_sub = p_prop.add_subparsers(dest="property_command", required=True)
+    pr_set = pr_sub.add_parser("set", help="upsert a property: <table>.<column>")
+    pr_set.add_argument("ref")
+    pr_set.add_argument("--type", dest="type")
+    pr_set.add_argument("--label")
+    pr_set.add_argument("--sort", type=int)
+    pr_set.add_argument("--required", type=int, choices=(0, 1))
+    pr_set.add_argument("--default", dest="default_value")
+    pr_set.add_argument("--options", help="JSON array of {v,d,sort} or a comma list of values")
+    pr_set.add_argument("--options-sql", dest="options_sql")
+    pr_set.add_argument("--min-items", dest="min_items", type=int)
+    pr_set.add_argument("--max-items", dest="max_items", type=int)
+    pr_set.add_argument("--pattern")
+    pr_set.add_argument("--ref-table", dest="ref_table")
+    pr_set.add_argument("--derived-by", dest="derived_by")
+    pr_set.add_argument("--inputs", help="comma list of columns")
+    pr_set.add_argument("--immutable", type=int, choices=(0, 1))
+    pr_set.add_argument("--deprecated", type=int, choices=(0, 1))
+    pr_set.add_argument("--description")
+    pr_set.add_argument("--source")
+    pr_set.add_argument("--source-ref", dest="source_ref")
+    pr_list = pr_sub.add_parser("list", help="list properties, optionally for one table")
+    pr_list.add_argument("table", nargs="?")
+    pr_rm = pr_sub.add_parser("rm", help="soft-delete a property: <table>.<column>")
+    pr_rm.add_argument("ref")
+    p_rule = sub.add_parser("rule", help="catalog rules (invariant, doctrine, audit)")
+    ru_sub = p_rule.add_subparsers(dest="rule_command", required=True)
+    ru_set = ru_sub.add_parser("set", help="upsert a rule by id")
+    ru_set.add_argument("id")
+    ru_set.add_argument("--scope", choices=("estate", "table", "column"))
+    ru_set.add_argument("--tbl")
+    ru_set.add_argument("--col")
+    ru_set.add_argument("--kind", choices=("invariant", "doctrine", "audit"))
+    ru_set.add_argument("--text")
+    ru_set.add_argument("--sql")
+    ru_set.add_argument("--cmd")
+    ru_set.add_argument("--enforce", type=int, choices=(0, 1))
+    ru_list = ru_sub.add_parser("list", help="list rules, optionally for one table")
+    ru_list.add_argument("table", nargs="?")
+    ru_rm = ru_sub.add_parser("rm", help="soft-delete a rule")
+    ru_rm.add_argument("id")
     args = parser.parse_args(argv)
 
     path = db_path()
+    try:
+        return _dispatch(args, path)
+    except catalog.ValidationError as e:
+        print(
+            json.dumps({"rejected": [v.as_dict() for v in e.violations]}, indent=2), file=sys.stderr
+        )
+        return 1
+
+
+def _dispatch(args: argparse.Namespace, path: Path) -> int:
     if args.command == "init":
         init(path)
         print(path)
@@ -553,7 +689,29 @@ def main(argv: list[str] | None = None) -> int:
         n = insert_rows(path, args.table, json.load(sys.stdin))
         print(f"inserted {n} rows into {args.table}")
     elif args.command == "sync":
-        print(json.dumps(sync(path, hub_from_config())))
+        stats = sync(path, hub_from_config())
+        print(json.dumps(stats))
+        if stats["rejected"]:
+            print(json.dumps({"rejected": stats["rejected"]}, indent=2), file=sys.stderr)
+    elif args.command == "check":
+        findings = catalog.check(path, as_of=args.as_of)
+        print(json.dumps(findings, indent=2))
+        return 1 if findings else 0
+    elif args.command == "audit":
+        findings = catalog.audit(path, rule_id=args.id, commands=load_config().get("commands"))
+        print(json.dumps(findings, indent=2))
+        return 1 if findings else 0
+    elif args.command == "infer":
+        proposals = catalog.infer(path, args.table, min_rows=args.min_rows)
+        print(json.dumps(proposals, indent=2))
+        if args.apply:
+            for p in proposals:
+                kwargs = {k: v for k, v in p.items() if k not in ("tbl", "col")}
+                catalog.set_property(path, p["tbl"], p["col"], **kwargs)
+            print(f"applied {len(proposals)}")
+    elif args.command == "doc":
+        with connect(path) as conn:
+            print(catalog.doc(conn, args.table), end="")
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)
@@ -589,8 +747,61 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(hub.token_list(), indent=2))
     elif args.command == "table":
-        create_table(path, args.name, args.columns)
-        print(f"created table {args.name}")
+        if args.table_command == "create":
+            create_table(path, args.name, args.columns)
+            print(f"created table {args.name}")
+        else:
+            fields = {
+                k: v
+                for k, v in vars(args).items()
+                if k
+                in (
+                    "kind",
+                    "purpose",
+                    "id_semantics",
+                    "provenance",
+                    "owner",
+                    "consumers",
+                    "description",
+                )
+                and v is not None
+            }
+            if "consumers" in fields:
+                fields["consumers"] = [s.strip() for s in fields["consumers"].split(",")]
+            print(json.dumps(catalog.set_table(path, args.name, **fields), indent=2))
+    elif args.command == "property":
+        if args.property_command == "set":
+            tbl, col = args.ref.split(".", 1)
+            skip = {"command", "property_command", "ref"}
+            fields = {k: v for k, v in vars(args).items() if k not in skip and v is not None}
+            if "options" in fields:
+                raw = fields["options"].strip()
+                fields["options"] = (
+                    json.loads(raw)
+                    if raw.startswith("[")
+                    else [{"v": s.strip()} for s in raw.split(",")]
+                )
+            if "inputs" in fields:
+                fields["inputs"] = [s.strip() for s in fields["inputs"].split(",")]
+            print(json.dumps(catalog.set_property(path, tbl, col, **fields), indent=2))
+        elif args.property_command == "list":
+            with connect(path) as conn:
+                print(json.dumps(catalog.properties(conn, args.table), indent=2))
+        else:
+            tbl, col = args.ref.split(".", 1)
+            catalog.rm_property(path, tbl, col)
+            print(f"removed {args.ref}")
+    elif args.command == "rule":
+        if args.rule_command == "set":
+            skip = {"command", "rule_command", "id"}
+            fields = {k: v for k, v in vars(args).items() if k not in skip and v is not None}
+            print(json.dumps(catalog.set_rule(path, args.id, **fields), indent=2))
+        elif args.rule_command == "list":
+            with connect(path) as conn:
+                print(json.dumps(catalog.rules(conn, args.table), indent=2))
+        else:
+            catalog.rm_rule(path, args.id)
+            print(f"removed {args.id}")
     return 0
 
 

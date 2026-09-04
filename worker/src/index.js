@@ -6,6 +6,8 @@
 // changing that function and nothing else — no route, no query, no sync logic
 // knows how the caller was authenticated.
 
+import { validatePush } from "./validate.js";
+
 const CHUNK_COLUMNS_SAFE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const PLUMBING = [
@@ -94,6 +96,7 @@ function allowed(pathname, method, scopes) {
     pathname === "/v1/schema/pull" ||
     pathname === "/v1/rows/pull" ||
     pathname === "/v1/cursor" ||
+    pathname === "/v1/catalog" ||
     ((method === "GET" || method === "HEAD") &&
       (pathname.startsWith("/v1/streams/") || pathname.startsWith("/v1/archive/")));
   if (readOnly) return scopes.includes("full") || scopes.includes("tables:read");
@@ -189,11 +192,13 @@ const ROUTES = {
   },
 
   "/v1/rows/push": async (body, db) => {
+    const table = ident(body.table); // before any SQL is built from it
     const rows = body.rows ?? [];
-    if (rows.length) {
-      await db.prepare(upsertSql(body.table, body.columns)).bind(JSON.stringify(rows)).run();
+    const { accepted, rejected } = await validatePush(db, table, rows);
+    if (accepted.length) {
+      await db.prepare(upsertSql(table, body.columns)).bind(JSON.stringify(accepted)).run();
     }
-    return { upserted: rows.length };
+    return { upserted: accepted.length, rejected };
   },
 
   // Backups normally run on the cron; this makes the path triggerable and
@@ -476,6 +481,19 @@ export default {
           headers: { "Content-Type": "application/json" },
         });
       }
+      if (url.pathname === "/v1/catalog" && request.method === "GET") {
+        await ensureReady(tenant.db);
+        const out = {};
+        for (const t of ["catalog_tables", "catalog_properties", "catalog_rules"]) {
+          const exists = await tenant.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(t).first();
+          const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${t} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
+          out[t.replace("catalog_", "")] = results ?? [];
+        }
+        const text = JSON.stringify(out);
+        const etag = `"${(await sha256hex(text)).slice(0, 32)}"`;
+        if (request.headers.get("If-None-Match") === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+        return new Response(text, { headers: { "Content-Type": "application/json", ETag: etag } });
+      }
       if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
       if (
         url.pathname.startsWith("/v1/archive/") &&
@@ -500,3 +518,5 @@ export default {
     ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
   },
 };
+
+export { ROUTES, allowed, validatePush };

@@ -13,6 +13,8 @@ from life_data import (
     HttpHub,
     LocalHub,
     auth_headers,
+    catalog,
+    connect,
     create_table,
     db_changed,
     db_version,
@@ -24,6 +26,7 @@ from life_data import (
     main,
     resolve_data_dir,
     sync,
+    watch,
 )
 
 
@@ -139,6 +142,37 @@ def test_create_table_autofills_id_and_timestamps(db):
     assert row["created_at"] == row["updated_at"]
 
 
+def test_create_table_typed_syntax_writes_catalog_rows(db):
+    from life_data.catalog import properties
+
+    create_table(
+        db,
+        "places",
+        ["name:text!", "status:select!(want|been)", "tags:multi_select(bar|cafe)", "lat:number"],
+    )
+    cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(places)")}
+    assert cols["status"] == "TEXT" and cols["lat"] == "REAL"
+    with connect(db) as conn:
+        p = {x["col"]: x for x in properties(conn, "places")}
+    assert p["name"]["required"] == 1
+    assert p["status"]["options"] == [{"v": "want"}, {"v": "been"}]
+    assert p["tags"]["type"] == "multi_select"
+    with pytest.raises(catalog.ValidationError):
+        insert_rows(db, "places", [{"name": "x", "status": "Been"}])
+
+
+def test_create_table_unknown_type_maps_storage_to_catalog_type(db):
+    from life_data.catalog import properties
+
+    create_table(db, "trips", ["lat:real", "n:integer"])
+    cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(trips)")}
+    assert cols["lat"] == "REAL" and cols["n"] == "INTEGER"
+    with connect(db) as conn:
+        p = {x["col"]: x for x in properties(conn, "trips")}
+    assert p["lat"]["type"] == "number"
+    assert p["n"]["type"] == "int"
+
+
 def test_update_bumps_updated_at(db):
     create_table(db, "people", ["name:text"])
     execute_sql(db, "INSERT INTO people (name) VALUES ('Ada')")
@@ -193,20 +227,112 @@ def test_db_changed_reports_once_per_change(db):
     assert changed is False
 
 
+def test_watch_survives_check_failure_but_logs_it(db, hub, monkeypatch, capsys):
+    def boom(path, as_of=None):
+        raise sqlite3.OperationalError("boom")
+
+    monkeypatch.setattr("life_data.catalog.check", boom)
+    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)  # must not raise
+    assert "check failed" in capsys.readouterr().err
+
+
+def test_watch_survives_any_check_error(db, hub, monkeypatch, capsys):
+    """A hard-deleted derived row used to raise TypeError, which the old
+    guard did not catch, and the watch daemon died."""
+
+    def boom(path, as_of=None):
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    monkeypatch.setattr("life_data.catalog.check", boom)
+    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)  # must not raise
+    assert "check failed" in capsys.readouterr().err
+
+
+def test_watch_prints_check_findings_to_stderr(db, hub, monkeypatch, capsys):
+    monkeypatch.setattr("life_data.catalog.check", lambda path, as_of=None: [{"rule": "options"}])
+    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)
+    assert json.loads(capsys.readouterr().err)["check"] == [{"rule": "options"}]
+
+
 # --- sync engine (LocalHub) --------------------------------------------------
 
 
 def test_sync_pushes_schema_and_rows_to_hub(db, hub):
     _mk_people(db, ["Ada", "Grace"])
     stats = sync(db, hub)
-    assert stats["pushed"] == 2
+    # 2 people rows + 1 catalog_properties row + 1 catalog_log row for the
+    # "name" column that create_table catalogs on the way in
+    assert stats["pushed"] == 4
     assert {r["name"] for r in hub.rows_pull("people", ["name"], "")} == {"Ada", "Grace"}
 
 
 def test_second_sync_is_noop(db, hub):
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0}
+    assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
+
+
+def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
+    from life_data.catalog import set_property
+
+    create_table(db, "places", ["status:text"])
+    set_property(db, "places", "status", type="select", options=[{"v": "want"}])
+    insert_rows(db, "places", [{"id": "good", "status": "want"}])
+    sync(db, hub)  # catalog reaches the hub first
+    # a raw write that bypasses local validation
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO places (id, status) VALUES ('bad', 'Nope')")
+    c.commit()
+    c.close()
+    stats = sync(db, hub)
+    assert stats["rejected"][0]["id"] == "bad" and stats["rejected"][0]["rule"] == "options"
+    assert {r["id"] for r in hub.rows_pull("places", ["id"], "")} == {"good"}
+    assert sync(db, hub)["rejected"] == []  # cursor advanced; not re-pushed
+
+
+def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
+    from life_data.catalog import inputs_hash, set_property, value_hash
+
+    create_table(db, "movies", ["title:text", "slug:text"])
+    set_property(db, "movies", "slug", type="text", derived_by="http:slug", inputs=["title"])
+    insert_rows(db, "movies", [{"id": "m1", "title": "A"}])
+    # the hub's derive engine wrote the value and its provenance; stand in for it
+    with connect(db) as conn:
+        conn.execute("UPDATE movies SET slug = 'a' WHERE id = 'm1'")
+        conn.execute(
+            "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) "
+            "VALUES ('movies:m1:slug', 'movies', 'm1', 'slug', 'http:slug', ?, ?)",
+            (
+                inputs_hash(conn, "movies", "m1", ["title"]),
+                value_hash(conn, "movies", "m1", "slug"),
+            ),
+        )
+    sync(db, hub)
+    c = sqlite3.connect(db)
+    c.execute("UPDATE movies SET slug = 'hand' WHERE id = 'm1'")
+    c.commit()
+    c.close()
+    time.sleep(0.002)
+    stats = sync(db, hub)
+    assert stats["rejected"][0]["rule"] == "provenance"
+    assert hub.rows_pull("movies", ["slug"], "")[0]["slug"] == "a"
+
+
+def test_sync_pushes_catalog_and_provenance_before_data(db, hub, monkeypatch):
+    from life_data import _user_tables
+    from life_data.catalog import ensure_catalog
+
+    _mk_people(db, ["Ada"])
+    ensure_catalog(db)
+    order = _user_tables(db)
+    assert order.index("provenance") < order.index("people")
+    assert order.index("catalog_properties") < order.index("people")
 
 
 def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
@@ -214,7 +340,7 @@ def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
     sync(db, hub)
     other = init(tmp_path / "other" / "life.db")
     stats = sync(other, hub)
-    assert stats["ddl_applied"] >= 1 and stats["pulled"] == 2 and stats["pushed"] == 0
+    assert stats["ddl_applied"] >= 1 and stats["pulled"] == 4 and stats["pushed"] == 0
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
 
@@ -340,7 +466,7 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/rows/pull":
             out = {"rows": h.rows_pull(body["table"], body["columns"], body["since"])}
         elif self.path == "/v1/rows/push":
-            out = {"upserted": h.rows_push(body["table"], body["columns"], body["rows"])}
+            out = h.rows_push(body["table"], body["columns"], body["rows"])
         elif self.path == "/v1/cursor":
             out = {"max_updated_at": h.cursor(body["tables"])}
         else:
@@ -373,9 +499,9 @@ def http_hub(tmp_path):
 
 def test_sync_works_end_to_end_over_http(db, http_hub, tmp_path):
     _mk_people(db, ["Ada", "Grace"])
-    assert sync(db, http_hub)["pushed"] == 2
+    assert sync(db, http_hub)["pushed"] == 4
     other = init(tmp_path / "other" / "life.db")
-    assert sync(other, http_hub)["pulled"] == 2
+    assert sync(other, http_hub)["pulled"] == 4
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
 

@@ -83,8 +83,16 @@ def db(tmp_path):
 
 def test_ensure_catalog_creates_logged_tables(db):
     ensure_catalog(db)
-    names = {r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"catalog_tables", "catalog_properties", "catalog_rules", "provenance", "catalog_log"} <= names
+    names = {
+        r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert {
+        "catalog_tables",
+        "catalog_properties",
+        "catalog_rules",
+        "provenance",
+        "catalog_log",
+    } <= names
     ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
     assert any("catalog_properties" in d for d in ddls)
     ensure_catalog(db)  # idempotent
@@ -100,8 +108,14 @@ def test_has_catalog_false_on_fresh_db(db):
 
 
 def test_set_property_upserts_and_parses(db):
-    set_property(db, "places", "status", type="select", required=1,
-                 options=[{"v": "want"}, {"v": "been", "d": "confirmed"}])
+    set_property(
+        db,
+        "places",
+        "status",
+        type="select",
+        required=1,
+        options=[{"v": "want"}, {"v": "been", "d": "confirmed"}],
+    )
     set_property(db, "places", "status", description="lowercase")
     with connect(db) as conn:
         props = properties(conn, "places")
@@ -168,37 +182,91 @@ from pathlib import Path
 
 CATALOG_TABLES = {
     "catalog_tables": [
-        "kind:text", "purpose:text", "id_semantics:text", "provenance:text",
-        "owner:text", "consumers:text", "description:text",
+        "kind:text",
+        "purpose:text",
+        "id_semantics:text",
+        "provenance:text",
+        "owner:text",
+        "consumers:text",
+        "description:text",
     ],
     "catalog_properties": [
-        "tbl:text", "col:text", "label:text", "sort:integer", "type:text",
-        "required:integer", "default_value:text", "options:text", "options_sql:text",
-        "min_items:integer", "max_items:integer", "pattern:text", "ref_table:text",
-        "derived_by:text", "inputs:text", "immutable:integer", "deprecated:integer",
-        "description:text", "source:text", "source_ref:text",
+        "tbl:text",
+        "col:text",
+        "label:text",
+        "sort:integer",
+        "type:text",
+        "required:integer",
+        "default_value:text",
+        "options:text",
+        "options_sql:text",
+        "min_items:integer",
+        "max_items:integer",
+        "pattern:text",
+        "ref_table:text",
+        "derived_by:text",
+        "inputs:text",
+        "immutable:integer",
+        "deprecated:integer",
+        "description:text",
+        "source:text",
+        "source_ref:text",
     ],
     "catalog_rules": [
-        "scope:text", "tbl:text", "col:text", "kind:text", "text:text",
-        "sql:text", "cmd:text", "enforce:integer",
+        "scope:text",
+        "tbl:text",
+        "col:text",
+        "kind:text",
+        "text:text",
+        "sql:text",
+        "cmd:text",
+        "enforce:integer",
     ],
     "provenance": [
-        "tbl:text", "row_id:text", "col:text", "derived_by:text",
-        "inputs_hash:text", "source_ref:text", "produced_at:text",
+        "tbl:text",
+        "row_id:text",
+        "col:text",
+        "derived_by:text",
+        "inputs_hash:text",
+        "value_hash:text",
+        "source_ref:text",
+        "produced_at:text",
     ],
     "catalog_log": ["tbl:text", "row_id:text", "action:text", "payload:text"],
 }
 ENGINE_TABLES = set(CATALOG_TABLES)
 
 TYPES = {
-    "text", "number", "int", "bool", "date", "datetime", "json",
-    "select", "multi_select", "ref", "multi_ref", "url", "email", "phone",
+    "text",
+    "number",
+    "int",
+    "bool",
+    "date",
+    "datetime",
+    "json",
+    "select",
+    "multi_select",
+    "ref",
+    "multi_ref",
+    "url",
+    "email",
+    "phone",
 }
 STORAGE = {
-    "text": "TEXT", "number": "REAL", "int": "INTEGER", "bool": "INTEGER",
-    "date": "TEXT", "datetime": "TEXT", "json": "TEXT", "select": "TEXT",
-    "multi_select": "TEXT", "ref": "TEXT", "multi_ref": "TEXT",
-    "url": "TEXT", "email": "TEXT", "phone": "TEXT",
+    "text": "TEXT",
+    "number": "REAL",
+    "int": "INTEGER",
+    "bool": "INTEGER",
+    "date": "TEXT",
+    "datetime": "TEXT",
+    "json": "TEXT",
+    "select": "TEXT",
+    "multi_select": "TEXT",
+    "ref": "TEXT",
+    "multi_ref": "TEXT",
+    "url": "TEXT",
+    "email": "TEXT",
+    "phone": "TEXT",
 }
 RULE_KINDS = {"invariant", "doctrine", "audit"}
 JSON_COLS = {"options", "inputs", "consumers"}
@@ -215,7 +283,9 @@ def _pkg():
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
     return row is not None
 
 
@@ -569,7 +639,9 @@ def test_validate_row_conformance(case):
 
 
 def test_violation_message_names_allowed_values():
-    props = [{"tbl": "t", "col": "status", "type": "select", "options": [{"v": "want"}, {"v": "been"}]}]
+    props = [
+        {"tbl": "t", "col": "status", "type": "select", "options": [{"v": "want"}, {"v": "been"}]}
+    ]
     v = validate_row(props, None, {"id": "a", "status": "Been"})[0]
     assert isinstance(v, Violation)
     assert v.tbl == "t" and v.row_id == "a"
@@ -598,8 +670,13 @@ class Violation:
     message: str
 
     def as_dict(self) -> dict:
-        return {"tbl": self.tbl, "row_id": self.row_id, "col": self.col,
-                "rule": self.rule, "message": self.message}
+        return {
+            "tbl": self.tbl,
+            "row_id": self.row_id,
+            "col": self.col,
+            "rule": self.rule,
+            "message": self.message,
+        }
 
 
 class ValidationError(Exception):
@@ -710,7 +787,11 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
         elif t == "select":
             allowed = _allowed(p, extra_options)
             if allowed and v not in allowed:
-                fail(col, "options", f"{v!s} is not an option for {col}. Allowed: {', '.join(allowed)}")
+                fail(
+                    col,
+                    "options",
+                    f"{v!s} is not an option for {col}. Allowed: {', '.join(allowed)}",
+                )
                 continue
         elif t in ("multi_select", "multi_ref"):
             items = _as_list(v)
@@ -721,7 +802,11 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
                 allowed = _allowed(p, extra_options)
                 bad = [x for x in items if allowed and x not in allowed]
                 if bad:
-                    fail(col, "options", f"Not options for {col}: {', '.join(map(str, bad))}. Allowed: {', '.join(allowed)}")
+                    fail(
+                        col,
+                        "options",
+                        f"Not options for {col}: {', '.join(map(str, bad))}. Allowed: {', '.join(allowed)}",
+                    )
                     continue
             if p.get("min_items") and len(items) < p["min_items"]:
                 fail(col, "min_items", f"{label} needs at least {p['min_items']}.")
@@ -784,15 +869,24 @@ from life_data.catalog import ValidationError
 def _places(db):
     create_table(db, "places", ["name:text", "status:text", "tags:text", "gmaps_url:text"])
     set_property(db, "places", "name", type="text", required=1)
-    set_property(db, "places", "status", type="select", required=1, default_value="want",
-                 options=[{"v": "want"}, {"v": "priority"}, {"v": "been"}])
+    set_property(
+        db,
+        "places",
+        "status",
+        type="select",
+        required=1,
+        default_value="want",
+        options=[{"v": "want"}, {"v": "priority"}, {"v": "been"}],
+    )
     set_property(db, "places", "tags", type="multi_select", options=[{"v": "bar"}, {"v": "cafe"}])
 
 
 def test_insert_violation_rolls_back_whole_statement(db):
     _places(db)
     with pytest.raises(ValidationError) as ei:
-        insert_rows(db, "places", [{"name": "Casa", "status": "want"}, {"name": "Bad", "status": "Been"}])
+        insert_rows(
+            db, "places", [{"name": "Casa", "status": "want"}, {"name": "Bad", "status": "Been"}]
+        )
     assert ei.value.violations[0].col == "status" and ei.value.violations[0].rule == "options"
     assert execute_sql(db, "SELECT count(*) AS n FROM places")[0]["n"] == 0
 
@@ -813,7 +907,9 @@ def test_only_changed_rows_are_validated(db):
     execute_sql(db, "UPDATE places SET name = 'renamed' WHERE id = 'new'")  # legacy row untouched
     assert execute_sql(db, "SELECT name FROM places WHERE id='new'")[0]["name"] == "renamed"
     with pytest.raises(ValidationError):
-        execute_sql(db, "UPDATE places SET name = 'touch' WHERE id = 'old'")  # touching it forces the fix
+        execute_sql(
+            db, "UPDATE places SET name = 'touch' WHERE id = 'old'"
+        )  # touching it forces the fix
 
 
 def test_defaults_apply_on_insert(db):
@@ -824,6 +920,7 @@ def test_defaults_apply_on_insert(db):
 
 def test_sql_default_is_evaluated(db):
     import re
+
     create_table(db, "tasks", ["title:text", "due:text"])
     set_property(db, "tasks", "due", type="date", default_value="sql:date('now')")
     insert_rows(db, "tasks", [{"title": "x"}])
@@ -844,8 +941,14 @@ def test_options_sql_extends_allowlist(db):
     create_table(db, "place_tags", ["name:text"])
     insert_rows(db, "place_tags", [{"name": "sports bar"}])
     create_table(db, "tasks", ["tag:text"])
-    set_property(db, "tasks", "tag", type="select", options=[{"v": "chore"}],
-                 options_sql="SELECT name FROM place_tags WHERE deleted_at IS NULL")
+    set_property(
+        db,
+        "tasks",
+        "tag",
+        type="select",
+        options=[{"v": "chore"}],
+        options_sql="SELECT name FROM place_tags WHERE deleted_at IS NULL",
+    )
     insert_rows(db, "tasks", [{"tag": "sports bar"}])
     with pytest.raises(ValidationError):
         insert_rows(db, "tasks", [{"tag": "dive bar"}])
@@ -865,7 +968,9 @@ def test_uncataloged_table_is_unconstrained(db):
 def test_engine_tables_are_never_validated_against_themselves(db):
     _places(db)
     set_property(db, "catalog_properties", "type", type="select", options=[{"v": "text"}])
-    set_property(db, "places", "extra", type="url")  # would fail if catalog_properties were validated
+    set_property(
+        db, "places", "extra", type="url"
+    )  # would fail if catalog_properties were validated
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -885,15 +990,20 @@ def _ref_ok(conn):
     def ok(ref_table, rid):
         if not _table_exists(conn, ref_table):
             return False
-        return conn.execute(
-            f"SELECT 1 FROM {ref_table} WHERE id = ? AND deleted_at IS NULL", (rid,)
-        ).fetchone() is not None
+        return (
+            conn.execute(
+                f"SELECT 1 FROM {ref_table} WHERE id = ? AND deleted_at IS NULL", (rid,)
+            ).fetchone()
+            is not None
+        )
+
     return ok
 
 
 def _extra_options(conn):
     def extra(prop):
         return [r[0] for r in conn.execute(prop["options_sql"]).fetchall()]
+
     return extra
 
 
@@ -956,8 +1066,14 @@ def _validate_changed(conn, marks, t0, in_derive) -> list[Violation]:
             before = dict(b) if b else None
             if before:
                 before.pop("_rowid", None)
-            out += validate_row(props, before, after, in_derive=in_derive,
-                                ref_ok=_ref_ok(conn), extra_options=_extra_options(conn))
+            out += validate_row(
+                props,
+                before,
+                after,
+                in_derive=in_derive,
+                ref_ok=_ref_ok(conn),
+                extra_options=_extra_options(conn),
+            )
     return out
 ```
 
@@ -1066,18 +1182,32 @@ def test_rule_sql_rejects_nondeterminism():
 
 def test_set_rule_compiles_invariant(db):
     with pytest.raises(ValueError, match="no such table"):
-        set_rule(db, "bad", scope="table", tbl="places", kind="invariant", enforce=1,
-                 sql="SELECT id FROM nope")
+        set_rule(
+            db,
+            "bad",
+            scope="table",
+            tbl="places",
+            kind="invariant",
+            enforce=1,
+            sql="SELECT id FROM nope",
+        )
 
 
 def test_enforced_invariant_blocks_write(db):
     create_table(db, "places", ["category:text", "tags:text"])
     set_property(db, "places", "tags", type="multi_select", options=[{"v": "bar"}, {"v": "cafe"}])
     set_property(db, "places", "category", type="select", options=[{"v": "bar"}, {"v": "cafe"}])
-    set_rule(db, "cat-in-tags", scope="table", tbl="places", kind="invariant", enforce=1,
-             text="Category must be one of the tags.",
-             sql="SELECT id FROM places WHERE deleted_at IS NULL AND category IS NOT NULL "
-                 "AND NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE value = places.category)")
+    set_rule(
+        db,
+        "cat-in-tags",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="Category must be one of the tags.",
+        sql="SELECT id FROM places WHERE deleted_at IS NULL AND category IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM json_each(tags) WHERE value = places.category)",
+    )
     insert_rows(db, "places", [{"category": "bar", "tags": ["bar"]}])
     with pytest.raises(ValidationError, match="Category must be one of the tags"):
         insert_rows(db, "places", [{"category": "cafe", "tags": ["bar"]}])
@@ -1086,18 +1216,33 @@ def test_enforced_invariant_blocks_write(db):
 def test_unenforced_invariant_does_not_block(db):
     create_table(db, "places", ["category:text", "tags:text"])
     set_property(db, "places", "category", type="text")
-    set_rule(db, "cat-in-tags", scope="table", tbl="places", kind="invariant", enforce=0,
-             text="x", sql="SELECT id FROM places WHERE category = 'zzz'")
+    set_rule(
+        db,
+        "cat-in-tags",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=0,
+        text="x",
+        sql="SELECT id FROM places WHERE category = 'zzz'",
+    )
     insert_rows(db, "places", [{"category": "zzz", "tags": "[]"}])
 
 
 def test_transition_rule_uses_before_and_changed(db):
     create_table(db, "places", ["status:text"])
     set_property(db, "places", "status", type="select", options=[{"v": "want"}, {"v": "been"}])
-    set_rule(db, "no-unbeen", scope="table", tbl="places", kind="invariant", enforce=1,
-             text="A been place never goes back to want.",
-             sql="SELECT c.id FROM changed c JOIN before b ON b.id = c.id "
-                 "WHERE b.status = 'been' AND c.status = 'want'")
+    set_rule(
+        db,
+        "no-unbeen",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="A been place never goes back to want.",
+        sql="SELECT c.id FROM changed c JOIN before b ON b.id = c.id "
+        "WHERE b.status = 'been' AND c.status = 'want'",
+    )
     insert_rows(db, "places", [{"id": "x", "status": "want"}])
     execute_sql(db, "UPDATE places SET status = 'been' WHERE id = 'x'")
     with pytest.raises(ValidationError, match="never goes back"):
@@ -1107,8 +1252,16 @@ def test_transition_rule_uses_before_and_changed(db):
 def test_now_is_injected_not_read(db):
     create_table(db, "tasks", ["due:text"])
     set_property(db, "tasks", "due", type="date")
-    set_rule(db, "not-past", scope="table", tbl="tasks", kind="invariant", enforce=0,
-             text="due in the past", sql="SELECT id FROM tasks WHERE due < substr((SELECT ts FROM now), 1, 10)")
+    set_rule(
+        db,
+        "not-past",
+        scope="table",
+        tbl="tasks",
+        kind="invariant",
+        enforce=0,
+        text="due in the past",
+        sql="SELECT id FROM tasks WHERE due < substr((SELECT ts FROM now), 1, 10)",
+    )
     insert_rows(db, "tasks", [{"id": "a", "due": "2001-01-01"}])
     with connect(db) as conn:
         rule = rules(conn, kind="invariant")[0]
@@ -1118,8 +1271,16 @@ def test_now_is_injected_not_read(db):
 
 def test_ddl_recompiles_rules(db):
     create_table(db, "places", ["category:text"])
-    set_rule(db, "r", scope="table", tbl="places", kind="invariant", enforce=1,
-             text="x", sql="SELECT id FROM places WHERE category = 'z'")
+    set_rule(
+        db,
+        "r",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=1,
+        text="x",
+        sql="SELECT id FROM places WHERE category = 'z'",
+    )
     with pytest.raises(ValidationError, match="no longer compiles"):
         execute_sql(db, "ALTER TABLE places RENAME COLUMN category TO cat")
 ```
@@ -1143,7 +1304,9 @@ def check_rule_sql(sql: str) -> None:
     if not sql or _first(sql) != "SELECT":
         raise ValueError("rule sql must be a single SELECT")
     if FORBIDDEN.search(sql):
-        raise ValueError("rule sql may not use random(), localtime, or 'now' (use (SELECT ts FROM now))")
+        raise ValueError(
+            "rule sql may not use random(), localtime, or 'now' (use (SELECT ts FROM now))"
+        )
 
 
 def _first(sql: str) -> str:
@@ -1160,7 +1323,10 @@ def _with_context(conn, sql, changed_ids, now, tbl):
     if _uses(sql, "now"):
         conn.execute("CREATE TEMP TABLE IF NOT EXISTS now (ts TEXT)")
         conn.execute("DELETE FROM now")
-        conn.execute("INSERT INTO now (ts) VALUES (?)", (now or conn.execute(f"SELECT {_pkg().NOW}").fetchone()[0],))
+        conn.execute(
+            "INSERT INTO now (ts) VALUES (?)",
+            (now or conn.execute(f"SELECT {_pkg().NOW}").fetchone()[0],),
+        )
         made.append("now")
     if tbl and (_uses(sql, "changed") or _uses(sql, "before")):
         ids = list(changed_ids or [])
@@ -1169,7 +1335,9 @@ def _with_context(conn, sql, changed_ids, now, tbl):
         conn.execute(f"CREATE TEMP TABLE changed AS SELECT * FROM {tbl} WHERE id IN ({ph})", ids)
         conn.execute("DROP TABLE IF EXISTS before")
         if _table_exists_temp(conn, f"_before_{tbl}"):
-            conn.execute(f"CREATE TEMP TABLE before AS SELECT * FROM _before_{tbl} WHERE id IN ({ph})", ids)
+            conn.execute(
+                f"CREATE TEMP TABLE before AS SELECT * FROM _before_{tbl} WHERE id IN ({ph})", ids
+            )
         else:
             conn.execute(f"CREATE TEMP TABLE before AS SELECT * FROM {tbl} WHERE 0")
         made += ["changed", "before"]
@@ -1177,11 +1345,15 @@ def _with_context(conn, sql, changed_ids, now, tbl):
     def cleanup():
         for t in made:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
+
     return cleanup
 
 
 def _table_exists_temp(conn, name) -> bool:
-    return conn.execute("SELECT 1 FROM sqlite_temp_master WHERE name = ?", (name,)).fetchone() is not None
+    return (
+        conn.execute("SELECT 1 FROM sqlite_temp_master WHERE name = ?", (name,)).fetchone()
+        is not None
+    )
 
 
 def compile_sql(conn: sqlite3.Connection, sql: str, tbl: str | None = None) -> None:
@@ -1310,8 +1482,16 @@ def test_check_reports_legacy_violations_and_unenforced_rules(db):
     create_table(db, "places", ["status:text"])
     insert_rows(db, "places", [{"id": "old", "status": "Weird"}])
     set_property(db, "places", "status", type="select", options=[{"v": "want"}])
-    set_rule(db, "r", scope="table", tbl="places", kind="invariant", enforce=0, text="no old",
-             sql="SELECT id FROM places WHERE id = 'old'")
+    set_rule(
+        db,
+        "r",
+        scope="table",
+        tbl="places",
+        kind="invariant",
+        enforce=0,
+        text="no old",
+        sql="SELECT id FROM places WHERE id = 'old'",
+    )
     findings = check(db)
     assert {(f["row_id"], f["rule"]) for f in findings} == {("old", "options"), ("old", "r")}
 
@@ -1319,12 +1499,16 @@ def test_check_reports_legacy_violations_and_unenforced_rules(db):
 def test_cli_check_exit_code(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
     from life_data import main
+
     main(["init"])
     main(["table", "create", "pets", "name:text"])
     assert main(["check"]) == 0
     main(["property", "set", "pets.name", "--type", "select", "--options", "cat,dog"])
     import sqlite3 as s
-    s.connect(tmp_path / "life.db").execute("INSERT INTO pets (name) VALUES ('rat')").connection.commit()
+
+    s.connect(tmp_path / "life.db").execute(
+        "INSERT INTO pets (name) VALUES ('rat')"
+    ).connection.commit()
     assert main(["check"]) == 1
     assert json.loads(capsys.readouterr().out)[0]["rule"] == "options"
 ```
@@ -1351,12 +1535,25 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
                 continue
             props = properties(conn, t)
             for r in conn.execute(f"SELECT * FROM {t} WHERE deleted_at IS NULL").fetchall():
-                out += validate_row(props, dict(r), dict(r), in_derive={p["col"] for p in props},
-                                    ref_ok=_ref_ok(conn), extra_options=_extra_options(conn))
+                out += validate_row(
+                    props,
+                    dict(r),
+                    dict(r),
+                    in_derive={p["col"] for p in props},
+                    ref_ok=_ref_ok(conn),
+                    extra_options=_extra_options(conn),
+                )
         for rule in rules(conn, kind="invariant"):
             for h in run_invariant(conn, rule, changed_ids=[], now=as_of):
-                out.append(Violation(rule.get("tbl") or "estate", h.get("id"), rule.get("col"),
-                                     rule["id"], rule["text"]))
+                out.append(
+                    Violation(
+                        rule.get("tbl") or "estate",
+                        h.get("id"),
+                        rule.get("col"),
+                        rule["id"],
+                        rule["text"],
+                    )
+                )
     return [v.as_dict() for v in out]
 ```
 
@@ -1399,20 +1596,27 @@ git commit -m "Add life check; watch reports drift"
 - Modify: `tests/test_catalog.py`, `tests/test_core.py`
 
 **Interfaces:**
-- Produces: `inputs_hash(conn, tbl, row_id, inputs) -> str` = sha256 of `SELECT json_array(CAST(c1 AS TEXT), ...) FROM tbl WHERE id=?` text. `derive(path, tbl, col, where=None, commands=None) -> int` writes values through `write(..., in_derive={cols})` and upserts `provenance`. `stale(conn) -> list[Violation]` and `underived(conn) -> list[Violation]` feed `check`. `_user_tables` orders `catalog_*` and `provenance` first.
+- Produces: `inputs_hash(conn, tbl, row_id, inputs) -> str` = sha256 of `SELECT json_array(CAST(c1 AS TEXT), ...) FROM tbl WHERE id=?` text, and `value_hash(conn, tbl, row_id, col) -> str` = sha256 of `SELECT CAST(col AS TEXT)` (empty string for NULL). Provenance stores both: `inputs_hash` says what the value was computed from, `value_hash` binds the value itself so a hand edit with unchanged inputs is still detectable. `derive(path, tbl, col, where=None, commands=None) -> int` writes values through `write(..., in_derive={cols})` and upserts `provenance`. `stale(conn) -> list[Violation]` and `underived(conn) -> list[Violation]` feed `check`. `_user_tables` orders `catalog_*` and `provenance` first.
 - Command protocol: stdin `{"tbl","id","inputs":{...}}`, stdout JSON object; keys naming derived columns that declare the same `cmd:<name>` are written; optional `_source_ref` is stored.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-from life_data.catalog import derive, inputs_hash
+from life_data.catalog import derive, inputs_hash, value_hash
 
 
 def _movies(db):
     create_table(db, "movies", ["title:text", "tmdb_id:text", "genres:text", "slug:text"])
     set_property(db, "movies", "tmdb_id", type="text", required=1)
     set_property(db, "movies", "genres", type="json", derived_by="cmd:tmdb", inputs=["tmdb_id"])
-    set_property(db, "movies", "slug", type="text", derived_by="sql:lower(replace(title, ' ', '-'))", inputs=["title"])
+    set_property(
+        db,
+        "movies",
+        "slug",
+        type="text",
+        derived_by="sql:lower(replace(title, ' ', '-'))",
+        inputs=["title"],
+    )
 
 
 def test_sql_derivation_writes_value_and_provenance(db):
@@ -1423,6 +1627,7 @@ def test_sql_derivation_writes_value_and_provenance(db):
     prov = execute_sql(db, "SELECT * FROM provenance WHERE id = 'movies:m1:slug'")[0]
     with connect(db) as conn:
         assert prov["inputs_hash"] == inputs_hash(conn, "movies", "m1", ["title"])
+        assert prov["value_hash"] == value_hash(conn, "movies", "m1", "slug")
 
 
 def test_cmd_derivation_runs_command_with_inputs(db, tmp_path):
@@ -1458,12 +1663,18 @@ def test_check_reports_stale_and_underived(db):
 def test_cmd_derived_column_cannot_be_required(db):
     create_table(db, "movies", ["genres:text"])
     with pytest.raises(ValueError, match="required"):
-        set_property(db, "movies", "genres", type="json", required=1, derived_by="cmd:tmdb", inputs=[])
+        set_property(
+            db, "movies", "genres", type="json", required=1, derived_by="cmd:tmdb", inputs=[]
+        )
 
 
 def test_derive_where_filters(db):
     _movies(db)
-    insert_rows(db, "movies", [{"id": "m1", "title": "a", "tmdb_id": "1"}, {"id": "m2", "title": "b", "tmdb_id": "2"}])
+    insert_rows(
+        db,
+        "movies",
+        [{"id": "m1", "title": "a", "tmdb_id": "1"}, {"id": "m2", "title": "b", "tmdb_id": "2"}],
+    )
     assert derive(db, "movies", "slug", where="id = 'm2'") == 1
     assert execute_sql(db, "SELECT slug FROM movies WHERE id='m1'")[0]["slug"] is None
 ```
@@ -1474,6 +1685,7 @@ And in `tests/test_core.py`:
 def test_sync_pushes_catalog_and_provenance_before_data(db, hub, monkeypatch):
     from life_data import _user_tables
     from life_data.catalog import ensure_catalog
+
     _mk_people(db, ["Ada"])
     ensure_catalog(db)
     order = _user_tables(db)
@@ -1497,13 +1709,23 @@ Append to `src/life_data/catalog.py`:
 def inputs_hash(conn, tbl: str, row_id: str, inputs: list[str]) -> str:
     """Hash the inputs as SQLite renders them, so Python and the hub agree byte for byte."""
     casts = ", ".join(f"CAST({c} AS TEXT)" for c in inputs) or "NULL"
-    text = conn.execute(f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)).fetchone()[0]
+    text = conn.execute(
+        f"SELECT json_array({casts}) FROM {tbl} WHERE id = ?", (row_id,)
+    ).fetchone()[0]
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def value_hash(conn, tbl: str, row_id: str, col: str) -> str:
+    text = conn.execute(
+        f"SELECT coalesce(CAST({col} AS TEXT), '') FROM {tbl} WHERE id = ?", (row_id,)
+    ).fetchone()[0]
     return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _run_command(cmd: str, payload: dict) -> dict:
-    out = subprocess.run(cmd, shell=True, input=json.dumps(payload), capture_output=True,
-                         text=True, check=False)
+    out = subprocess.run(
+        cmd, shell=True, input=json.dumps(payload), capture_output=True, text=True, check=False
+    )
     if out.returncode != 0:
         raise RuntimeError(f"derivation command failed: {out.stderr.strip()[:500]}")
     result = json.loads(out.stdout or "{}")
@@ -1512,7 +1734,9 @@ def _run_command(cmd: str, payload: dict) -> dict:
     return result
 
 
-def derive(path: Path, tbl: str, col: str, where: str | None = None, commands: dict | None = None) -> int:
+def derive(
+    path: Path, tbl: str, col: str, where: str | None = None, commands: dict | None = None
+) -> int:
     pkg = _pkg()
     with pkg.connect(path) as conn:
         target = next((p for p in properties(conn, tbl) if p["col"] == col), None)
@@ -1521,23 +1745,36 @@ def derive(path: Path, tbl: str, col: str, where: str | None = None, commands: d
         siblings = [p for p in properties(conn, tbl) if p.get("derived_by") == target["derived_by"]]
         cols = [p["col"] for p in siblings]
         inputs = target.get("inputs") or []
-        ids = [r[0] for r in conn.execute(
-            f"SELECT id FROM {tbl} WHERE deleted_at IS NULL" + (f" AND ({where})" if where else "")
-        ).fetchall()]
+        ids = [
+            r[0]
+            for r in conn.execute(
+                f"SELECT id FROM {tbl} WHERE deleted_at IS NULL"
+                + (f" AND ({where})" if where else "")
+            ).fetchall()
+        ]
     d = target["derived_by"]
-    count = 0
-    for rid in ids:
-        def fn(conn, rid=rid):
+
+    def fn(conn):
+        count = 0
+        for rid in ids:
             if d.startswith("sql:"):
-                values = {col: conn.execute(f"SELECT ({d[4:]}) FROM {tbl} WHERE id = ?", (rid,)).fetchone()[0]}
+                values = {
+                    col: conn.execute(
+                        f"SELECT ({d[4:]}) FROM {tbl} WHERE id = ?", (rid,)
+                    ).fetchone()[0]
+                }
                 source_ref = None
             else:
                 name = d[4:]
                 cmd = (commands or {}).get(name)
                 if not cmd:
-                    raise RuntimeError(f"no command configured for derivation {name!r} (config.json: commands)")
+                    raise RuntimeError(
+                        f"no command configured for derivation {name!r} (config.json: commands)"
+                    )
                 row = conn.execute(f"SELECT * FROM {tbl} WHERE id = ?", (rid,)).fetchone()
-                result = _run_command(cmd, {"tbl": tbl, "id": rid, "inputs": {c: row[c] for c in inputs}})
+                result = _run_command(
+                    cmd, {"tbl": tbl, "id": rid, "inputs": {c: row[c] for c in inputs}}
+                )
                 source_ref = result.pop("_source_ref", None)
                 values = {k: v for k, v in result.items() if k in cols}
             sets = ", ".join(f"{k} = ?" for k in values)
@@ -1547,15 +1784,27 @@ def derive(path: Path, tbl: str, col: str, where: str | None = None, commands: d
             now = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
             for k in values:
                 conn.execute(
-                    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, source_ref, produced_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, "
-                    "inputs_hash = excluded.inputs_hash, source_ref = excluded.source_ref, "
+                    "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash, source_ref, produced_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, "
+                    "inputs_hash = excluded.inputs_hash, value_hash = excluded.value_hash, source_ref = excluded.source_ref, "
                     "produced_at = excluded.produced_at, deleted_at = NULL",
-                    (f"{tbl}:{rid}:{k}", tbl, rid, k, d, h, source_ref, now),
+                    (
+                        f"{tbl}:{rid}:{k}",
+                        tbl,
+                        rid,
+                        k,
+                        d,
+                        h,
+                        value_hash(conn, tbl, rid, k),
+                        source_ref,
+                        now,
+                    ),
                 )
-            return 1
-        count += write(path, fn, in_derive=set(cols))
-    return count
+            count += 1
+        return count
+
+    # one transaction for the whole run: one snapshot, all-or-nothing
+    return write(path, fn, in_derive=set(cols))
 
 
 def stale(conn) -> list[Violation]:
@@ -1569,8 +1818,15 @@ def stale(conn) -> list[Violation]:
         ).fetchall()
         for r in rows:
             if inputs_hash(conn, p["tbl"], r["row_id"], p.get("inputs") or []) != r["inputs_hash"]:
-                out.append(Violation(p["tbl"], r["row_id"], p["col"], "stale",
-                                     f"{p['col']} was derived from inputs that have since changed."))
+                out.append(
+                    Violation(
+                        p["tbl"],
+                        r["row_id"],
+                        p["col"],
+                        "stale",
+                        f"{p['col']} was derived from inputs that have since changed.",
+                    )
+                )
     return out
 
 
@@ -1585,15 +1841,21 @@ def underived(conn) -> list[Violation]:
             (p["tbl"], p["col"]),
         ).fetchall()
         for r in rows:
-            out.append(Violation(p["tbl"], r["id"], p["col"], "underived", f"{p['col']} has not been derived."))
+            out.append(
+                Violation(
+                    p["tbl"], r["id"], p["col"], "underived", f"{p['col']} has not been derived."
+                )
+            )
     return out
 ```
 
 In `set_property`, after the `derived_by` prefix check, add the insert-time rule from the spec:
 
 ```python
-    if fields.get("required") and str(fields.get("derived_by") or "").startswith("cmd:"):
-        raise ValueError("a cmd-derived column cannot be required: the row is valid but incomplete until derived")
+if fields.get("required") and str(fields.get("derived_by") or "").startswith("cmd:"):
+    raise ValueError(
+        "a cmd-derived column cannot be required: the row is valid but incomplete until derived"
+    )
 ```
 
 Add `out += stale(conn) + underived(conn)` inside `check()` before returning. In `write()`'s `_validate_changed`, the `in_derive` set already exempts derived columns for derive calls.
@@ -1646,12 +1908,16 @@ git commit -m "Derivations with provenance; stale and underived in check; catalo
 ```python
 def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
     from life_data.catalog import set_property
+
     create_table(db, "places", ["status:text"])
     set_property(db, "places", "status", type="select", options=[{"v": "want"}])
     insert_rows(db, "places", [{"id": "good", "status": "want"}])
     sync(db, hub)  # catalog reaches the hub first
     # a raw write that bypasses local validation
-    c = sqlite3.connect(db); c.execute("INSERT INTO places (id, status) VALUES ('bad', 'Nope')"); c.commit(); c.close()
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO places (id, status) VALUES ('bad', 'Nope')")
+    c.commit()
+    c.close()
     stats = sync(db, hub)
     assert stats["rejected"][0]["id"] == "bad" and stats["rejected"][0]["rule"] == "options"
     assert {r["id"] for r in hub.rows_pull("places", ["id"], "")} == {"good"}
@@ -1660,12 +1926,16 @@ def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
 
 def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
     from life_data.catalog import derive, set_property
+
     create_table(db, "movies", ["title:text", "slug:text"])
     set_property(db, "movies", "slug", type="text", derived_by="sql:lower(title)", inputs=["title"])
     insert_rows(db, "movies", [{"id": "m1", "title": "A"}])
     derive(db, "movies", "slug")
     sync(db, hub)
-    c = sqlite3.connect(db); c.execute("UPDATE movies SET slug = 'hand' WHERE id = 'm1'"); c.commit(); c.close()
+    c = sqlite3.connect(db)
+    c.execute("UPDATE movies SET slug = 'hand' WHERE id = 'm1'")
+    c.commit()
+    c.close()
     time.sleep(0.002)
     stats = sync(db, hub)
     assert stats["rejected"][0]["rule"] == "provenance"
@@ -1688,31 +1958,66 @@ def validate_push(conn, table: str, rows: list[dict]) -> tuple[list[dict], list[
     props = [p for p in properties(conn, table)] if table not in ENGINE_TABLES else []
     accepted, rejected = [], []
     for row in rows:
-        existing = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row["id"],)).fetchone() \
-            if _table_exists(conn, table) else None
+        existing = (
+            conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row["id"],)).fetchone()
+            if _table_exists(conn, table)
+            else None
+        )
         before = dict(existing) if existing else None
         derived = {p["col"] for p in props if p.get("derived_by")}
-        viol = validate_row(props, before, row, in_derive=derived,
-                            ref_ok=_ref_ok(conn), extra_options=_extra_options(conn))
+        viol = validate_row(
+            props,
+            before,
+            row,
+            in_derive=derived,
+            ref_ok=_ref_ok(conn),
+            extra_options=_extra_options(conn),
+        )
         for p in props:
             if not p.get("derived_by"):
                 continue
             col = p["col"]
-            changed = (row.get(col) is not None) if before is None else not _same(row.get(col), before.get(col))
+            changed = (
+                (row.get(col) is not None)
+                if before is None
+                else not _same(row.get(col), before.get(col))
+            )
             if not changed:
                 continue
             prov = conn.execute(
-                "SELECT inputs_hash FROM provenance WHERE id = ? AND deleted_at IS NULL",
+                "SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL",
                 (f"{table}:{row['id']}:{col}",),
             ).fetchone()
             casts = ", ".join("CAST(? AS TEXT)" for _ in (p.get("inputs") or [])) or "NULL"
-            text = conn.execute(f"SELECT json_array({casts})",
-                                [row.get(c) for c in (p.get("inputs") or [])]).fetchone()[0]
-            if not prov or prov["inputs_hash"] != hashlib.sha256(text.encode()).hexdigest():
-                viol.append(Violation(table, row["id"], col, "provenance",
-                                      f"{col} changed without a matching provenance record."))
+            text = conn.execute(
+                f"SELECT json_array({casts})", [row.get(c) for c in (p.get("inputs") or [])]
+            ).fetchone()[0]
+            vtext = conn.execute(
+                "SELECT coalesce(CAST(? AS TEXT), '')", (row.get(col),)
+            ).fetchone()[0]
+            ok = (
+                prov
+                and prov["inputs_hash"] == hashlib.sha256(text.encode()).hexdigest()
+                and prov["value_hash"] == hashlib.sha256(vtext.encode()).hexdigest()
+            )
+            if not ok:
+                viol.append(
+                    Violation(
+                        table,
+                        row["id"],
+                        col,
+                        "provenance",
+                        f"{col} changed without a matching provenance record.",
+                    )
+                )
         if viol:
-            rejected += [{"id": row["id"], **{k: v for k, v in x.as_dict().items() if k in ("col", "rule", "message")}} for x in viol]
+            rejected += [
+                {
+                    "id": row["id"],
+                    **{k: v for k, v in x.as_dict().items() if k in ("col", "rule", "message")},
+                }
+                for x in viol
+            ]
         else:
             accepted.append(row)
     return accepted, rejected
@@ -1723,6 +2028,7 @@ In `__init__.py`:
 ```python
 class LocalHub:
     ...
+
     def rows_push(self, table, columns, rows) -> dict:
         with connect(self.path) as conn:
             accepted, rejected = catalog.validate_push(conn, table, rows)
@@ -1733,10 +2039,13 @@ class LocalHub:
 
 class HttpHub:
     ...
+
     def rows_push(self, table, columns, rows) -> dict:
         total, rejected = 0, []
         for i in range(0, len(rows), CHUNK):
-            out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": rows[i : i + CHUNK]})
+            out = self._post(
+                "/v1/rows/push", {"table": table, "columns": columns, "rows": rows[i : i + CHUNK]}
+            )
             total += out["upserted"]
             rejected += out.get("rejected", [])
         return {"upserted": total, "rejected": rejected}
@@ -1959,11 +2268,13 @@ export async function validatePush(db, table, rows) {
     for (const p of props.filter((p) => p.derived_by)) {
       const changed = before == null ? row[p.col] != null : !same(row[p.col], before[p.col]);
       if (!changed) continue;
-      const prov = await db.prepare("SELECT inputs_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
+      const prov = await db.prepare("SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
         .bind(`${table}:${row.id}:${p.col}`).first();
       const casts = p.inputs.map(() => "CAST(? AS TEXT)").join(", ") || "NULL";
       const text = Object.values(await db.prepare(`SELECT json_array(${casts}) AS j`).bind(...p.inputs.map((c) => row[c] ?? null)).first())[0];
-      if (!prov || prov.inputs_hash !== (await sha256hex(text))) {
+      const vtext = Object.values(await db.prepare("SELECT coalesce(CAST(? AS TEXT), '') AS v").bind(row[p.col] ?? null).first())[0];
+      const ok = prov && prov.inputs_hash === (await sha256hex(text)) && prov.value_hash === (await sha256hex(vtext));
+      if (!ok) {
         viol.push({ col: p.col, rule: "provenance", message: `${p.col} changed without a matching provenance record.` });
       }
     }
@@ -2022,7 +2333,7 @@ const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 async function seed(db) {
   for (const sql of [
     `CREATE TABLE catalog_properties (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, label TEXT, sort INTEGER, type TEXT, required INTEGER, default_value TEXT, options TEXT, options_sql TEXT, min_items INTEGER, max_items INTEGER, pattern TEXT, ref_table TEXT, derived_by TEXT, inputs TEXT, immutable INTEGER, deprecated INTEGER, description TEXT, source TEXT, source_ref TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
-    `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
+    `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, value_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `CREATE TABLE places (id TEXT PRIMARY KEY, status TEXT, slug TEXT, name TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `INSERT INTO catalog_properties (id, tbl, col, type, options) VALUES ('places.status','places','status','select','[{"v":"want"}]')`,
     `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.slug','places','slug','text','sql:lower(name)','["name"]')`,
@@ -2047,14 +2358,15 @@ test("derived column needs matching provenance", async () => {
   await seed(db);
   let out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "a" })] }, db);
   expect(out.rejected[0].rule).toBe("provenance");
-  // provenance for name='A' : sha256 of json_array('A')
-  const text = '["A"]';
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  const hash = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  await db.prepare("INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash) VALUES ('places:a:slug','places','a','slug','sql:lower(name)',?)").bind(hash).run();
+  // provenance for name='A' -> slug 'a': inputs_hash = sha256(json_array('A')), value_hash = sha256('a')
+  const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  await db.prepare("INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) VALUES ('places:a:slug','places','a','slug','sql:lower(name)',?,?)").bind(await hex('["A"]'), await hex("a")).run();
   out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "a" })] }, db);
   expect(out.rejected).toEqual([]);
   expect(out.upserted).toBe(1);
+  // a hand edit to the value with unchanged inputs is still caught
+  out = await ROUTES["/v1/rows/push"]({ table: "places", columns: cols, rows: [row({ slug: "hand", updated_at: "2026-09-04T00:00:00.000Z" })] }, db);
+  expect(out.rejected[0].rule).toBe("provenance");
 });
 ```
 
@@ -2098,11 +2410,28 @@ from life_data.catalog import audit
 
 def test_audit_runs_command_and_reports_findings(db, tmp_path):
     script = tmp_path / "check_tmdb.py"
-    script.write_text("import json\nprint(json.dumps([{'tbl':'movies','row_id':'m1','col':'title','message':'not TMDB-exact'}]))\n")
-    set_rule(db, "tmdb-exact", scope="table", tbl="movies", kind="audit", cmd="tmdb-exact",
-             text="Titles must be TMDB-exact")
+    script.write_text(
+        "import json\nprint(json.dumps([{'tbl':'movies','row_id':'m1','col':'title','message':'not TMDB-exact'}]))\n"
+    )
+    set_rule(
+        db,
+        "tmdb-exact",
+        scope="table",
+        tbl="movies",
+        kind="audit",
+        cmd="tmdb-exact",
+        text="Titles must be TMDB-exact",
+    )
     findings = audit(db, commands={"tmdb-exact": f"python3 {script}"})
-    assert findings == [{"tbl": "movies", "row_id": "m1", "col": "title", "rule": "tmdb-exact", "message": "not TMDB-exact"}]
+    assert findings == [
+        {
+            "tbl": "movies",
+            "row_id": "m1",
+            "col": "title",
+            "rule": "tmdb-exact",
+            "message": "not TMDB-exact",
+        }
+    ]
 ```
 
 - [ ] **Step 2: Run to verify it fails**: `just test -- -q -k audit` → ImportError.
@@ -2120,14 +2449,29 @@ def audit(path: Path, rule_id: str | None = None, commands: dict | None = None) 
     for r in todo:
         cmd = (commands or {}).get(r.get("cmd") or "")
         if not cmd:
-            raise RuntimeError(f"no command configured for audit {r['id']!r} (config.json: commands)")
-        res = subprocess.run(cmd, shell=True, input=json.dumps({"rule": r["id"], "tbl": r.get("tbl")}),
-                             capture_output=True, text=True, check=False)
+            raise RuntimeError(
+                f"no command configured for audit {r['id']!r} (config.json: commands)"
+            )
+        res = subprocess.run(
+            cmd,
+            shell=True,
+            input=json.dumps({"rule": r["id"], "tbl": r.get("tbl")}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if res.returncode != 0:
             raise RuntimeError(f"audit {r['id']} failed: {res.stderr.strip()[:500]}")
         for f in json.loads(res.stdout or "[]"):
-            out.append({"tbl": f.get("tbl", r.get("tbl")), "row_id": f.get("row_id"), "col": f.get("col"),
-                        "rule": r["id"], "message": f.get("message", r["text"])})
+            out.append(
+                {
+                    "tbl": f.get("tbl", r.get("tbl")),
+                    "row_id": f.get("row_id"),
+                    "col": f.get("col"),
+                    "rule": r["id"],
+                    "message": f.get("message", r["text"]),
+                }
+            )
     return out
 ```
 
@@ -2154,18 +2498,42 @@ from life_data.catalog import infer
 def test_infer_proposes_required_select_date_url_ref(db):
     create_table(db, "people", ["name:text"])
     insert_rows(db, "people", [{"id": f"p{i}", "name": f"n{i}"} for i in range(25)])
-    create_table(db, "places", ["name:text", "status:text", "went:text", "url:text", "who:text", "tags:text"])
-    insert_rows(db, "places", [{
-        "name": f"x{i}", "status": ("want", "been")[i % 2], "went": f"2026-01-{i + 1:02d}",
-        "url": f"https://maps.app.goo.gl/{i}", "who": f"p{i}", "tags": ["bar"] if i % 3 else ["cafe"],
-    } for i in range(25)])
+    create_table(
+        db, "places", ["name:text", "status:text", "went:text", "url:text", "who:text", "tags:text"]
+    )
+    insert_rows(
+        db,
+        "places",
+        [
+            {
+                "name": f"x{i}",
+                "status": ("want", "been")[i % 2],
+                "went": f"2026-01-{i + 1:02d}",
+                "url": f"https://maps.app.goo.gl/{i}",
+                "who": f"p{i}",
+                "tags": ["bar"] if i % 3 else ["cafe"],
+            }
+            for i in range(25)
+        ],
+    )
     props = {p["col"]: p for p in infer(db, "places")}
     assert props["name"]["required"] == 1 and props["name"]["type"] == "text"
-    assert props["status"]["type"] == "select" and {o["v"] for o in props["status"]["options"]} == {"want", "been"}
+    assert props["status"]["type"] == "select" and {o["v"] for o in props["status"]["options"]} == {
+        "want",
+        "been",
+    }
     assert props["went"]["type"] == "date"
     assert props["url"]["type"] == "url" and props["url"]["pattern"].startswith("^https://")
-    assert props["who"] == {"tbl": "places", "col": "who", "type": "ref", "ref_table": "people", "required": 1}
-    assert props["tags"]["type"] == "multi_select" and {o["v"] for o in props["tags"]["options"]} == {"bar", "cafe"}
+    assert props["who"] == {
+        "tbl": "places",
+        "col": "who",
+        "type": "ref",
+        "ref_table": "people",
+        "required": 1,
+    }
+    assert props["tags"]["type"] == "multi_select" and {
+        o["v"] for o in props["tags"]["options"]
+    } == {"bar", "cafe"}
 
 
 def test_infer_skips_cataloged_columns_and_small_tables(db):
@@ -2188,10 +2556,17 @@ def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
     pkg = _pkg()
     out = []
     with pkg.connect(path) as conn:
-        tables = [tbl] if tbl else [
-            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            if not r[0].startswith(("_", "sqlite_")) and r[0] not in ENGINE_TABLES
-        ]
+        tables = (
+            [tbl]
+            if tbl
+            else [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+                if not r[0].startswith(("_", "sqlite_")) and r[0] not in ENGINE_TABLES
+            ]
+        )
         id_sets = {}
         for t in tables:
             n = conn.execute(f"SELECT count(*) FROM {t} WHERE deleted_at IS NULL").fetchone()[0]
@@ -2202,9 +2577,12 @@ def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
             for c in cols:
                 if c in SYNC_COLS or c in known:
                     continue
-                vals = [r[0] for r in conn.execute(
-                    f"SELECT {c} FROM {t} WHERE deleted_at IS NULL AND {c} IS NOT NULL AND {c} != ''"
-                ).fetchall()]
+                vals = [
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT {c} FROM {t} WHERE deleted_at IS NULL AND {c} IS NOT NULL AND {c} != ''"
+                    ).fetchall()
+                ]
                 prop = {"tbl": t, "col": c, "type": "text"}
                 if len(vals) == n:
                     prop["required"] = 1
@@ -2222,7 +2600,12 @@ def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
                 if strs and all(DATE_RE.match(v) for v in strs):
                     prop["type"] = "date"
                 elif strs and all(v.startswith(("http://", "https://")) for v in strs):
-                    prop.update(type="url", pattern="^https://.+" if all(v.startswith("https://") for v in strs) else "^https?://.+")
+                    prop.update(
+                        type="url",
+                        pattern="^https://.+"
+                        if all(v.startswith("https://") for v in strs)
+                        else "^https?://.+",
+                    )
                 else:
                     ref = _ref_target(conn, tables, vals, id_sets, exclude=t)
                     if ref:
@@ -2268,9 +2651,19 @@ from life_data.catalog import doc
 
 def test_doc_renders_tables_properties_and_rules(db):
     set_table(db, "places", kind="table", purpose="somewhere real", id_semantics="Google place_id")
-    set_property(db, "places", "status", type="select", required=1, sort=1,
-                 options=[{"v": "want", "d": "saved"}, {"v": "been"}], description="lowercase")
-    set_property(db, "places", "slug", type="text", sort=2, derived_by="sql:lower(name)", inputs=["name"])
+    set_property(
+        db,
+        "places",
+        "status",
+        type="select",
+        required=1,
+        sort=1,
+        options=[{"v": "want", "d": "saved"}, {"v": "been"}],
+        description="lowercase",
+    )
+    set_property(
+        db, "places", "slug", type="text", sort=2, derived_by="sql:lower(name)", inputs=["name"]
+    )
     set_rule(db, "estate-soft-delete", scope="estate", kind="doctrine", text="soft delete only")
     with connect(db) as conn:
         md = doc(conn)
@@ -2293,7 +2686,9 @@ def test_doc_renders_tables_properties_and_rules(db):
 def _constraint(p: dict) -> str:
     parts = []
     if p.get("options"):
-        parts.append(", ".join(f"`{o['v']}`" + (f" ({o['d']})" if o.get("d") else "") for o in p["options"]))
+        parts.append(
+            ", ".join(f"`{o['v']}`" + (f" ({o['d']})" if o.get("d") else "") for o in p["options"])
+        )
     if p.get("options_sql"):
         parts.append(f"plus `{p['options_sql']}`")
     if p.get("min_items") or p.get("max_items"):
@@ -2315,8 +2710,16 @@ def _constraint(p: dict) -> str:
 
 def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
     lines = ["# Estate map", "", "_Generated by `life doc`. Do not edit by hand._", ""]
-    described = {r["id"]: dict(r) for r in conn.execute(
-        "SELECT * FROM catalog_tables WHERE deleted_at IS NULL ORDER BY id").fetchall()} if has_catalog(conn) else {}
+    described = (
+        {
+            r["id"]: dict(r)
+            for r in conn.execute(
+                "SELECT * FROM catalog_tables WHERE deleted_at IS NULL ORDER BY id"
+            ).fetchall()
+        }
+        if has_catalog(conn)
+        else {}
+    )
     names = sorted(set(described) | set(cataloged_tables(conn)))
     for t in names:
         if tbl and t != tbl:
@@ -2325,7 +2728,11 @@ def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
         lines += [f"### {t}", ""]
         if meta.get("purpose"):
             lines += [meta["purpose"], ""]
-        for k, label in (("id_semantics", "Row id"), ("provenance", "From"), ("owner", "Written by")):
+        for k, label in (
+            ("id_semantics", "Row id"),
+            ("provenance", "From"),
+            ("owner", "Written by"),
+        ):
             if meta.get(k):
                 lines.append(f"- **{label}:** {meta[k]}")
         if meta.get("consumers"):
@@ -2334,10 +2741,16 @@ def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
             lines += ["", meta["description"]]
         props = properties(conn, t)
         if props:
-            lines += ["", "| col | type | required | constraint | description |", "|---|---|---|---|---|"]
+            lines += [
+                "",
+                "| col | type | required | constraint | description |",
+                "|---|---|---|---|---|",
+            ]
             for p in props:
-                lines.append(f"| {p['col']} | {p.get('type', 'text')} | {'yes' if p.get('required') else ''} | "
-                             f"{_constraint(p)} | {p.get('description') or ''} |")
+                lines.append(
+                    f"| {p['col']} | {p.get('type', 'text')} | {'yes' if p.get('required') else ''} | "
+                    f"{_constraint(p)} | {p.get('description') or ''} |"
+                )
         trules = [r for r in rules(conn, tbl=t) if r.get("tbl") == t]
         if trules:
             lines += ["", "**Rules**", ""]
@@ -2378,7 +2791,12 @@ CLI: `life doc [table]` prints it.
 ```python
 def test_create_table_typed_syntax_writes_catalog_rows(db):
     from life_data.catalog import properties
-    create_table(db, "places", ["name:text!", "status:select!(want|been)", "tags:multi_select(bar|cafe)", "lat:number"])
+
+    create_table(
+        db,
+        "places",
+        ["name:text!", "status:select!(want|been)", "tags:multi_select(bar|cafe)", "lat:number"],
+    )
     cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(places)")}
     assert cols["status"] == "TEXT" and cols["lat"] == "REAL"
     with connect(db) as conn:

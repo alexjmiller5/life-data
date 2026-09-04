@@ -11,6 +11,7 @@ run *args:
 
 test:
     uv run pytest
+    cd worker && bun test
 
 # all static analysis, read-only
 check:
