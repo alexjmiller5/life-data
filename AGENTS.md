@@ -20,12 +20,20 @@ CLI.
 ## Layout
 
 - `src/life_data/__init__.py` — the whole client (CLI, sync engine, hubs).
+- `src/life_data/catalog.py` — the catalog engine: typed properties, rules,
+  derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
+  connection.
 - `worker/src/index.js` — the hub service; `worker/wrangler.jsonc` declares
   its D1 + R2 bindings and backup cron (that declaration IS the provisioning).
+- `worker/src/validate.js` — the hub-side mirror of the row validator;
+  `tests/fixtures/validation-cases.json` is the contract both run.
 - `scripts/cf-r2-lifecycle.py` — idempotent source of truth for backup
   retention tiers.
-- `tests/test_core.py` — pytest. TDD: failing test first, then mutation-test
-  (break the code, confirm the test fails).
+- `tests/test_core.py` — pytest: CLI, sync engine, hubs. `tests/test_catalog.py`
+  — pytest: the catalog engine, sharing `tests/fixtures/validation-cases.json`
+  with `worker/src/validate.js`. `worker/test/` — bun test over a
+  `bun:sqlite` D1 shim. TDD: failing test first, then mutation-test (break
+  the code, confirm the test fails).
 
 ## Conventions
 
@@ -33,9 +41,11 @@ CLI.
   `~/.local/share/life-data`; the database is `life.db`. Nothing else may
   hardcode a path.
 - `life table create` injects sync columns (`id` hex PK, `created_at`,
-  `updated_at` + trigger, `deleted_at`). DDL through `life sql` is recorded
-  verbatim in `_schema_log`; ordered replay is how schema syncs.
-  Underscore-prefixed tables are plumbing — created by `init()`, never logged.
+  `updated_at` + trigger, `deleted_at`) and writes a `catalog_properties` row
+  per column from its typed `col:type[!][(a|b|c)]` syntax, so every table is
+  documented from birth. DDL through `life sql` is recorded verbatim in
+  `_schema_log`; ordered replay is how schema syncs. Underscore-prefixed
+  tables are plumbing — created by `init()`, never logged.
 - Timestamps: ISO 8601 UTC with milliseconds via SQLite
   `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. Sync ordering depends on
   lexicographic == chronological; keep every new timestamp in this format.
@@ -46,6 +56,21 @@ CLI.
   (`ModuleNotFoundError: life_data`). If it strikes anyway:
   `chflags nohidden .venv/lib/python*/site-packages/*.pth`.
 - `just` verbs: `run`, `test`, `check`, `fmt`, `deploy`.
+- **Writes are validated.** `execute_sql` and `insert_rows` run inside
+  `catalog.write()`: one transaction, every changed row in a cataloged table
+  checked, `ValidationError` after ROLLBACK. Reads (SELECT/PRAGMA/EXPLAIN/
+  WITH) bypass it. Sync's pull upsert bypasses it on purpose (pulled rows were
+  validated where they were written). The hub validates pushed rows per row
+  and never fails a batch.
+- **Checks are pure; producers may touch the world.** Invariant SQL is one
+  SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
+  now)`; `changed`/`before` are temp tables the engine provides). Derivations
+  (`derived_by: sql:|cmd:`) and audits run only via `life derive` /
+  `life audit` and record `provenance`. A derived column rejects direct
+  writes everywhere; the hub verifies `provenance.inputs_hash` against the
+  pushed inputs and never runs the command.
+- `catalog_*` and `provenance` sync before every other table.
+- `just test` runs pytest AND `bun test` in `worker/`.
 
 ## Sync internals
 

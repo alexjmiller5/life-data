@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -100,8 +101,29 @@ def insert_rows(path: Path, table: str, rows: list[dict]) -> int:
     return catalog.write(path, run)
 
 
+COLSPEC = re.compile(r"^(?P<col>\w+):(?P<type>\w+)(?P<req>!)?(?:\((?P<opts>[^)]*)\))?$")
+# an unrecognized type keeps its raw storage type; the catalog property still
+# gets a best-guess catalog type from the storage SQLite ends up with.
+_STORAGE_TO_CATALOG_TYPE = {"REAL": "number", "INTEGER": "int"}
+
+
 def create_table(path: Path, name: str, columns: list[str]) -> None:
-    user_cols = ",\n    ".join(f"{c.split(':')[0]} {c.split(':', 1)[1].upper()}" for c in columns)
+    """Create a table plus a `catalog_properties` row per column.
+
+    Each column is `col:type[!][(a|b|c)]`: `type` is a catalog type (mapped
+    to its SQLite storage via `catalog.STORAGE`) or a raw SQLite type used
+    as-is; `!` marks the column required; `(a|b|c)` sets select/multi_select
+    options.
+    """
+    specs = []
+    for c in columns:
+        m = COLSPEC.match(c)
+        if not m:
+            raise ValueError(f"bad column spec {c!r}; expected col:type[!][(a|b)]")
+        specs.append(m.groupdict())
+    user_cols = ",\n    ".join(
+        f"{s['col']} {catalog.STORAGE.get(s['type'].lower(), s['type'].upper())}" for s in specs
+    )
     ddl = f"""CREATE TABLE {name} (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     {user_cols},
@@ -116,6 +138,18 @@ BEGIN
 END"""
     execute_sql(path, ddl)
     execute_sql(path, trigger)
+    if name in catalog.ENGINE_TABLES:
+        return
+    for i, s in enumerate(specs):
+        t = s["type"].lower()
+        storage = catalog.STORAGE.get(t, s["type"].upper())
+        cat_type = t if t in catalog.TYPES else _STORAGE_TO_CATALOG_TYPE.get(storage, "text")
+        fields = {"type": cat_type, "sort": (i + 1) * 10}
+        if s["req"]:
+            fields["required"] = 1
+        if s["opts"] is not None:
+            fields["options"] = [{"v": o.strip()} for o in s["opts"].split("|") if o.strip()]
+        catalog.set_property(path, name, s["col"], **fields)
 
 
 def dump_sql(path: Path) -> str:

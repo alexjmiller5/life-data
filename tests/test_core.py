@@ -13,6 +13,8 @@ from life_data import (
     HttpHub,
     LocalHub,
     auth_headers,
+    catalog,
+    connect,
     create_table,
     db_changed,
     db_version,
@@ -140,6 +142,37 @@ def test_create_table_autofills_id_and_timestamps(db):
     assert row["created_at"] == row["updated_at"]
 
 
+def test_create_table_typed_syntax_writes_catalog_rows(db):
+    from life_data.catalog import properties
+
+    create_table(
+        db,
+        "places",
+        ["name:text!", "status:select!(want|been)", "tags:multi_select(bar|cafe)", "lat:number"],
+    )
+    cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(places)")}
+    assert cols["status"] == "TEXT" and cols["lat"] == "REAL"
+    with connect(db) as conn:
+        p = {x["col"]: x for x in properties(conn, "places")}
+    assert p["name"]["required"] == 1
+    assert p["status"]["options"] == [{"v": "want"}, {"v": "been"}]
+    assert p["tags"]["type"] == "multi_select"
+    with pytest.raises(catalog.ValidationError):
+        insert_rows(db, "places", [{"name": "x", "status": "Been"}])
+
+
+def test_create_table_unknown_type_maps_storage_to_catalog_type(db):
+    from life_data.catalog import properties
+
+    create_table(db, "trips", ["lat:real", "n:integer"])
+    cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(trips)")}
+    assert cols["lat"] == "REAL" and cols["n"] == "INTEGER"
+    with connect(db) as conn:
+        p = {x["col"]: x for x in properties(conn, "trips")}
+    assert p["lat"]["type"] == "number"
+    assert p["n"]["type"] == "int"
+
+
 def test_update_bumps_updated_at(db):
     create_table(db, "people", ["name:text"])
     execute_sql(db, "INSERT INTO people (name) VALUES ('Ada')")
@@ -219,7 +252,9 @@ def test_watch_prints_check_findings_to_stderr(db, hub, monkeypatch, capsys):
 def test_sync_pushes_schema_and_rows_to_hub(db, hub):
     _mk_people(db, ["Ada", "Grace"])
     stats = sync(db, hub)
-    assert stats["pushed"] == 2
+    # 2 people rows + 1 catalog_properties row + 1 catalog_log row for the
+    # "name" column that create_table catalogs on the way in
+    assert stats["pushed"] == 4
     assert {r["name"] for r in hub.rows_pull("people", ["name"], "")} == {"Ada", "Grace"}
 
 
@@ -281,7 +316,7 @@ def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
     sync(db, hub)
     other = init(tmp_path / "other" / "life.db")
     stats = sync(other, hub)
-    assert stats["ddl_applied"] >= 1 and stats["pulled"] == 2 and stats["pushed"] == 0
+    assert stats["ddl_applied"] >= 1 and stats["pulled"] == 4 and stats["pushed"] == 0
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
 
@@ -440,9 +475,9 @@ def http_hub(tmp_path):
 
 def test_sync_works_end_to_end_over_http(db, http_hub, tmp_path):
     _mk_people(db, ["Ada", "Grace"])
-    assert sync(db, http_hub)["pushed"] == 2
+    assert sync(db, http_hub)["pushed"] == 4
     other = init(tmp_path / "other" / "life.db")
-    assert sync(other, http_hub)["pulled"] == 2
+    assert sync(other, http_hub)["pulled"] == 4
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
 

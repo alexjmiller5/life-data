@@ -932,6 +932,26 @@ def audit(path: Path, rule_id: str | None = None, commands: dict | None = None) 
 SYNC_COLS = {"id", "created_at", "updated_at", "deleted_at"}
 
 
+def _is_stub_property(p: dict) -> bool:
+    """True for a bare `text` property carrying no refinement beyond what
+    `create_table` seeds by default (col:type with no `!`/options/etc) —
+    `infer` should still be free to propose a tighter type for these."""
+    return p.get("type") in (None, "text") and not any(
+        p.get(k)
+        for k in (
+            "required",
+            "options",
+            "derived_by",
+            "pattern",
+            "ref_table",
+            "description",
+            "immutable",
+            "deprecated",
+            "default_value",
+        )
+    )
+
+
 def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
     pkg = _pkg()
     out = []
@@ -947,7 +967,7 @@ def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
             n = conn.execute(f"SELECT count(*) FROM {t} WHERE deleted_at IS NULL").fetchone()[0]
             if n < min_rows:
                 continue
-            known = {p["col"] for p in properties(conn, t)}
+            known = {p["col"] for p in properties(conn, t) if not _is_stub_property(p)}
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
             for c in cols:
                 if c in SYNC_COLS or c in known:
