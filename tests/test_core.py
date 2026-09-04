@@ -601,7 +601,7 @@ def test_cli_export_writes_sql_to_stdout(monkeypatch, tmp_path, capsys):
     main(["table", "create", "pets", "name:text"])
     capsys.readouterr()
     assert main(["export"]) == 0
-    assert "CREATE TABLE pets" in capsys.readouterr().out
+    assert 'CREATE TABLE "pets"' in capsys.readouterr().out
 
 
 def test_http_hub_default_timeout_covers_slow_stream_tees():
@@ -766,3 +766,26 @@ def test_cli_derive_without_hub_token_fails_clearly(monkeypatch, tmp_path, capsy
     assert out == ""
     assert "token" in err.lower()
     assert execute_sql(tmp_path / "life.db", "SELECT count(*) AS n FROM movies")[0]["n"] == 0
+
+
+# --- quoted identifiers ------------------------------------------------------
+
+
+def test_qi_quotes_and_rejects_unsafe_identifiers():
+    from life_data import qi
+
+    assert qi("cast") == '"cast"'
+    for bad in ("", "1col", "a-b", "x; DROP TABLE y", 'a"b'):
+        with pytest.raises(ValueError):
+            qi(bad)
+
+
+def test_reserved_word_columns_round_trip_through_sync(db, hub, tmp_path):
+    create_table(db, "movies", ["cast:text", "order:int", "group:text", "select:text"])
+    insert_rows(db, "movies", [{"cast": "Ada", "order": 1, "group": "g", "select": "s"}])
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    assert sync(other, hub)["pulled"] >= 1
+    row = execute_sql(other, 'SELECT "cast", "order", "group", "select" FROM movies')[0]
+    assert row == {"cast": "Ada", "order": 1, "group": "g", "select": "s"}
+    assert catalog.check(other) == []

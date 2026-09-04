@@ -11,7 +11,7 @@
 // column, so a replica pulling the row also pulls the provenance that proves
 // it and the client's `derived` rule never fires.
 
-import { ident, inputsHash, propertiesFor, validateRow, valueHash } from "./validate.js";
+import { ident, inputsHash, propertiesFor, qident, validateRow, valueHash } from "./validate.js";
 
 // A hung endpoint would otherwise stall the whole sequential sweep.
 const ENDPOINT_TIMEOUT_MS = 10_000;
@@ -54,7 +54,7 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
       // Re-read per derivation: one derivation's output can be another's
       // input, and hashing a stale row would leave provenance that never
       // matches (an endless re-derive loop on the sweep).
-      const row = await db.prepare(`SELECT * FROM ${t} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
+      const row = await db.prepare(`SELECT * FROM ${qident(t)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
       if (!row) break;
       const target = derivations.get(name);
       if (!target) {
@@ -99,10 +99,10 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
 
       const written = Object.entries(values);
       if (!written.length) continue;
-      const sets = written.map(([c]) => `${ident(c)} = ?`).join(", ");
+      const sets = written.map(([c]) => `${qident(c)} = ?`).join(", ");
       const stmts = [
         db
-          .prepare(`UPDATE ${t} SET ${sets}, updated_at = (${NOW}) WHERE id = ?`)
+          .prepare(`UPDATE ${qident(t)} SET ${sets}, updated_at = (${NOW}) WHERE id = ?`)
           .bind(...written.map(([, v]) => v), id),
       ];
       for (const [c, v] of written) {
@@ -174,7 +174,7 @@ export async function deriveStale(db, env, table, rows, { fetchImpl = fetch, lim
 async function candidates(db, table, col, limit) {
   const { results } = await db
     .prepare(
-      `SELECT t.* FROM ${table} t
+      `SELECT t.* FROM ${qident(table)} t
        LEFT JOIN provenance p ON p.id = ? || ':' || t.id || ':' || ? AND p.deleted_at IS NULL
        WHERE t.deleted_at IS NULL AND (p.id IS NULL OR t.updated_at > p.produced_at)
        LIMIT ?`

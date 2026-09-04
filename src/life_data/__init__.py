@@ -53,6 +53,18 @@ def db_path() -> Path:
     return resolve_data_dir() / "life.db"
 
 
+SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def qi(name: str) -> str:
+    """Quote a table/column name for interpolation into SQL. Mirrors the hub's
+    `ident()`: anything that is not a bare identifier is refused rather than
+    escaped, so no caller can smuggle SQL through a name."""
+    if not SAFE_IDENT.match(name or ""):
+        raise ValueError(f"unsafe identifier: {name!r}")
+    return f'"{name}"'
+
+
 def connect(path: Path, manual_tx: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None if manual_tx else "")
     conn.row_factory = sqlite3.Row
@@ -99,7 +111,11 @@ def insert_rows(path: Path, table: str, rows: list[dict]) -> int:
             cols = list(row)
             values = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in row.values()]
             placeholders = ", ".join("?" for _ in cols)
-            conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})", values)
+            conn.execute(
+                f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "
+                f"VALUES ({placeholders})",
+                values,
+            )
         return len(rows)
 
     return catalog.write(path, run)
@@ -126,19 +142,19 @@ def create_table(path: Path, name: str, columns: list[str]) -> None:
             raise ValueError(f"bad column spec {c!r}; expected col:type[!][(a|b)]")
         specs.append(m.groupdict())
     user_cols = ",\n    ".join(
-        f"{s['col']} {catalog.STORAGE.get(s['type'].lower(), s['type'].upper())}" for s in specs
+        f"{qi(s['col'])} {catalog.STORAGE.get(s['type'].lower(), s['type'].upper())}" for s in specs
     )
-    ddl = f"""CREATE TABLE {name} (
+    ddl = f"""CREATE TABLE {qi(name)} (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     {user_cols},
     created_at TEXT NOT NULL DEFAULT ({NOW}),
     updated_at TEXT NOT NULL DEFAULT ({NOW}),
     deleted_at TEXT
 )"""
-    trigger = f"""CREATE TRIGGER {name}_updated_at AFTER UPDATE ON {name} FOR EACH ROW
+    trigger = f"""CREATE TRIGGER {qi(f"{name}_updated_at")} AFTER UPDATE ON {qi(name)} FOR EACH ROW
 WHEN NEW.updated_at = OLD.updated_at
 BEGIN
-    UPDATE {name} SET updated_at = ({NOW}) WHERE rowid = NEW.rowid;
+    UPDATE {qi(name)} SET updated_at = ({NOW}) WHERE rowid = NEW.rowid;
 END"""
     execute_sql(path, ddl)
     execute_sql(path, trigger)
@@ -214,13 +230,15 @@ def auth_headers(config: dict) -> dict:
 def _upsert_sql(table: str, cols: list[str]) -> str:
     # rows travel as ONE json parameter (D1 caps bind params at ~100/query);
     # `WHERE true` disambiguates a SELECT-source upsert for SQLite's parser
+    t = qi(table)
+    # the json path uses the RAW column name (it is a JSON key, not SQL)
     exts = ", ".join(f"json_extract(value, '$.{c}')" for c in cols)
-    sets = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "id")
+    sets = ", ".join(f"{qi(c)} = excluded.{qi(c)}" for c in cols if c != "id")
     return (
-        f"INSERT INTO {table} ({', '.join(cols)}) "
+        f"INSERT INTO {t} ({', '.join(qi(c) for c in cols)}) "
         f"SELECT {exts} FROM json_each(?) WHERE true "
         f"ON CONFLICT(id) DO UPDATE SET {sets} "
-        f"WHERE excluded.updated_at > {table}.updated_at"
+        f"WHERE excluded.updated_at > {t}.updated_at"
     )
 
 
@@ -263,7 +281,8 @@ class LocalHub:
 
     def rows_pull(self, table: str, columns: list[str], since: str) -> list[dict]:
         return self._query(
-            f"SELECT {', '.join(columns)} FROM {table} WHERE updated_at > ?", [since or ""]
+            f"SELECT {', '.join(qi(c) for c in columns)} FROM {qi(table)} WHERE updated_at > ?",
+            [since or ""],
         )
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
@@ -276,7 +295,7 @@ class LocalHub:
     def cursor(self, tables: list[str]) -> str:
         top = ""
         for t in tables:
-            rows = self._query(f"SELECT max(updated_at) AS m FROM {t}")
+            rows = self._query(f"SELECT max(updated_at) AS m FROM {qi(t)}")
             top = max(top, rows[0]["m"] or "")
         return top
 
@@ -465,7 +484,7 @@ def _user_tables(path: Path) -> list[str]:
 
 
 def _columns(path: Path, table: str) -> list[str]:
-    return [r["name"] for r in execute_sql(path, f"PRAGMA table_info({table})")]
+    return [r["name"] for r in execute_sql(path, f"PRAGMA table_info({qi(table)})")]
 
 
 def _apply_local_ddl(path: Path, entry: dict) -> None:
@@ -516,7 +535,9 @@ def sync(path: Path, hub) -> dict:
         # snapshot push candidates BEFORE applying the pull, so pulled rows
         # are never echoed straight back at the hub
         mine = execute_sql(
-            path, f"SELECT {', '.join(cols)} FROM {table} WHERE updated_at > '{last_push}'"
+            path,
+            f"SELECT {', '.join(qi(c) for c in cols)} FROM {qi(table)} "
+            f"WHERE updated_at > '{last_push}'",
         )
         remote = hub.rows_pull(table, cols, last_pull)
         if remote:
@@ -537,7 +558,7 @@ def sync(path: Path, hub) -> dict:
 def _local_cursor(path: Path, tables: list[str]) -> str:
     top = ""
     for t in tables:
-        rows = execute_sql(path, f"SELECT max(updated_at) AS m FROM {t}")
+        rows = execute_sql(path, f"SELECT max(updated_at) AS m FROM {qi(t)}")
         top = max(top, rows[0]["m"] or "")
     return top
 
@@ -751,7 +772,7 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         where = f" AND ({args.where})" if args.where else ""
         ids = [
             r["id"]
-            for r in execute_sql(path, f"SELECT id FROM {tbl} WHERE deleted_at IS NULL{where}")
+            for r in execute_sql(path, f"SELECT id FROM {qi(tbl)} WHERE deleted_at IS NULL{where}")
         ]
         hub = hub_from_config(cfg)
         derived, failed = 0, []

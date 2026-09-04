@@ -130,11 +130,18 @@ export async function valueHash(db, typeOf, col, value) {
   return sha256hex(Object.values(await stmt.first())[0]);
 }
 
-// Every identifier interpolated into SQL passes through here first.
+// Every identifier interpolated into SQL passes through here first. `ident`
+// validates and returns the bare name (it is also used as a bound VALUE, e.g.
+// in provenance ids); `qident` is what goes into SQL — quoted, so a column
+// named `cast` or `order` is legal.
 const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function ident(name) {
   if (!SAFE_IDENT.test(name)) throw new Error(`unsafe identifier: ${name}`);
   return name;
+}
+
+export function qident(name) {
+  return `"${ident(name)}"`;
 }
 
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
@@ -150,7 +157,7 @@ export async function validatePush(db, table, rows) {
     const ids = new Set();
     for (const r of rows) for (const x of asList(r[p.col]) ?? [r[p.col]]) if (x != null) ids.add(x);
     for (const id of ids) {
-      const hit = await db.prepare(`SELECT 1 FROM ${p.ref_table} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
+      const hit = await db.prepare(`SELECT 1 FROM ${qident(p.ref_table)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
       if (hit) refSet.add(`${p.ref_table}:${id}`);
     }
   }
@@ -162,7 +169,7 @@ export async function validatePush(db, table, rows) {
 
   const accepted = [], rejected = [];
   for (const row of rows) {
-    const before = exists ? await db.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(row.id).first() : null;
+    const before = exists ? await db.prepare(`SELECT * FROM ${qident(table)} WHERE id = ?`).bind(row.id).first() : null;
     const viol = validateRow(props, before, row, {
       inDerive: derivedCols,
       refOk: (t, id) => refSet.has(`${t}:${id}`),

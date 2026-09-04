@@ -7,7 +7,7 @@
 // knows how the caller was authenticated.
 
 import { deriveRows, deriveStale, sweep } from "./derive.js";
-import { ident, sha256hex, validatePush } from "./validate.js";
+import { ident, qident, sha256hex, validatePush } from "./validate.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -147,12 +147,12 @@ async function ensureReady(db) {
 }
 
 function upsertSql(table, cols) {
-  const t = ident(table);
-  const c = cols.map(ident);
-  const extracts = c.map((x) => `json_extract(value, '$.${x}')`).join(", ");
-  const sets = c.filter((x) => x !== "id").map((x) => `${x} = excluded.${x}`).join(", ");
+  const t = qident(table);
+  // the json path uses the RAW column name (it is a JSON key, not SQL)
+  const extracts = cols.map((x) => `json_extract(value, '$.${ident(x)}')`).join(", ");
+  const sets = cols.filter((x) => x !== "id").map((x) => `${qident(x)} = excluded.${qident(x)}`).join(", ");
   return (
-    `INSERT INTO ${t} (${c.join(", ")}) SELECT ${extracts} FROM json_each(?) WHERE true ` +
+    `INSERT INTO ${t} (${cols.map(qident).join(", ")}) SELECT ${extracts} FROM json_each(?) WHERE true ` +
     `ON CONFLICT(id) DO UPDATE SET ${sets} WHERE excluded.updated_at > ${t}.updated_at`
   );
 }
@@ -188,9 +188,9 @@ const ROUTES = {
   },
 
   "/v1/rows/pull": async (body, db) => {
-    const cols = (body.columns ?? []).map(ident).join(", ");
+    const cols = (body.columns ?? []).map(qident).join(", ");
     const { results } = await db
-      .prepare(`SELECT ${cols} FROM ${ident(body.table)} WHERE updated_at > ?`)
+      .prepare(`SELECT ${cols} FROM ${qident(body.table)} WHERE updated_at > ?`)
       .bind(body.since ?? "")
       .all();
     return { rows: results ?? [] };
@@ -225,7 +225,7 @@ const ROUTES = {
   "/v1/cursor": async (body, db) => {
     let top = "";
     for (const table of body.tables ?? []) {
-      const row = await db.prepare(`SELECT max(updated_at) AS m FROM ${ident(table)}`).first();
+      const row = await db.prepare(`SELECT max(updated_at) AS m FROM ${qident(table)}`).first();
       if (row?.m && row.m > top) top = row.m;
     }
     return { max_updated_at: top };
@@ -274,11 +274,11 @@ async function dumpSql(db) {
   for (const obj of objects ?? []) {
     lines.push(`${obj.sql};`);
     if (obj.type !== "table") continue;
-    const { results: rows } = await db.prepare(`SELECT * FROM ${ident(obj.name)}`).all();
+    const { results: rows } = await db.prepare(`SELECT * FROM ${qident(obj.name)}`).all();
     for (const row of rows ?? []) {
       const cols = Object.keys(row);
       const vals = cols.map((c) => sqlLiteral(row[c])).join(", ");
-      lines.push(`INSERT INTO ${obj.name} (${cols.join(", ")}) VALUES (${vals});`);
+      lines.push(`INSERT INTO ${qident(obj.name)} (${cols.map(qident).join(", ")}) VALUES (${vals});`);
     }
   }
   lines.push("COMMIT;");
@@ -503,7 +503,7 @@ export default {
         const out = {};
         for (const t of ["catalog_tables", "catalog_properties", "catalog_rules"]) {
           const exists = await tenant.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(t).first();
-          const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${t} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
+          const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${qident(t)} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
           out[t.replace("catalog_", "")] = results ?? [];
         }
         const text = JSON.stringify(out);

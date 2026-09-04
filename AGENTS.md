@@ -80,6 +80,14 @@ CLI.
 - Every temp table the rule engine makes (`now`, `changed`, `before`,
   `_before_<t>`) is schema-qualified `temp.` - unqualified names fall through
   to `main`, so an unqualified DROP would delete a user table of that name.
+- **Every table/column name interpolated into SQL is quoted**: `qi()` in
+  `__init__.py`, `qident()` in `worker/src/validate.js` (both validate against
+  `^[A-Za-z_][A-Za-z0-9_]*$` and refuse anything else rather than escaping it).
+  A column named `cast` or `order` is otherwise a syntax error that breaks sync
+  for the whole table. User-authored SQL (rule `sql`, `options_sql`, `sql:`
+  defaults, `--where`) is left alone — that is the user's own SQL. The JSON
+  path inside the upsert (`json_extract(value, '$.<col>')`) takes the RAW name:
+  it is a JSON key, not SQL.
 - `catalog_*` and `provenance` sync before every other table.
 - `just test` runs pytest AND `bun test` in `worker/`.
 

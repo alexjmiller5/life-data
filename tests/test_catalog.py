@@ -50,7 +50,7 @@ def test_ensure_catalog_creates_logged_tables(db):
     ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
     assert any("catalog_properties" in d for d in ddls)
     ensure_catalog(db)  # idempotent
-    assert len([d for d in ddls if "CREATE TABLE catalog_properties" in d]) == 1
+    assert len([d for d in ddls if 'CREATE TABLE "catalog_properties"' in d]) == 1
 
 
 def test_has_catalog_false_on_fresh_db(db):
