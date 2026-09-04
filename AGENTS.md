@@ -136,7 +136,11 @@ Runs three ways: after `/v1/rows/push` via `ctx.waitUntil` (never delays the
 response; a failure is retried by the sweep), on the 15-minute sweep
 (underived or `inputs_hash`-stale, 50 per property), and synchronously via
 `POST /v1/derive {table, ids, col?}` (>50 ids → 400). Routes take
-`(body, db, env, ctx)` and may return a `Response` of their own.
+`(body, db, env, ctx)` and may return a `Response` of their own. `life derive
+<tbl>.<col> [--where <sql>]` is a client-side wrapper around that route: it
+selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals —
+it never computes a derived value itself. Requires a hub token with
+`tables:write` (or `full`/admin).
 
 ## Streams
 

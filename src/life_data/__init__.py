@@ -22,6 +22,7 @@ TICK_SECONDS = 1  # how often `life watch` checks for local changes
 NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 DDL_KEYWORDS = {"CREATE", "ALTER", "DROP"}
 CHUNK = 200  # rows per upsert (one JSON parameter regardless of row width)
+DERIVE_CHUNK = 50  # max ids per /v1/derive call
 
 PLUMBING_STMTS = [
     f"""CREATE TABLE IF NOT EXISTS _schema_log (
@@ -279,6 +280,9 @@ class LocalHub:
             top = max(top, rows[0]["m"] or "")
         return top
 
+    def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
+        return {"derived": 0, "failed": []}  # derivations run on the hub only
+
 
 class HttpHub:
     """Hub reached over HTTP — the deployed service. Knows nothing about any provider."""
@@ -330,6 +334,12 @@ class HttpHub:
 
     def cursor(self, tables: list[str]) -> str:
         return self._post("/v1/cursor", {"tables": tables})["max_updated_at"] or ""
+
+    def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
+        body = {"table": table, "ids": ids}
+        if col:
+            body["col"] = col
+        return self._post("/v1/derive", body)
 
     def _get(self, route: str) -> dict | list | None:
         req = urllib.request.Request(f"{self.base}{route}", headers=self.headers)
@@ -582,6 +592,11 @@ def main(argv: list[str] | None = None) -> int:
     p_doc.add_argument("table", nargs="?")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
+    p_derive = sub.add_parser(
+        "derive", help="request the hub derive a column for rows selected locally"
+    )
+    p_derive.add_argument("ref", help="<table>.<column>")
+    p_derive.add_argument("--where", help="SQL WHERE clause narrowing which rows to derive")
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
     s_sub = p_stream.add_subparsers(dest="stream_command", required=True)
     p_sappend = s_sub.add_parser("append", help="append one JSON record from stdin")
@@ -607,7 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     p_tc = k_sub.add_parser("create", help="mint a scoped token (value shown ONCE)")
     p_tc.add_argument("name")
     p_tc.add_argument(
-        "--scopes", default="full", help="comma list: full, tables:read, streams:append"
+        "--scopes",
+        default="full",
+        help="comma list: full, tables:read, tables:write, streams:append",
     )
     p_tr = k_sub.add_parser("revoke", help="revoke a token by name")
     p_tr.add_argument("name")
@@ -715,6 +732,29 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)
+    elif args.command == "derive":
+        tbl, col = args.ref.split(".", 1)
+        cfg = load_config()
+        if not cfg.get("token"):
+            print(
+                "life derive requires a hub token: set LIFE_HUB_TOKEN, config.json's "
+                "token, or token_cmd",
+                file=sys.stderr,
+            )
+            return 1
+        where = f" AND ({args.where})" if args.where else ""
+        ids = [
+            r["id"]
+            for r in execute_sql(path, f"SELECT id FROM {tbl} WHERE deleted_at IS NULL{where}")
+        ]
+        hub = hub_from_config(cfg)
+        derived, failed = 0, []
+        for i in range(0, len(ids), DERIVE_CHUNK):
+            out = hub.derive(tbl, ids[i : i + DERIVE_CHUNK], col)
+            derived += out["derived"]
+            failed += out.get("failed", [])
+        print(json.dumps({"derived": derived, "failed": failed}))
+        return 1 if failed else 0
     elif args.command == "stream":
         hub = hub_from_config()
         if args.stream_command == "append":
