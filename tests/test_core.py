@@ -278,6 +278,28 @@ def test_second_sync_is_noop(db, hub):
     assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
 
+def test_pull_cursor_does_not_skip_rows_written_during_the_pull(db, hub):
+    _mk_people(db, ["Ada"])
+    sync(db, hub)
+    real_pull = hub.rows_pull
+
+    def pull_then_hub_writes(table, columns, since):
+        rows = real_pull(table, columns, since)
+        if table == "people":  # a hub-side derivation lands after the pull query
+            time.sleep(0.002)
+            with connect(hub.path) as conn:
+                conn.execute("INSERT INTO people (id, name) VALUES ('derived', 'Hub Derived')")
+        return rows
+
+    hub.rows_pull = pull_then_hub_writes
+    sync(db, hub)
+    hub.rows_pull = real_pull
+    assert sync(db, hub)["pulled"] == 1
+    assert (
+        execute_sql(db, "SELECT name FROM people WHERE id = 'derived'")[0]["name"] == "Hub Derived"
+    )
+
+
 def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
     from life_data.catalog import set_property
 

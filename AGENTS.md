@@ -89,7 +89,15 @@ State-based, never op-log. `sync(path, hub)`: replay missing `_schema_log`
 DDL both ways (idempotent-by-skip on "already exists" / "duplicate column"),
 snapshot push candidates BEFORE applying the pull (else pulled rows echo
 straight back), pull then push, then advance the per-direction cursors in
-`_sync_state`. The upsert carries rows as ONE json parameter through
+`_sync_state`. **The pull cursor is `hub.cursor(tables)` read BEFORE the pull
+loop, not after it**: the hub writes rows itself (derivations on push and on
+the sweep cron), and a row it writes between a table's pull query and a cursor
+read taken after the loop would carry `updated_at <= cursor` yet never have
+been pulled - silently skipped by every later sync. Reading first means any
+hub write after the read has `updated_at >` the stored cursor and lands next
+sync; rows this sync pushed itself raise the cursor (they are already ours),
+which is what keeps a no-change sync at `pulled: 0`.
+The upsert carries rows as ONE json parameter through
 `json_each` (D1 caps bind params at ~100/query) and is guarded by
 `WHERE excluded.updated_at > t.updated_at` — that clause IS the LWW rule.
 
