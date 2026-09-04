@@ -891,6 +891,42 @@ def validate_push(
     return accepted, rejected
 
 
+# --- audit -------------------------------------------------------------------
+
+
+def audit(path: Path, rule_id: str | None = None, commands: dict | None = None) -> list[dict]:
+    out = []
+    with _pkg().connect(path) as conn:
+        todo = [r for r in rules(conn, kind="audit") if not rule_id or r["id"] == rule_id]
+    for r in todo:
+        cmd = (commands or {}).get(r.get("cmd") or "")
+        if not cmd:
+            raise RuntimeError(
+                f"no command configured for audit {r['id']!r} (config.json: commands)"
+            )
+        res = subprocess.run(
+            cmd,
+            shell=True,
+            input=json.dumps({"rule": r["id"], "tbl": r.get("tbl")}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"audit {r['id']} failed: {res.stderr.strip()[:500]}")
+        for f in json.loads(res.stdout or "[]"):
+            out.append(
+                {
+                    "tbl": f.get("tbl", r.get("tbl")),
+                    "row_id": f.get("row_id"),
+                    "col": f.get("col"),
+                    "rule": r["id"],
+                    "message": f.get("message", r["text"]),
+                }
+            )
+    return out
+
+
 def compile_all(conn: sqlite3.Connection) -> list[str]:
     """Compile every invariant and sql: derivation. Returns the ids that fail."""
     bad = []

@@ -7,6 +7,7 @@ from life_data import connect, create_table, execute_sql, init, insert_rows
 from life_data.catalog import (
     ValidationError,
     Violation,
+    audit,
     check,
     check_rule_sql,
     derive,
@@ -549,3 +550,48 @@ def test_cmd_derivation_returning_no_columns_is_skipped(db, tmp_path):
     assert derive(db, "movies", "genres", commands={"tmdb": f"python3 {script}"}) == 0
     assert execute_sql(db, "SELECT genres FROM movies")[0]["genres"] is None
     assert execute_sql(db, "SELECT * FROM provenance") == []
+
+
+# --- audit --------------------------------------------------------------------
+
+
+def test_audit_runs_command_and_reports_findings(db, tmp_path):
+    script = tmp_path / "check_tmdb.py"
+    script.write_text(
+        "import json\nprint(json.dumps([{'tbl':'movies','row_id':'m1','col':'title','message':'not TMDB-exact'}]))\n"
+    )
+    set_rule(
+        db,
+        "tmdb-exact",
+        scope="table",
+        tbl="movies",
+        kind="audit",
+        cmd="tmdb-exact",
+        text="Titles must be TMDB-exact",
+    )
+    findings = audit(db, commands={"tmdb-exact": f"python3 {script}"})
+    assert findings == [
+        {
+            "tbl": "movies",
+            "row_id": "m1",
+            "col": "title",
+            "rule": "tmdb-exact",
+            "message": "not TMDB-exact",
+        }
+    ]
+
+
+def test_audit_raises_without_configured_command(db):
+    set_rule(
+        db, "tmdb-exact", scope="table", tbl="movies", kind="audit", cmd="tmdb-exact", text="x"
+    )
+    with pytest.raises(RuntimeError, match="no command configured"):
+        audit(db)
+
+
+def test_audit_filters_by_rule_id(db, tmp_path):
+    script = tmp_path / "ok.py"
+    script.write_text("import json\nprint(json.dumps([]))\n")
+    set_rule(db, "a", scope="table", tbl="movies", kind="audit", cmd="a", text="a")
+    set_rule(db, "b", scope="table", tbl="movies", kind="audit", cmd="b", text="b")
+    assert audit(db, rule_id="a", commands={"a": f"python3 {script}"}) == []

@@ -536,6 +536,8 @@ def main(argv: list[str] | None = None) -> int:
     p_derive = sub.add_parser("derive", help="run a derivation: <table>.<column>")
     p_derive.add_argument("ref")
     p_derive.add_argument("--where", help="SQL predicate selecting rows")
+    p_audit = sub.add_parser("audit", help="run audit rules' commands, report findings")
+    p_audit.add_argument("id", nargs="?", help="run only this rule")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
@@ -657,6 +659,10 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         tbl, col = args.ref.split(".", 1)
         n = catalog.derive(path, tbl, col, where=args.where, commands=load_config().get("commands"))
         print(f"derived {args.ref} for {n} rows")
+    elif args.command == "audit":
+        findings = catalog.audit(path, rule_id=args.id, commands=load_config().get("commands"))
+        print(json.dumps(findings, indent=2))
+        return 1 if findings else 0
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)
