@@ -13,6 +13,7 @@ from life_data.catalog import (
     derive,
     ensure_catalog,
     has_catalog,
+    infer,
     inputs_hash,
     properties,
     rm_property,
@@ -595,3 +596,53 @@ def test_audit_filters_by_rule_id(db, tmp_path):
     set_rule(db, "a", scope="table", tbl="movies", kind="audit", cmd="a", text="a")
     set_rule(db, "b", scope="table", tbl="movies", kind="audit", cmd="b", text="b")
     assert audit(db, rule_id="a", commands={"a": f"python3 {script}"}) == []
+
+
+# --- infer ----------------------------------------------------------------
+
+
+def test_infer_proposes_required_select_date_url_ref(db):
+    create_table(db, "people", ["name:text"])
+    insert_rows(db, "people", [{"id": f"p{i}", "name": f"n{i}"} for i in range(25)])
+    create_table(
+        db, "places", ["name:text", "status:text", "went:text", "url:text", "who:text", "tags:text"]
+    )
+    insert_rows(
+        db,
+        "places",
+        [
+            {
+                "name": f"x{i}",
+                "status": ("want", "been")[i % 2],
+                "went": f"2026-01-{i + 1:02d}",
+                "url": f"https://maps.app.goo.gl/{i}",
+                "who": f"p{i}",
+                "tags": ["bar"] if i % 3 else ["cafe"],
+            }
+            for i in range(25)
+        ],
+    )
+    props = {p["col"]: p for p in infer(db, "places")}
+    assert props["name"]["required"] == 1 and props["name"]["type"] == "text"
+    assert props["status"]["type"] == "select" and {o["v"] for o in props["status"]["options"]} == {
+        "want",
+        "been",
+    }
+    assert props["went"]["type"] == "date"
+    assert props["url"]["type"] == "url" and props["url"]["pattern"].startswith("^https://")
+    assert props["who"] == {
+        "tbl": "places",
+        "col": "who",
+        "type": "ref",
+        "ref_table": "people",
+        "required": 1,
+    }
+    assert props["tags"]["type"] == "multi_select" and {
+        o["v"] for o in props["tags"]["options"]
+    } == {"bar", "cafe"}
+
+
+def test_infer_skips_cataloged_columns_and_small_tables(db):
+    create_table(db, "places", ["name:text"])
+    insert_rows(db, "places", [{"name": "a"}])
+    assert infer(db, "places") == []

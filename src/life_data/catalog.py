@@ -927,6 +927,83 @@ def audit(path: Path, rule_id: str | None = None, commands: dict | None = None) 
     return out
 
 
+# --- infer -------------------------------------------------------------------
+
+SYNC_COLS = {"id", "created_at", "updated_at", "deleted_at"}
+
+
+def infer(path: Path, tbl: str | None = None, min_rows: int = 20) -> list[dict]:
+    pkg = _pkg()
+    out = []
+    with pkg.connect(path) as conn:
+        all_tables = [
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            if not r[0].startswith(("_", "sqlite_")) and r[0] not in ENGINE_TABLES
+        ]
+        tables = [tbl] if tbl else all_tables
+        id_sets = {}
+        for t in tables:
+            n = conn.execute(f"SELECT count(*) FROM {t} WHERE deleted_at IS NULL").fetchone()[0]
+            if n < min_rows:
+                continue
+            known = {p["col"] for p in properties(conn, t)}
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+            for c in cols:
+                if c in SYNC_COLS or c in known:
+                    continue
+                vals = [
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT {c} FROM {t} WHERE deleted_at IS NULL AND {c} IS NOT NULL AND {c} != ''"
+                    ).fetchall()
+                ]
+                prop = {"tbl": t, "col": c, "type": "text"}
+                if len(vals) == n:
+                    prop["required"] = 1
+                if not vals:
+                    out.append(prop)
+                    continue
+                strs = [v for v in vals if isinstance(v, str)]
+                lists = [_as_list(v) for v in strs]
+                if strs and all(l is not None for l in lists):
+                    flat = sorted({x for l in lists for x in l})
+                    if len(flat) <= 30:
+                        prop.update(type="multi_select", options=[{"v": x} for x in flat])
+                        out.append(prop)
+                        continue
+                if strs and all(DATE_RE.match(v) for v in strs):
+                    prop["type"] = "date"
+                elif strs and all(v.startswith(("http://", "https://")) for v in strs):
+                    prop.update(
+                        type="url",
+                        pattern="^https://.+"
+                        if all(v.startswith("https://") for v in strs)
+                        else "^https?://.+",
+                    )
+                else:
+                    ref = _ref_target(conn, all_tables, vals, id_sets, exclude=t)
+                    if ref:
+                        prop.update(type="ref", ref_table=ref)
+                    else:
+                        distinct = sorted(set(map(str, vals)))
+                        if len(distinct) <= 20 and len(distinct) / len(vals) < 0.5:
+                            prop.update(type="select", options=[{"v": v} for v in distinct])
+                out.append(prop)
+    return out
+
+
+def _ref_target(conn, tables, vals, id_sets, exclude):
+    for t in tables:
+        if t == exclude:
+            continue
+        if t not in id_sets:
+            id_sets[t] = {r[0] for r in conn.execute(f"SELECT id FROM {t}").fetchall()}
+        if id_sets[t] and all(v in id_sets[t] for v in vals):
+            return t
+    return None
+
+
 def compile_all(conn: sqlite3.Connection) -> list[str]:
     """Compile every invariant and sql: derivation. Returns the ids that fail."""
     bad = []

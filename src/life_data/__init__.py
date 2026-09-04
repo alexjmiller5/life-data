@@ -538,6 +538,12 @@ def main(argv: list[str] | None = None) -> int:
     p_derive.add_argument("--where", help="SQL predicate selecting rows")
     p_audit = sub.add_parser("audit", help="run audit rules' commands, report findings")
     p_audit.add_argument("id", nargs="?", help="run only this rule")
+    p_infer = sub.add_parser("infer", help="propose catalog properties for uncataloged columns")
+    p_infer.add_argument("table", nargs="?")
+    p_infer.add_argument(
+        "--apply", action="store_true", help="write the proposals via property set"
+    )
+    p_infer.add_argument("--min-rows", dest="min_rows", type=int, default=20)
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_stream = sub.add_parser("stream", help="append-only stream operations (hub-backed)")
@@ -663,6 +669,14 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         findings = catalog.audit(path, rule_id=args.id, commands=load_config().get("commands"))
         print(json.dumps(findings, indent=2))
         return 1 if findings else 0
+    elif args.command == "infer":
+        proposals = catalog.infer(path, args.table, min_rows=args.min_rows)
+        print(json.dumps(proposals, indent=2))
+        if args.apply:
+            for p in proposals:
+                kwargs = {k: v for k, v in p.items() if k not in ("tbl", "col")}
+                catalog.set_property(path, p["tbl"], p["col"], **kwargs)
+            print(f"applied {len(proposals)}")
     elif args.command == "watch":
         init(path)
         watch(path, hub_from_config(), poll_seconds=args.poll)
