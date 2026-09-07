@@ -109,15 +109,20 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
           .prepare(`UPDATE ${qident(t)} SET ${sets}, updated_at = (${NOW})${stamp} WHERE id = ?`)
           .bind(...written.map(([, v]) => v), id),
       ];
+      // provenance is a synced table like any other: a hub write stamps hub_at
+      // (when the table has it) or replicas past the cursor never pull the proof.
+      const hasHubAt = await provenanceHasHubAt(db);
+      const ih = await inputsHash(db, typeOf, inputs, row);
       for (const [c, v] of written) {
         stmts.push(
           db
             .prepare(
-              `INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash, source_ref, produced_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, (${NOW}), (${NOW}), NULL)
-               ON CONFLICT(id) DO UPDATE SET derived_by = excluded.derived_by, inputs_hash = excluded.inputs_hash,
-                 value_hash = excluded.value_hash, source_ref = excluded.source_ref, produced_at = excluded.produced_at,
-                 updated_at = excluded.updated_at, deleted_at = NULL`
+              `INSERT INTO provenance (id, to_kind, to_ref, field, from_kind, from_ref, rel, asserted_by, inputs_hash, value_hash, produced_at, updated_at, deleted_at${hasHubAt ? ", hub_at" : ""})
+               VALUES (?, ?, ?, ?, ?, ?, 'derived_from', 'hub', ?, ?, (${NOW}), (${NOW}), NULL${hasHubAt ? `, (${NOW})` : ""})
+               ON CONFLICT(id) DO UPDATE SET from_kind = excluded.from_kind, from_ref = excluded.from_ref,
+                 rel = excluded.rel, asserted_by = excluded.asserted_by, inputs_hash = excluded.inputs_hash,
+                 value_hash = excluded.value_hash, produced_at = excluded.produced_at,
+                 updated_at = excluded.updated_at, deleted_at = NULL${hasHubAt ? `, hub_at = (${NOW})` : ""}`
             )
             .bind(
               `${t}:${id}:${c}`,
@@ -125,9 +130,10 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
               id,
               c,
               `http:${name}`,
-              await inputsHash(db, typeOf, inputs, row),
-              await valueHash(db, typeOf, c, v),
-              result._source_ref ?? null
+              // the endpoint's own ref when it gives one, else the inputs the value came from
+              result._source_ref ?? ih,
+              ih,
+              await valueHash(db, typeOf, c, v)
             )
         );
       }
@@ -136,6 +142,15 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
     }
   }
   return out;
+}
+
+const _provHubAt = new WeakMap(); // per database: tests seed many, a hub has one
+async function provenanceHasHubAt(db) {
+  if (!_provHubAt.has(db)) {
+    const { results } = await db.prepare("PRAGMA table_info(provenance)").all();
+    _provHubAt.set(db, (results ?? []).some((c) => c.name === "hub_at"));
+  }
+  return _provHubAt.get(db);
 }
 
 // Which (row, derivation) pairs are underived or stale: no live provenance, or

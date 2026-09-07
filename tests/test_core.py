@@ -264,12 +264,20 @@ def test_watch_prints_check_findings_to_stderr(db, hub, monkeypatch, capsys):
 # --- sync engine (LocalHub) --------------------------------------------------
 
 
+def _catalog_rows(path):
+    """Rows the catalog itself contributes to a sync: create_table catalogs each
+    column (a catalog_properties + catalog_log row), and the engine's own
+    provenance contract is cataloged the first time the catalog exists."""
+    return sum(
+        len(execute_sql(path, f"SELECT id FROM {t}"))
+        for t in ("catalog_tables", "catalog_properties", "catalog_rules", "catalog_log")
+    )
+
+
 def test_sync_pushes_schema_and_rows_to_hub(db, hub):
     _mk_people(db, ["Ada", "Grace"])
     stats = sync(db, hub)
-    # 2 people rows + 1 catalog_properties row + 1 catalog_log row for the
-    # "name" column that create_table catalogs on the way in
-    assert stats["pushed"] == 4
+    assert stats["pushed"] == 2 + _catalog_rows(db)
     assert {r["name"] for r in hub.rows_pull("people", ["name"], "")} == {"Ada", "Grace"}
 
 
@@ -465,8 +473,8 @@ def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
     with connect(db) as conn:
         conn.execute("UPDATE movies SET slug = 'a' WHERE id = 'm1'")
         conn.execute(
-            "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) "
-            "VALUES ('movies:m1:slug', 'movies', 'm1', 'slug', 'http:slug', ?, ?)",
+            "INSERT INTO provenance (id, to_kind, to_ref, field, from_kind, from_ref, rel, asserted_by, inputs_hash, value_hash) "
+            "VALUES ('movies:m1:slug', 'movies', 'm1', 'slug', 'http:slug', 'x', 'derived_from', 'hub', ?, ?)",
             (
                 inputs_hash(conn, "movies", "m1", ["title"]),
                 value_hash(conn, "movies", "m1", "slug"),
@@ -499,7 +507,11 @@ def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
     sync(db, hub)
     other = init(tmp_path / "other" / "life.db")
     stats = sync(other, hub)
-    assert stats["ddl_applied"] >= 1 and stats["pulled"] == 4 and stats["pushed"] == 0
+    assert (
+        stats["ddl_applied"] >= 1
+        and stats["pulled"] == 2 + _catalog_rows(db)
+        and stats["pushed"] == 0
+    )
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
 
@@ -669,9 +681,9 @@ def http_hub(tmp_path):
 
 def test_sync_works_end_to_end_over_http(db, http_hub, tmp_path):
     _mk_people(db, ["Ada", "Grace"])
-    assert sync(db, http_hub)["pushed"] == 4
+    assert sync(db, http_hub)["pushed"] == 2 + _catalog_rows(db)
     other = init(tmp_path / "other" / "life.db")
-    assert sync(other, http_hub)["pulled"] == 4
+    assert sync(other, http_hub)["pulled"] == 2 + _catalog_rows(db)
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
 
@@ -898,3 +910,19 @@ def test_reserved_word_columns_round_trip_through_sync(db, hub, tmp_path):
     row = execute_sql(other, 'SELECT "cast", "order", "group", "select" FROM movies')[0]
     assert row == {"cast": "Ada", "order": 1, "group": "g", "select": "s"}
     assert catalog.check(other) == []
+
+
+def test_schema_replay_skips_a_rename_already_applied(db, tmp_path):
+    """A fresh replica creates engine tables in their CURRENT shape, then
+    replays the log - a logged RENAME COLUMN of a column it never had is
+    already applied, not an error (same idempotent-by-skip as CREATE/ADD)."""
+    from life_data import _apply_local_ddl
+
+    execute_sql(db, "CREATE TABLE t (id TEXT PRIMARY KEY, b TEXT)")
+    entry = {"applied_at": "2026-09-07T00:00:00.000Z", "ddl": "ALTER TABLE t RENAME COLUMN a TO b"}
+    _apply_local_ddl(db, entry)
+    assert entry["ddl"] in {r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")}
+    hub = LocalHub(tmp_path / "hub.db")
+    hub.ensure_ready()
+    hub._query("CREATE TABLE t (id TEXT PRIMARY KEY, b TEXT)")
+    assert hub.schema_push([entry]) == 1

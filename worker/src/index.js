@@ -191,8 +191,9 @@ const ROUTES = {
         await db.prepare(entry.ddl).run();
       } catch (e) {
         const msg = String(e).toLowerCase();
-        // replay is idempotent-by-skip for DDL the hub already has
-        if (!msg.includes("already exists") && !msg.includes("duplicate column")) throw e;
+        // replay is idempotent-by-skip for DDL the hub already has: a CREATE that
+        // exists, an ADD of a column it has, a RENAME of a column already gone
+        if (!msg.includes("already exists") && !msg.includes("duplicate column") && !msg.includes("no such column")) throw e;
       }
       await db
         .prepare("INSERT INTO _schema_log (applied_at, ddl) VALUES (?, ?)")

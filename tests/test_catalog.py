@@ -117,7 +117,10 @@ def test_set_rule_with_no_fields_revives_existing_row(db):
 def test_catalog_writes_are_logged(db):
     set_property(db, "places", "status", type="text")
     set_rule(db, "r1", scope="estate", kind="doctrine", text="x")
-    log = execute_sql(db, "SELECT tbl, row_id, action FROM catalog_log ORDER BY created_at")
+    log = execute_sql(
+        db,
+        "SELECT tbl, row_id, action FROM catalog_log WHERE row_id IN ('places.status', 'r1') ORDER BY created_at",
+    )
     assert log[0] == {"tbl": "catalog_properties", "row_id": "places.status", "action": "set"}
     assert log[1] == {"tbl": "catalog_rules", "row_id": "r1", "action": "set"}
 
@@ -252,8 +255,8 @@ def test_number_inputs_hash_the_same_from_the_table_and_from_a_pushed_row(db):
         # provenance as the client writes it: hashed off the stored REALs
         conn.execute("UPDATE t SET double = 8 WHERE id = 'a'")
         conn.execute(
-            "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash) "
-            "VALUES ('t:a:double','t','a','double','http:double',?,?)",
+            "INSERT INTO provenance (id, to_kind, to_ref, field, from_kind, from_ref, rel, asserted_by, inputs_hash, value_hash) "
+            "VALUES ('t:a:double','t','a','double','http:double','x','derived_from','hub',?,?)",
             (inputs_hash(conn, "t", "a", ["qty"]), value_hash(conn, "t", "a", "double")),
         )
         conn.execute("UPDATE t SET double = NULL WHERE id = 'a'")  # so the push is a change
@@ -528,8 +531,8 @@ def _record_provenance(db, tbl, row_id, col, inputs):
     the way the hub would, so the client-side checks have state to see."""
     with connect(db) as conn:
         conn.execute(
-            "INSERT INTO provenance (id, tbl, row_id, col, derived_by, inputs_hash, value_hash, produced_at) "
-            "VALUES (?, ?, ?, ?, 'http:x', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            "INSERT INTO provenance (id, to_kind, to_ref, field, from_kind, from_ref, rel, asserted_by, inputs_hash, value_hash, produced_at) "
+            "VALUES (?, ?, ?, ?, 'http:x', 'x', 'derived_from', 'hub', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
             (
                 f"{tbl}:{row_id}:{col}",
                 tbl,
@@ -885,3 +888,79 @@ def test_set_rule_rejects_enforcing_a_table_without_sync_columns(db):
             text="x",
             sql="SELECT k FROM legacy WHERE k = 'bad'",
         )
+
+
+# --- provenance is one table for every value's origin ---------------------------
+
+
+def _edge(**o):
+    return {
+        "id": "imessage:GUID-1:m1",
+        "from_kind": "imessage",
+        "from_ref": "GUID-1",
+        "to_kind": "movies",
+        "to_ref": "m1",
+        "rel": "evidence_of",
+        "field": "date_watched",
+        "detail": {"cue": "just watched it", "confidence": "high"},
+        "asserted_by": "agent:s1",
+        **o,
+    }
+
+
+def test_provenance_is_cataloged_from_birth(db):
+    """provenance is engine-created but a USER table for validation: every
+    column has a catalog property, so a client-written edge is checked."""
+    ensure_catalog(db)
+    with connect(db) as conn:
+        cols = {p["col"]: p for p in properties(conn, "provenance")}
+    assert {
+        "from_kind",
+        "from_ref",
+        "to_kind",
+        "to_ref",
+        "rel",
+        "field",
+        "detail",
+        "asserted_by",
+    } <= set(cols)
+    assert all(cols[c].get("description") for c in cols), "every provenance column is described"
+    assert cols["rel"]["required"] == 1 and cols["asserted_by"]["required"] == 1
+
+
+def test_client_edge_is_validated(db):
+    create_table(db, "movies", ["title:text"])
+    insert_rows(db, "movies", [{"id": "m1", "title": "x"}])
+    insert_rows(db, "provenance", [_edge()])
+    with pytest.raises(ValidationError, match="rel"):
+        insert_rows(
+            db, "provenance", [_edge(id="imessage:GUID-2:m1", from_ref="GUID-2", rel="vibes")]
+        )
+    with pytest.raises(ValidationError, match="asserted_by"):
+        insert_rows(
+            db, "provenance", [_edge(id="imessage:GUID-3:m1", from_ref="GUID-3", asserted_by=None)]
+        )
+    with pytest.raises(ValidationError, match="to_kind"):
+        insert_rows(
+            db,
+            "provenance",
+            [_edge(id="imessage:GUID-4:m1", from_ref="GUID-4", to_kind="not_a_table")],
+        )
+
+
+def test_every_derivation_is_an_allowed_from_kind(db):
+    """A hub derivation's `http:<name>` is a from_kind the moment the catalog
+    declares a column derived by it - no option list to maintain."""
+    create_table(db, "movies", ["title:text"])
+    insert_rows(db, "movies", [{"id": "m1"}])
+    bad = _edge(
+        id="http:tmdb:m1",
+        from_kind="http:tmdb",
+        from_ref="h",
+        rel="derived_from",
+        asserted_by="hub",
+    )
+    with pytest.raises(ValidationError, match="from_kind"):
+        insert_rows(db, "provenance", [bad])
+    set_property(db, "movies", "title", type="text", derived_by="http:tmdb", inputs=["id"])
+    insert_rows(db, "provenance", [bad])

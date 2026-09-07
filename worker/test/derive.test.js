@@ -24,7 +24,7 @@ const ENV = {
 async function seed(db) {
   for (const sql of [
     `CREATE TABLE catalog_properties (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, label TEXT, sort INTEGER, type TEXT, required INTEGER, default_value TEXT, options TEXT, options_sql TEXT, min_items INTEGER, max_items INTEGER, pattern TEXT, ref_table TEXT, derived_by TEXT, inputs TEXT, immutable INTEGER, deprecated INTEGER, description TEXT, source TEXT, source_ref TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
-    `CREATE TABLE provenance (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, derived_by TEXT, inputs_hash TEXT, value_hash TEXT, source_ref TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
+    `CREATE TABLE provenance (id TEXT PRIMARY KEY, from_kind TEXT, from_ref TEXT, to_kind TEXT, to_ref TEXT, rel TEXT, field TEXT, detail TEXT, asserted_by TEXT, inputs_hash TEXT, value_hash TEXT, produced_at TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT, hub_at TEXT)`,
     `CREATE TABLE movies (id TEXT PRIMARY KEY, title TEXT, genres TEXT, blurb TEXT, status TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `INSERT INTO catalog_properties (id, tbl, col, sort, type, required, immutable) VALUES ('movies.id','movies','id',0,'text',1,1)`,
     `INSERT INTO catalog_properties (id, tbl, col, sort, type, pattern, derived_by, inputs) VALUES ('movies.title','movies','title',1,'text','[A-Za-z0-9 ]+','http:tmdb_movie','["id"]')`,
@@ -76,19 +76,30 @@ test("derives a row: writes values, provenance, and bumps updated_at", async () 
   expect(row.genres).toBe('["Sci-Fi","Drama"]');
   expect(row.updated_at > "2026-09-04T00:00:00.000Z").toBe(true);
 
-  const { results } = await db.prepare("SELECT * FROM provenance ORDER BY col").all();
+  const { results } = await db.prepare("SELECT * FROM provenance ORDER BY field").all();
   expect(results.map((r) => r.id)).toEqual(["movies:78:genres", "movies:78:title"]);
   for (const p of results) {
-    expect(p.tbl).toBe("movies");
-    expect(p.row_id).toBe("78");
-    expect(p.derived_by).toBe("http:tmdb_movie");
-    expect(p.source_ref).toBe("tmdb:movie/78@2026-09-04");
+    expect(p.to_kind).toBe("movies");
+    expect(p.to_ref).toBe("78");
+    expect(p.from_kind).toBe("http:tmdb_movie");
+    expect(p.from_ref).toBe("tmdb:movie/78@2026-09-04");
+    expect(p.rel).toBe("derived_from");
+    expect(p.asserted_by).toBe("hub");
     expect(p.inputs_hash).toBe(await hex('["78"]'));
     expect(p.produced_at).toBeTruthy();
+    expect(p.hub_at).toBeTruthy(); // a hub write, so replicas past this row's cursor still pull it
     expect(p.deleted_at).toBe(null);
   }
-  expect(results.find((r) => r.col === "title").value_hash).toBe(await hex("Blade Runner"));
-  expect(results.find((r) => r.col === "genres").value_hash).toBe(await hex('["Sci-Fi","Drama"]'));
+  expect(results.find((r) => r.field === "title").value_hash).toBe(await hex("Blade Runner"));
+  expect(results.find((r) => r.field === "genres").value_hash).toBe(await hex('["Sci-Fi","Drama"]'));
+});
+
+test("an endpoint without _source_ref leaves the inputs hash as the ref", async () => {
+  const db = await fresh();
+  const { fetchImpl } = stub({ body: { title: "Blade Runner" } });
+  await deriveRows(db, ENV, "movies", ["78"], { fetchImpl });
+  const p = await db.prepare("SELECT from_ref, inputs_hash FROM provenance WHERE id='movies:78:title'").first();
+  expect(p.from_ref).toBe(p.inputs_hash);
 });
 
 test("a non-2xx endpoint writes nothing and is reported in failed", async () => {
@@ -129,8 +140,8 @@ test("a value failing its property check is not written; siblings still are", as
   const row = await db.prepare("SELECT * FROM movies WHERE id='78'").first();
   expect(row.title).toBe(null);
   expect(row.genres).toBe('["Sci-Fi"]');
-  const { results } = await db.prepare("SELECT col FROM provenance").all();
-  expect(results.map((r) => r.col)).toEqual(["genres"]);
+  const { results } = await db.prepare("SELECT field FROM provenance").all();
+  expect(results.map((r) => r.field)).toEqual(["genres"]);
 });
 
 test("an unconfigured derivation name fails softly", async () => {

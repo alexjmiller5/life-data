@@ -89,6 +89,21 @@ CLI.
   path inside the upsert (`json_extract(value, '$.<col>')`) takes the RAW name:
   it is a JSON key, not SQL.
 - `catalog_*` and `provenance` sync before every other table.
+- **`provenance` is ONE table for every value's origin.** Hub derivations
+  write rows with `rel='derived_from'`, `asserted_by='hub'`, `from_kind =
+  'http:<name>'`, `from_ref = _source_ref ?? inputs_hash`, id
+  `<to_kind>:<to_ref>:<field>`, plus `inputs_hash`/`value_hash`/`produced_at`.
+  Clients write observation edges into the same table (a text, an email, a
+  photo, an import backing a row or one column: `rel` evidence_of /
+  mentions / imported_from, `field` = the column or NULL for the whole row,
+  `detail` = pair-only JSON, id `<from_kind>:<from_ref>:<to_ref>`). It is
+  engine-created (`CATALOG_TABLES`, last so its cataloging can log) but NOT
+  in `ENGINE_TABLES`: it is cataloged from birth (`PROVENANCE_PROPERTIES`
+  adds the descriptions and the two `options_sql` - every `derived_by` is
+  automatically an allowed `from_kind`, every user table an allowed
+  `to_kind`) and validated like a user table on both sides. Schema replay
+  also skips `no such column` (a RENAME COLUMN a fresh replica's
+  current-shape engine table never had).
 - `just test` runs pytest AND `bun test` in `worker/`.
 
 ## Sync internals

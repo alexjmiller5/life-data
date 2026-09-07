@@ -279,8 +279,7 @@ class LocalHub:
             try:
                 self._query(e["ddl"])
             except Exception as exc:  # replay skips DDL the hub already has
-                msg = str(exc).lower()
-                if "already exists" not in msg and "duplicate column" not in msg:
+                if not _already_applied(exc):
                     raise
             self._query(
                 "INSERT INTO _schema_log (applied_at, ddl) VALUES (?, ?)",
@@ -503,6 +502,15 @@ def _set_state(path: Path, key: str, value: str) -> None:
         )
 
 
+def _already_applied(exc: Exception) -> bool:
+    """Replay is idempotent-by-skip: a CREATE that already exists, an ADD of a
+    column already there, or a RENAME of a column that is already gone (a fresh
+    replica creates engine tables in their current shape, then replays the log
+    that got them there)."""
+    msg = str(exc).lower()
+    return "already exists" in msg or "duplicate column" in msg or "no such column" in msg
+
+
 def _user_tables(path: Path) -> list[str]:
     """catalog_* and provenance first, so a replica always has the contract
     (and the provenance backing derived columns) before the data it governs."""
@@ -521,8 +529,7 @@ def _apply_local_ddl(path: Path, entry: dict) -> None:
         try:
             conn.execute(entry["ddl"])
         except sqlite3.Error as exc:
-            msg = str(exc).lower()
-            if "already exists" not in msg and "duplicate column" not in msg:
+            if not _already_applied(exc):
                 raise
         conn.execute(
             "INSERT INTO _schema_log (applied_at, ddl) VALUES (?, ?)",

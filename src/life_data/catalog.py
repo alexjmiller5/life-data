@@ -55,19 +55,63 @@ CATALOG_TABLES = {
         "cmd:text",
         "enforce:integer",
     ],
+    "catalog_log": ["tbl:text", "row_id:text", "action:text", "payload:text"],
+    # ONE table for every value's origin: hub derivations (rel=derived_from,
+    # id `<to_kind>:<to_ref>:<field>`) and observation edges a client writes
+    # (a text, an email, a photo backing a value; id
+    # `<from_kind>:<from_ref>:<to_ref>`). Engine-created so it exists from
+    # birth, but cataloged and validated like a user table - it is last here
+    # because cataloging it needs every other engine table to exist.
     "provenance": [
-        "tbl:text",
-        "row_id:text",
-        "col:text",
-        "derived_by:text",
+        "from_kind:select!(photo|imessage|email|manual)",
+        "from_ref:text!",
+        "to_kind:select!",
+        "to_ref:text!",
+        "rel:select!(evidence_of|mentions|imported_from|derived_from)",
+        "field:text",
+        "detail:json",
+        "asserted_by:text!",
         "inputs_hash:text",
         "value_hash:text",
-        "source_ref:text",
         "produced_at:text",
     ],
-    "catalog_log": ["tbl:text", "row_id:text", "action:text", "payload:text"],
 }
-ENGINE_TABLES = set(CATALOG_TABLES)
+ENGINE_TABLES = set(CATALOG_TABLES) - {"provenance"}
+
+# The parts of the provenance contract the `col:type` spec cannot say.
+PROVENANCE_PROPERTIES = {
+    "from_kind": {
+        "options_sql": "SELECT DISTINCT derived_by FROM catalog_properties WHERE derived_by IS NOT NULL AND deleted_at IS NULL",
+        "description": "What kind of thing this came from: an observation kind (photo, imessage, email, manual, or any option you add) or a hub derivation `http:<name>` - every derived_by in the catalog is allowed automatically.",
+    },
+    "from_ref": {
+        "description": "The source's own stable id (message GUID, mail id, photo UUID, archive key). For a derivation: the endpoint's _source_ref, else the inputs hash. Never a URL - links are derived from kind + ref.",
+    },
+    "to_kind": {
+        "options_sql": "SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 1) != '_' AND name NOT LIKE 'catalog!_%' ESCAPE '!' AND name NOT LIKE 'sqlite%' AND name != 'provenance'",
+        "description": "The table of the row this is about (any user table; add an option for a kind that lives outside life-data).",
+    },
+    "to_ref": {"description": "The id of that row."},
+    "rel": {
+        "description": "How the source relates to the row: evidence_of (a direct observation backs it), mentions (came up; proves nothing alone), imported_from (the row was created from this source), derived_from (the hub computed the field from this derivation).",
+    },
+    "field": {
+        "description": "The column this backs, when it backs one value rather than the row as a whole. Null for imported_from and whole-row evidence.",
+    },
+    "detail": {
+        "description": "JSON, properties of the PAIR only: cue (the quoted fragment), confidence (high|medium|low), dist_m. Never attributes of the source - follow from_kind + from_ref for those.",
+    },
+    "asserted_by": {
+        "description": "Who made the claim: hub (a derivation), a person's name, script:<name>, agent:<session id>.",
+    },
+    "inputs_hash": {
+        "description": "Derivations only: hash of the inputs the hub derived from. Stale when it no longer matches the row."
+    },
+    "value_hash": {
+        "description": "Derivations only: hash of the value the hub wrote; a hand edit no longer matches it."
+    },
+    "produced_at": {"description": "Derivations only: when the hub wrote the value."},
+}
 
 TYPES = {
     "text",
@@ -138,6 +182,16 @@ def ensure_catalog(path: Path) -> None:
         missing = [t for t in CATALOG_TABLES if not _table_exists(conn, t)]
     for t in missing:
         pkg.create_table(path, t, CATALOG_TABLES[t])
+    if "provenance" in missing:
+        for col, fields in PROVENANCE_PROPERTIES.items():
+            set_property(path, "provenance", col, **fields)
+        set_table(
+            path,
+            "provenance",
+            purpose="Every value's origin, one table: hub derivations and the observations (a text, an email, a photo, an import) that back a row or one of its columns.",
+            id_semantics="derivations: <to_kind>:<to_ref>:<field>; observation edges: <from_kind>:<from_ref>:<to_ref> - one edge per source/row pair, so re-running a pass is idempotent.",
+            owner="the hub (derivations); scripts and agents (edges)",
+        )
 
 
 def _parse(row: dict) -> dict:
@@ -739,7 +793,7 @@ def stale(conn) -> list[Violation]:
         if not p.get("derived_by") or not _table_exists(conn, p["tbl"]):
             continue
         rows = conn.execute(
-            "SELECT pr.row_id, pr.inputs_hash FROM provenance pr WHERE pr.tbl = ? AND pr.col = ? AND pr.deleted_at IS NULL",
+            "SELECT pr.to_ref AS row_id, pr.inputs_hash FROM provenance pr WHERE pr.to_kind = ? AND pr.field = ? AND pr.deleted_at IS NULL",
             (p["tbl"], p["col"]),
         ).fetchall()
         for r in rows:
@@ -774,7 +828,7 @@ def underived(conn) -> list[Violation]:
             continue
         rows = conn.execute(
             f"SELECT t.id FROM {qi(p['tbl'])} t WHERE t.deleted_at IS NULL AND NOT EXISTS "
-            "(SELECT 1 FROM provenance pr WHERE pr.tbl = ? AND pr.col = ? AND pr.row_id = t.id AND pr.deleted_at IS NULL)",
+            "(SELECT 1 FROM provenance pr WHERE pr.to_kind = ? AND pr.field = ? AND pr.to_ref = t.id AND pr.deleted_at IS NULL)",
             (p["tbl"], p["col"]),
         ).fetchall()
         for r in rows:
