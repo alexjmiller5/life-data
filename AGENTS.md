@@ -66,7 +66,18 @@ CLI.
   (`WITH …`) does not, since it can end in INSERT/UPDATE/DELETE; a read-only
   CTE just pays a no-op transaction. Sync's pull upsert bypasses it on purpose
   (pulled rows were validated where they were written). The hub validates
-  pushed rows per row and never fails a batch.
+  pushed rows per row and never fails a batch, **each against the MERGED row**
+  - the stored row with the pushed columns applied. A push carries only the
+  columns it writes, so whole-row rules (`required`, and the derived/immutable
+  protections' notion of "changed") judge the row as it will BE: every required
+  column is demanded in full only on an INSERT, and setting one to null is
+  still rejected. Per-value checks (type/options/pattern/ref) judge only the
+  columns the payload carries - a stored value is not this write's claim.
+  `validateRow`'s `touched` option is what draws that line, and the shared
+  fixture covers both sides of it. The stored rows come from ONE chunked
+  `id IN (...)` query per push, never one per row. The local write path needs
+  none of this: it validates rows read back out of the table after the write,
+  which is already the merged row.
 - **Checks are pure; producers may touch the world.** Invariant SQL is one
   SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
   now)`; `changed`/`before` are temp tables the engine provides). Audits run

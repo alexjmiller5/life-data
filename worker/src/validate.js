@@ -31,7 +31,15 @@ export function allowed(p, extraOptions) {
 // Spec order: deprecated, derived, immutable, required, type (incl.
 // cardinality), pattern, ref/multi_ref existence. First failure per column
 // wins.
-export function validateRow(props, before, after, { inDerive = new Set(), refOk = null, extraOptions = null } = {}) {
+//
+// `touched` (a Set, or null for "every column") names the columns a partial
+// write actually carries; `after` is then the MERGED row. Whole-row rules
+// (required) still see every column - that is the point of merging - but the
+// per-value checks (type/options/pattern/ref, and the deprecated/derived/
+// immutable protections) only judge what the writer wrote: a stored value is
+// not this write's claim, and re-checking it would reject a partial update
+// over any legacy or hub-written cell.
+export function validateRow(props, before, after, { inDerive = new Set(), refOk = null, extraOptions = null, touched = null } = {}) {
   const out = [];
   for (const p of props) {
     const col = p.col;
@@ -41,6 +49,10 @@ export function validateRow(props, before, after, { inDerive = new Set(), refOk 
     const label = p.label ?? col;
     const fail = (rule, message) => out.push({ col, rule, message });
 
+    if (touched && !touched.has(col)) {
+      if (p.required && empty(v)) fail("required", `${label} is required.`);
+      continue;
+    }
     if (p.deprecated && !empty(v)) { fail("deprecated", `${col} is deprecated. Never write it.`); continue; }
     if (p.derived_by && changed && !inDerive.has(col)) { fail("derived", `${col} is derived by ${p.derived_by} on the hub. Never write it.`); continue; }
     if (p.immutable && before != null && changed) { fail("immutable", `${col} is set once and never changed.`); continue; }
@@ -168,23 +180,42 @@ export async function validatePush(db, table, rows) {
     extra[p.col] = (results ?? []).map((r) => Object.values(r)[0]);
   }
 
+  // One read for the whole push (D1 caps bind params at ~100), not one per row:
+  // a push of 500 rows must not cost 500 round trips.
+  const stored = new Map();
+  if (exists) {
+    const ids = [...new Set(rows.map((r) => r.id))];
+    for (let i = 0; i < ids.length; i += 90) {
+      const chunk = ids.slice(i, i + 90);
+      const { results } = await db
+        .prepare(`SELECT * FROM ${qident(table)} WHERE id IN (${chunk.map(() => "?").join(", ")})`)
+        .bind(...chunk).all();
+      for (const r of results ?? []) stored.set(r.id, r);
+    }
+  }
+
   const accepted = [], rejected = [];
   for (const row of rows) {
-    const before = exists ? await db.prepare(`SELECT * FROM ${qident(table)} WHERE id = ?`).bind(row.id).first() : null;
-    const viol = validateRow(props, before, row, {
+    // A push carries only the columns it writes. Required (and the derived
+    // provenance check below) judge the row as it will BE - stored columns
+    // plus this write - so a partial update need not echo the whole row.
+    const before = stored.get(row.id) ?? null;
+    const merged = before ? { ...before, ...row } : row;
+    const viol = validateRow(props, before, merged, {
       inDerive: derivedCols,
       refOk: (t, id) => refSet.has(`${t}:${id}`),
       extraOptions: (p) => extra[p.col] ?? [],
+      touched: before ? new Set(Object.keys(row)) : null,
     });
     for (const p of props.filter((p) => p.derived_by)) {
-      const changed = before == null ? row[p.col] != null : !same(row[p.col], before[p.col]);
+      const changed = before == null ? merged[p.col] != null : !same(merged[p.col], before[p.col]);
       if (!changed) continue;
       const prov = await db.prepare("SELECT inputs_hash, value_hash FROM provenance WHERE id = ? AND deleted_at IS NULL")
         .bind(`${table}:${row.id}:${p.col}`).first();
       const ok =
         prov &&
-        prov.inputs_hash === (await inputsHash(db, typeOf, p.inputs, row)) &&
-        prov.value_hash === (await valueHash(db, typeOf, p.col, row[p.col]));
+        prov.inputs_hash === (await inputsHash(db, typeOf, p.inputs, merged)) &&
+        prov.value_hash === (await valueHash(db, typeOf, p.col, merged[p.col]));
       if (!ok) {
         viol.push({ col: p.col, rule: "provenance", message: `${p.col} changed without a matching provenance record.` });
       }

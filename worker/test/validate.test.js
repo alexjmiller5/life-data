@@ -13,6 +13,7 @@ describe("validateRow conformance", () => {
         inDerive: new Set(c.in_derive ?? []),
         refOk: (t, id) => (refs[t] ?? []).includes(id),
         extraOptions: (p) => extra[p.col] ?? [],
+        touched: c.touched ? new Set(c.touched) : null,
       });
       expect(got.map((v) => ({ col: v.col, rule: v.rule }))).toEqual(c.expect);
     });

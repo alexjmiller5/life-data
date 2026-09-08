@@ -441,9 +441,16 @@ def _allowed(prop: dict, extra_options) -> list[str]:
     return vals
 
 
-def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_options=None):
+def validate_row(
+    props, before, after, *, in_derive=(), ref_ok=None, extra_options=None, touched=None
+):
     """Spec order: deprecated, derived, immutable, required, type, options,
-    cardinality, pattern, ref. First failure per column wins."""
+    cardinality, pattern, ref. First failure per column wins.
+
+    `touched` (a set, or None for "every column") names the columns a partial
+    write actually carries; `after` is then the MERGED row. Whole-row rules
+    (required) still see every column, but the per-value checks only judge what
+    the writer wrote - a stored value is not this write's claim."""
     tbl = props[0]["tbl"] if props else after.get("_tbl", "")
     rid = after.get("id")
     out: list[Violation] = []
@@ -458,6 +465,10 @@ def validate_row(props, before, after, *, in_derive=(), ref_ok=None, extra_optio
         changed = (not _empty(v)) if before is None else (not _same(v, was))
         label = p.get("label") or col
 
+        if touched is not None and col not in touched:
+            if p.get("required") and _empty(v):
+                fail(col, "required", f"{label} is required.")
+            continue
         if p.get("deprecated") and not _empty(v):
             fail(col, "deprecated", f"{col} is deprecated. Never write it.")
             continue
@@ -1053,14 +1064,19 @@ def validate_push(
             else None
         )
         before = dict(existing) if existing else None
+        # A push carries only the columns it writes: validate the row as it
+        # will BE (stored columns plus this write), so a partial update need
+        # not echo required columns the stored row already has.
+        merged = {**before, **row} if before else row
         derived = {p["col"] for p in props if p.get("derived_by")}
         viol = validate_row(
             props,
             before,
-            row,
+            merged,
             in_derive=derived,
             ref_ok=_ref_ok(conn),
             extra_options=_extra_options(conn),
+            touched=set(row) if before else None,
         )
         type_of = {q["col"]: q.get("type") for q in props}
         for p in props:
@@ -1068,9 +1084,9 @@ def validate_push(
                 continue
             col = p["col"]
             changed = (
-                (row.get(col) is not None)
+                (merged.get(col) is not None)
                 if before is None
-                else not _same(row.get(col), before.get(col))
+                else not _same(merged.get(col), before.get(col))
             )
             if not changed:
                 continue
@@ -1086,11 +1102,11 @@ def validate_push(
                 or "NULL"
             )
             text = conn.execute(
-                f"SELECT json_array({casts})", [row.get(c) for c in (p.get("inputs") or [])]
+                f"SELECT json_array({casts})", [merged.get(c) for c in (p.get("inputs") or [])]
             ).fetchone()[0]
             vtext = conn.execute(
                 f"SELECT coalesce({cast_text('?', p.get('type') == 'number')}, '')",
-                (row.get(col),),
+                (merged.get(col),),
             ).fetchone()[0]
             ok = (
                 prov

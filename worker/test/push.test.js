@@ -13,6 +13,7 @@ async function seed(db) {
     `CREATE TABLE places (id TEXT PRIMARY KEY, status TEXT, slug TEXT, name TEXT, created_at TEXT DEFAULT (${NOW}), updated_at TEXT DEFAULT (${NOW}), deleted_at TEXT)`,
     `INSERT INTO catalog_properties (id, tbl, col, type, options) VALUES ('places.status','places','status','select','[{"v":"want"}]')`,
     `INSERT INTO catalog_properties (id, tbl, col, type, derived_by, inputs) VALUES ('places.slug','places','slug','text','http:slug','["name"]')`,
+    `INSERT INTO catalog_properties (id, tbl, col, type, required) VALUES ('places.name','places','name','text',1)`,
   ]) await db.prepare(sql).run();
 }
 
@@ -138,4 +139,67 @@ test("schema push skips a RENAME TO the hub already applied, and hub replay rena
   expect(out.applied).toBe(1);
   // but a genuinely missing table in any other DDL still fails loudly
   await expect(ROUTES["/v1/schema/push"]({ entries: [entry("ALTER TABLE ghost ADD COLUMN x TEXT")] }, db)).rejects.toThrow();
+});
+
+
+// --- partial pushes: required is a property of the MERGED row ----------------
+const push = (body, db) => ROUTES["/v1/rows/push"](body, db);
+const partial = (o) => ({ table: "places", columns: Object.keys(o), rows: [o] });
+
+test("a partial update of an existing row is validated against the merged row", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row({ id: "a", status: "want", name: "A" })] }, db);
+  // no `name` in the payload, yet name is required: the stored value counts
+  const out = await push(partial({ id: "a", status: "want", updated_at: "2026-09-09T00:00:00.000Z" }), db);
+  expect(out.rejected).toEqual([]);
+  expect(out.upserted).toBe(1);
+  const stored = await db.prepare("SELECT * FROM places WHERE id = 'a'").first();
+  expect(stored.name).toBe("A"); // untouched columns survive the partial push
+  expect(stored.updated_at).toBe("2026-09-09T00:00:00.000Z");
+});
+
+test("an insert still has to carry every required column", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  const out = await push(partial({ id: "new", status: "want", updated_at: "2026-09-09T00:00:00.000Z" }), db);
+  expect(out.upserted).toBe(0);
+  expect(out.rejected[0]).toMatchObject({ id: "new", col: "name", rule: "required" });
+});
+
+test("a partial update that empties a required column is rejected", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row({ id: "a" })] }, db);
+  const out = await push(partial({ id: "a", name: null, updated_at: "2026-09-09T00:00:00.000Z" }), db);
+  expect(out.upserted).toBe(0);
+  expect(out.rejected[0]).toMatchObject({ id: "a", col: "name", rule: "required" });
+  expect((await db.prepare("SELECT name FROM places WHERE id = 'a'").first()).name).toBe("A");
+});
+
+test("a partial update touching a derived column is still rejected", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row({ id: "a" })] }, db);
+  await db.prepare("UPDATE places SET slug = 'a' WHERE id = 'a'").run(); // as a hub derivation would
+  // not touching it is fine, even with no provenance row to re-verify against
+  let out = await push(partial({ id: "a", status: "want", updated_at: "2026-09-09T00:00:00.000Z" }), db);
+  expect(out.rejected).toEqual([]);
+  // touching it is a client writing a derived column: rejected as ever
+  out = await push(partial({ id: "a", slug: "hand", updated_at: "2026-09-10T00:00:00.000Z" }), db);
+  expect(out.upserted).toBe(0);
+  expect(out.rejected[0]).toMatchObject({ id: "a", col: "slug", rule: "provenance" });
+  expect((await db.prepare("SELECT slug FROM places WHERE id = 'a'").first()).slug).toBe("a");
+});
+
+test("existing rows are read in one query, not one per row", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row({ id: "a" }), row({ id: "b" }), row({ id: "c" })] }, db);
+  let selects = 0;
+  const inner = db.prepare.bind(db);
+  db.prepare = (sql) => { if (/^SELECT \* FROM "places"/.test(sql)) selects++; return inner(sql); };
+  const out = await push({ table: "places", columns: ["id", "status", "updated_at"], rows: ["a", "b", "c"].map((id) => ({ id, status: "want", updated_at: "2026-09-09T00:00:00.000Z" })) }, db);
+  expect(out.rejected).toEqual([]);
+  expect(selects).toBe(1);
 });

@@ -78,5 +78,21 @@
   {"name": "underscore digit grouping is not a number", "properties": [{"tbl": "t", "col": "n", "type": "number"}],
    "before": null, "after": {"id": "a", "n": "1_000"}, "expect": [{"col": "n", "rule": "type"}]},
   {"name": "Infinity is not a number", "properties": [{"tbl": "t", "col": "n", "type": "number"}],
-   "before": null, "after": {"id": "a", "n": "Infinity"}, "expect": [{"col": "n", "rule": "type"}]}
+   "before": null, "after": {"id": "a", "n": "Infinity"}, "expect": [{"col": "n", "rule": "type"}]},
+  {"name": "partial update: a required column the payload omits is met by the stored value", "properties": [{"tbl": "t", "col": "name", "type": "text", "required": 1}, {"tbl": "t", "col": "note", "type": "text"}],
+   "before": {"id": "a", "name": "A", "note": null}, "after": {"id": "a", "name": "A", "note": "hi"}, "touched": ["id", "note"], "expect": []},
+  {"name": "partial update: an untouched column's stored value is not re-checked", "properties": [{"tbl": "t", "col": "status", "type": "select", "options": [{"v": "want"}]}, {"tbl": "t", "col": "note", "type": "text"}],
+   "before": {"id": "a", "status": "legacy", "note": null}, "after": {"id": "a", "status": "legacy", "note": "hi"}, "touched": ["id", "note"], "expect": []},
+  {"name": "partial update: emptying a required column is rejected", "properties": [{"tbl": "t", "col": "name", "type": "text", "required": 1}],
+   "before": {"id": "a", "name": "A"}, "after": {"id": "a", "name": null}, "touched": ["id", "name"], "expect": [{"col": "name", "rule": "required"}]},
+  {"name": "partial update: a required column empty in the merged row is still rejected", "properties": [{"tbl": "t", "col": "name", "type": "text", "required": 1}, {"tbl": "t", "col": "note", "type": "text"}],
+   "before": {"id": "a", "name": null, "note": null}, "after": {"id": "a", "name": null, "note": "hi"}, "touched": ["id", "note"], "expect": [{"col": "name", "rule": "required"}]},
+  {"name": "partial update: a touched derived column is still rejected", "properties": [{"tbl": "t", "col": "slug", "type": "text", "derived_by": "http:slug"}],
+   "before": {"id": "a", "slug": "a"}, "after": {"id": "a", "slug": "hand"}, "touched": ["id", "slug"], "expect": [{"col": "slug", "rule": "derived"}]},
+  {"name": "partial update: an untouched derived column is not a client write", "properties": [{"tbl": "t", "col": "slug", "type": "text", "derived_by": "http:slug"}, {"tbl": "t", "col": "note", "type": "text"}],
+   "before": {"id": "a", "slug": "a", "note": null}, "after": {"id": "a", "slug": "a", "note": "hi"}, "touched": ["id", "note"], "expect": []},
+  {"name": "partial update: an untouched immutable column is not a change", "properties": [{"tbl": "t", "col": "born", "type": "date", "immutable": 1}, {"tbl": "t", "col": "note", "type": "text"}],
+   "before": {"id": "a", "born": "2026-01-01", "note": null}, "after": {"id": "a", "born": "2026-01-01", "note": "hi"}, "touched": ["id", "note"], "expect": []},
+  {"name": "partial update: a touched immutable column is still rejected", "properties": [{"tbl": "t", "col": "born", "type": "date", "immutable": 1}],
+   "before": {"id": "a", "born": "2026-01-01"}, "after": {"id": "a", "born": "2026-02-02"}, "touched": ["id", "born"], "expect": [{"col": "born", "rule": "immutable"}]}
 ]

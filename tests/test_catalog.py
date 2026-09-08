@@ -140,6 +140,7 @@ def test_validate_row_conformance(case):
         in_derive=set(case.get("in_derive", [])),
         ref_ok=lambda t, i: i in refs.get(t, []),
         extra_options=lambda p: extra.get(p["col"], []),
+        touched=set(case["touched"]) if case.get("touched") else None,
     )
     assert [{"col": v.col, "rule": v.rule} for v in got] == case["expect"]
 
@@ -264,6 +265,31 @@ def test_number_inputs_hash_the_same_from_the_table_and_from_a_pushed_row(db):
         accepted, rejected = validate_push(conn, "t", [{"id": "a", "qty": 4, "double": 8}])
     assert rejected == []
     assert len(accepted) == 1
+
+
+def test_validate_push_checks_required_against_the_merged_row(db):
+    """A push carries only the columns it writes: required is a property of the
+    row as it will be, not of the payload. Insert still demands all of them."""
+    create_table(db, "t", ["name:text!", "note:text"])
+    insert_rows(db, "t", [{"id": "a", "name": "A"}])
+    with connect(db) as conn:
+        accepted, rejected = validate_push(conn, "t", [{"id": "a", "note": "hi"}])
+        assert rejected == [] and len(accepted) == 1
+        _, rejected = validate_push(conn, "t", [{"id": "new", "note": "hi"}])
+        assert rejected[0]["rule"] == "required"
+        _, rejected = validate_push(conn, "t", [{"id": "a", "name": None}])
+        assert rejected[0]["rule"] == "required"
+
+
+def test_a_partial_local_update_is_validated_as_the_stored_row(db):
+    """The local write path reads changed rows back out of the table, so it has
+    always seen the merged row - a partial UPDATE never trips `required`."""
+    create_table(db, "t", ["name:text!", "note:text"])
+    insert_rows(db, "t", [{"id": "a", "name": "A"}])
+    execute_sql(db, "UPDATE t SET note = 'hi' WHERE id = 'a'")
+    assert execute_sql(db, "SELECT name, note FROM t")[0] == {"name": "A", "note": "hi"}
+    with pytest.raises(ValidationError):  # emptying it is still a violation
+        execute_sql(db, "UPDATE t SET name = NULL WHERE id = 'a'")
 
 
 def test_defaults_apply_on_insert(db):
