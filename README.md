@@ -42,6 +42,8 @@ life table create people name:text birthday:text
 life sql "INSERT INTO people (name) VALUES ('Ada')"
 life sql "SELECT * FROM people"            # results as JSON
 life sql "ALTER TABLE people ADD COLUMN likes TEXT"
+life table rename people humans            # the ONLY way to rename a table
+life sql "SELECT * FROM history WHERE tbl = 'humans' ORDER BY created_at"
 life export > backup.sql                   # portable dump, no cloud involved
 ```
 
@@ -143,6 +145,16 @@ it is a complete backup. Never put the data dir inside a file-sync folder
 - **Tables created via `life table create` get sync-ready columns
   automatically**: `id` (random 128-bit hex), `created_at`, `updated_at`
   (trigger-maintained), `deleted_at`. ISO 8601 UTC, millisecond precision.
+- **`history`** records every edit to every cataloged table, one row per
+  changed cell (`tbl`, `row_id`, `col`, `old`, `new`, `origin` = hostname,
+  `created_at` = when), in the same transaction as the edit. Updates only:
+  an insert is `created_at` plus the row, and a cell's first change keeps its
+  original value in `old`, so the full timeline is reconstructible. It syncs
+  like any table.
+- **`life table rename OLD NEW`** renames a table and every reference to it
+  (catalog properties and refs, rule SQL, provenance, history) in one
+  transaction, as logged DDL. A raw `ALTER TABLE … RENAME TO` through
+  `life sql` is refused because it would leave those references dangling.
 - **`_schema_log`** records every DDL statement in order; replicas replay it.
 - **`_sync_state`** holds the sync cursors.
 - The client is pure Python standard library — no runtime dependencies.

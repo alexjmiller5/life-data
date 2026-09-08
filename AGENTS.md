@@ -89,6 +89,35 @@ CLI.
   path inside the upsert (`json_extract(value, '$.<col>')`) takes the RAW name:
   it is a JSON key, not SQL.
 - `catalog_*` and `provenance` sync before every other table.
+- **`history` is the engine's edit log**: `catalog.write` diffs every changed
+  row of every cataloged user table against its `temp._before_<t>` snapshot
+  and, after validation passes, inserts one row per changed cell (`tbl`,
+  `row_id`, `col`, `old`, `new`, `origin` = hostname; `created_at` is the edit
+  time). Updates only, never inserts; never `updated_at`/`hub_at`; never
+  provenance or the catalog (both are in `CATALOG_TABLES`). It is an engine
+  table (never validated, never snapshotted) that the write path creates
+  lazily as logged DDL on an estate that predates it - only on the non-DDL
+  path, because on the DDL path `fn` may be `ensure_catalog` creating it.
+  `ensure_catalog` documents it (keyed on its `catalog_tables` row, under a
+  reentrancy guard because those `set_*` calls re-enter it). Sync's pull
+  upsert bypasses `write`, so a pulled row is never re-logged: the origin
+  replica logged it. Hub derivations are covered by `provenance`, not history.
+- **A soft-deleted row is never validated** (its cells are history, not a
+  claim), but its cell changes are still logged.
+- **`rename_table` is the only table rename.** `execute_sql` refuses
+  `ALTER TABLE … RENAME TO` (the guard is `RENAME_TABLE`; RENAME COLUMN stays
+  allowed). The verb runs one `catalog.write(ddl=True)`: the ALTER, a
+  `DROP TRIGGER IF EXISTS` of the old-named trigger and a CREATE of the
+  new-named one (all logged, so they replay), then `catalog.rename_refs`:
+  id-keyed rows whose id embeds the table name (`catalog_properties`
+  `<tbl>.<col>`, `catalog_tables`, derived `provenance` `<tbl>:<ref>:<field>`)
+  are REKEYED - copy under the new id, soft-delete the old - because an
+  in-place id change would leave the hub's copy alive and pull it straight
+  back; `ref_table`, rule `tbl`, edge `to_kind` and `history.tbl` are plain
+  updates; rule `sql` and `options_sql` are rewritten by word boundary, and
+  the DDL recompile in `write` rejects the rename if any rule still fails.
+  Replay skips a RENAME TO whose source table is already gone
+  (`_already_applied(exc, ddl)`; the hub mirrors it).
 - **`provenance` is ONE table for every value's origin.** Hub derivations
   write rows with `rel='derived_from'`, `asserted_by='hub'`, `from_kind =
   'http:<name>'`, `from_ref = _source_ref ?? inputs_hash`, id

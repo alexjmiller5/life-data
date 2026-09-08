@@ -984,3 +984,80 @@ def test_cli_table_set_consumers_accepts_json_or_comma_list(monkeypatch, tmp_pat
     assert json.loads(capsys.readouterr().out)["consumers"] == ["a", "b"]
     main(["table", "set", "pets", "--consumers", "a, b"])
     assert json.loads(capsys.readouterr().out)["consumers"] == ["a", "b"]
+
+
+# --- history ----------------------------------------------------------------
+
+
+def _hist(db, **where):
+    cond = " AND ".join(f"{k} = ?" for k in where) or "1=1"
+    return (
+        execute_sql(db, f"SELECT * FROM history WHERE {cond} ORDER BY created_at, rowid")
+        if not where
+        else [
+            r
+            for r in execute_sql(db, "SELECT * FROM history ORDER BY created_at, rowid")
+            if all(r[k] == v for k, v in where.items())
+        ]
+    )
+
+
+def test_update_writes_one_history_row_per_changed_cell(db):
+    create_table(db, "places", ["name:text", "status:select(want|been)", "rating:int"])
+    insert_rows(db, "places", [{"id": "p1", "name": "Bar", "status": "want"}])
+    assert _hist(db) == [], "an insert is not history: created_at plus the row already say it"
+    execute_sql(db, "UPDATE places SET status = 'been', rating = 4 WHERE id = 'p1'")
+    rows = _hist(db, tbl="places", row_id="p1")
+    assert {(r["col"], r["old"], r["new"]) for r in rows} == {
+        ("status", "want", "been"),
+        ("rating", None, "4"),
+    }
+    assert all(r["origin"] for r in rows), "every row says which machine wrote it"
+    assert all(r["created_at"] for r in rows)
+    assert not [r for r in rows if r["col"] in ("updated_at", "hub_at")]
+
+
+def test_soft_delete_and_untouched_cells_in_history(db):
+    create_table(db, "places", ["name:text"])
+    insert_rows(db, "places", [{"id": "p1", "name": "Bar"}])
+    execute_sql(db, "UPDATE places SET name = 'Bar' WHERE id = 'p1'")  # no-op change
+    assert _hist(db) == []
+    execute_sql(db, "UPDATE places SET deleted_at = updated_at WHERE id = 'p1'")
+    rows = _hist(db, tbl="places", row_id="p1")
+    assert [r["col"] for r in rows] == ["deleted_at"]
+    assert rows[0]["old"] is None and rows[0]["new"]
+
+
+def test_rejected_write_leaves_no_history(db):
+    create_table(db, "places", ["status:select(want|been)"])
+    insert_rows(db, "places", [{"id": "p1", "status": "want"}])
+    with pytest.raises(ValidationError):
+        execute_sql(db, "UPDATE places SET status = 'nope' WHERE id = 'p1'")
+    assert _hist(db) == []
+
+
+def test_history_is_an_engine_table_created_with_the_catalog_and_documented(db):
+    ensure_catalog(db)
+    ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
+    assert any('CREATE TABLE "history"' in d for d in ddls), "logged DDL, so it syncs"
+    with connect(db) as conn:
+        cols = {p["col"]: p for p in properties(conn, "history")}
+        assert {"tbl", "row_id", "col", "old", "new", "origin"} <= set(cols)
+        assert all(cols[c].get("description") for c in cols)
+        assert "### history" in doc(conn)
+    # engine table: never validated, never snapshotted, never its own history
+    execute_sql(db, "UPDATE history SET origin = 'x' WHERE 0")
+    create_table(db, "places", ["name:text"])
+    insert_rows(db, "places", [{"id": "p1", "name": "a"}])
+    execute_sql(db, "UPDATE places SET name = 'b' WHERE id = 'p1'")
+    assert [r["tbl"] for r in _hist(db)] == ["places"]
+
+
+def test_history_table_appears_lazily_on_an_estate_that_predates_it(db):
+    create_table(db, "places", ["name:text"])
+    execute_sql(db, "DROP TABLE history")  # an estate cataloged before history existed
+    insert_rows(db, "places", [{"id": "p1", "name": "a"}])
+    execute_sql(db, "UPDATE places SET name = 'b' WHERE id = 'p1'")
+    assert [(r["old"], r["new"]) for r in _hist(db)] == [("a", "b")]
+    ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
+    assert len([d for d in ddls if 'CREATE TABLE "history"' in d]) == 2, "re-created via logged DDL"

@@ -122,3 +122,20 @@ test("schema push skips a RENAME COLUMN the hub already has", async () => {
   const out = await ROUTES["/v1/schema/push"]({ entries: [{ applied_at: "2026-09-07T00:00:00.000Z", ddl: "ALTER TABLE t RENAME COLUMN a TO b" }] }, db);
   expect(out.applied).toBe(1);
 });
+
+test("schema push skips a RENAME TO the hub already applied, and hub replay renames for real", async () => {
+  const db = new D1Shim();
+  for (const sql of [
+    `CREATE TABLE _schema_log (id INTEGER PRIMARY KEY AUTOINCREMENT, applied_at TEXT DEFAULT (${NOW}), ddl TEXT NOT NULL)`,
+    `CREATE TABLE people (id TEXT PRIMARY KEY, name TEXT)`,
+  ]) await db.prepare(sql).run();
+  const entry = (ddl) => ({ applied_at: "2026-09-08T00:00:00.000Z", ddl });
+  let out = await ROUTES["/v1/schema/push"]({ entries: [entry('ALTER TABLE "people" RENAME TO "humans"')] }, db);
+  expect(out.applied).toBe(1);
+  expect((await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='humans'").all()).results.length).toBe(1);
+  // the same rename spelled differently (identical text is deduped before it runs) is a no-op
+  out = await ROUTES["/v1/schema/push"]({ entries: [entry("ALTER TABLE people RENAME TO humans")] }, db);
+  expect(out.applied).toBe(1);
+  // but a genuinely missing table in any other DDL still fails loudly
+  await expect(ROUTES["/v1/schema/push"]({ entries: [entry("ALTER TABLE ghost ADD COLUMN x TEXT")] }, db)).rejects.toThrow();
+});

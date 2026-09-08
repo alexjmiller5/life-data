@@ -25,6 +25,7 @@ from life_data import (
     insert_rows,
     load_config,
     main,
+    rename_table,
     resolve_data_dir,
     sync,
     watch,
@@ -110,6 +111,21 @@ def test_init_creates_plumbing_and_is_idempotent(tmp_path):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"_schema_log", "_sync_state"} <= tables
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_init_upgrades_an_existing_estate_but_leaves_a_fresh_db_uncataloged(db):
+    assert not catalog.has_catalog(connect(db))
+    _mk_people(db, ["Ada"])
+    execute_sql(db, "DROP TABLE history")
+    execute_sql(db, "UPDATE catalog_tables SET deleted_at = updated_at WHERE id = 'history'")
+    init(db)
+    names = {
+        r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "history" in names
+    assert execute_sql(
+        db, "SELECT purpose FROM catalog_tables WHERE id = 'history' AND deleted_at IS NULL"
+    )
 
 
 def test_sql_select_returns_rows_as_dicts(db):
@@ -926,3 +942,169 @@ def test_schema_replay_skips_a_rename_already_applied(db, tmp_path):
     hub.ensure_ready()
     hub._query("CREATE TABLE t (id TEXT PRIMARY KEY, b TEXT)")
     assert hub.schema_push([entry]) == 1
+
+
+# --- table rename -----------------------------------------------------------
+
+
+def _mk_estate(path):
+    """people (with a rule, a derived column + provenance, history) and pets
+    referencing it: every place a table name can hide."""
+    create_table(path, "people", ["name:text!", "slug:text", "status:select(new|met)"])
+    create_table(path, "pets", ["name:text", "owner:ref"])
+    catalog.set_property(path, "pets", "owner", type="ref", ref_table="people")
+    catalog.set_property(
+        path, "people", "slug", type="text", derived_by="http:slug", inputs=["name"]
+    )
+    catalog.set_table(path, "people", purpose="everyone")
+    catalog.set_rule(
+        path,
+        "people-named",
+        scope="table",
+        tbl="people",
+        kind="invariant",
+        text="a person has a name",
+        sql="SELECT id FROM people WHERE name = '' AND id IN (SELECT id FROM changed)",
+        enforce=1,
+    )
+    insert_rows(path, "people", [{"id": "a1", "name": "Ada", "status": "new"}])
+    execute_sql(path, "UPDATE people SET status = 'met' WHERE id = 'a1'")
+    insert_rows(
+        path,
+        "provenance",
+        [
+            {
+                "id": "people:a1:slug",
+                "from_kind": "http:slug",
+                "from_ref": "h",
+                "to_kind": "people",
+                "to_ref": "a1",
+                "rel": "derived_from",
+                "field": "slug",
+                "asserted_by": "hub",
+            },
+            {
+                "id": "imessage:G1:a1",
+                "from_kind": "imessage",
+                "from_ref": "G1",
+                "to_kind": "people",
+                "to_ref": "a1",
+                "rel": "mentions",
+                "asserted_by": "test",
+            },
+        ],
+    )
+
+
+def _live(path, table, **where):
+    cond = " AND ".join(f"{k} = '{v}'" for k, v in where.items())
+    return execute_sql(path, f"SELECT * FROM {table} WHERE deleted_at IS NULL AND {cond}")
+
+
+def test_rename_table_moves_every_reference_in_one_transaction(db):
+    _mk_estate(db)
+    rename_table(db, "people", "humans")
+    names = {
+        r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "humans" in names and "people" not in names
+    trig = {
+        r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master WHERE type='trigger'")
+    }
+    assert "humans_updated_at" in trig and "people_updated_at" not in trig
+    # catalog: properties and the table row rekeyed, old ids soft-deleted, refs repointed
+    assert {p["id"] for p in _live(db, "catalog_properties", tbl="humans")} == {
+        "humans.name",
+        "humans.slug",
+        "humans.status",
+    }
+    assert _live(db, "catalog_properties", tbl="people") == []
+    assert _live(db, "catalog_tables", id="humans")[0]["purpose"] == "everyone"
+    assert _live(db, "catalog_tables", id="people") == []
+    assert _live(db, "catalog_properties", id="pets.owner")[0]["ref_table"] == "humans"
+    rule = _live(db, "catalog_rules", id="people-named")[0]
+    assert rule["tbl"] == "humans" and "FROM humans WHERE" in rule["sql"]
+    # provenance: derived ids rekeyed, edges repointed
+    assert _live(db, "provenance", to_kind="people") == []
+    assert _live(db, "provenance", id="humans:a1:slug")[0]["to_kind"] == "humans"
+    assert _live(db, "provenance", id="imessage:G1:a1")[0]["to_kind"] == "humans"
+    # history follows the table
+    assert {r["tbl"] for r in execute_sql(db, "SELECT tbl FROM history")} == {"humans"}
+    # the renamed table still works: trigger, validation, rule, history
+    execute_sql(db, "UPDATE humans SET status = 'new' WHERE id = 'a1'")
+    row = execute_sql(db, "SELECT * FROM humans")[0]
+    assert row["updated_at"] > row["created_at"]
+    with pytest.raises(catalog.ValidationError) as exc:
+        execute_sql(db, "UPDATE humans SET name = '' WHERE id = 'a1'")
+    assert "people-named" in {v.rule for v in exc.value.violations}
+    assert [r["col"] for r in execute_sql(db, "SELECT col FROM history WHERE tbl = 'humans'")] == [
+        "status",
+        "status",
+    ]
+    ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
+    assert 'ALTER TABLE "people" RENAME TO "humans"' in ddls
+
+
+def test_rename_table_refuses_bad_targets(db):
+    _mk_people(db, ["Ada"])
+    with pytest.raises(ValueError, match="no such table"):
+        rename_table(db, "nope", "x")
+    with pytest.raises(ValueError, match="already exists"):
+        rename_table(db, "people", "catalog_tables")
+    with pytest.raises(ValueError, match="engine"):
+        rename_table(db, "provenance", "prov")
+    with pytest.raises(ValueError):
+        rename_table(db, "people", "bad name")
+    assert execute_sql(db, "SELECT name FROM people") == [{"name": "Ada"}]
+
+
+def test_rename_table_replays_to_the_hub_and_every_replica(db, hub, tmp_path):
+    _mk_estate(db)
+    sync(db, hub)
+    other = init(tmp_path / "other" / "life.db")
+    sync(other, hub)
+    rename_table(db, "people", "humans")
+    sync(db, hub)
+    sync(other, hub)
+    names = {
+        r["name"] for r in execute_sql(other, "SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "humans" in names and "people" not in names
+    assert execute_sql(other, "SELECT name FROM humans") == [{"name": "Ada"}]
+    assert _live(other, "catalog_properties", tbl="people") == []
+    assert {p["id"] for p in _live(other, "catalog_properties", tbl="humans")} == {
+        "humans.name",
+        "humans.slug",
+        "humans.status",
+    }
+    assert {r["tbl"] for r in execute_sql(other, "SELECT tbl FROM history")} == {"humans"}
+    fresh = init(tmp_path / "fresh" / "life.db")
+    sync(fresh, hub)
+    assert execute_sql(fresh, "SELECT name FROM humans") == [{"name": "Ada"}]
+    # an edit on the renamed table round-trips with its history
+    execute_sql(other, "UPDATE humans SET status = 'new' WHERE id = 'a1'")
+    sync(other, hub)
+    sync(db, hub)
+    assert execute_sql(db, "SELECT status FROM humans")[0]["status"] == "new"
+    assert len(execute_sql(db, "SELECT * FROM history WHERE tbl = 'humans'")) == 2
+
+
+def test_sql_rename_table_is_refused_but_rename_column_is_not(db):
+    _mk_people(db, ["Ada"])
+    with pytest.raises(ValueError, match="life table rename"):
+        execute_sql(db, "ALTER TABLE people RENAME TO humans")
+    with pytest.raises(ValueError, match="life table rename"):
+        execute_sql(db, "alter table people rename to humans")
+    execute_sql(db, "ALTER TABLE people RENAME COLUMN name TO full_name")
+    assert execute_sql(db, "SELECT full_name FROM people") == [{"full_name": "Ada"}]
+
+
+def test_cli_table_rename(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    assert main(["init"]) == 0
+    assert main(["table", "create", "pets", "name:text"]) == 0
+    assert main(["table", "rename", "pets", "animals"]) == 0
+    assert "renamed pets -> animals" in capsys.readouterr().out
+    assert main(["sql", "ALTER TABLE animals RENAME TO x"]) == 1
+    assert "life table rename" in capsys.readouterr().err
+    assert main(["sql", "SELECT count(*) AS n FROM animals"]) == 0

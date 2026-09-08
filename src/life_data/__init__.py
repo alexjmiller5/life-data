@@ -21,6 +21,7 @@ TICK_SECONDS = 1  # how often `life watch` checks for local changes
 
 NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 DDL_KEYWORDS = {"CREATE", "ALTER", "DROP"}
+RENAME_TABLE = re.compile(r"^\s*ALTER\s+TABLE\s+\S+\s+RENAME\s+TO\b", re.IGNORECASE)
 CHUNK = 200  # rows per upsert (one JSON parameter regardless of row width)
 DERIVE_CHUNK = 50  # max ids per /v1/derive call
 
@@ -77,6 +78,9 @@ def init(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as conn:
         conn.executescript(PLUMBING)
+        upgrade = catalog.has_catalog(conn)
+    if upgrade:  # an existing estate: engine tables this version added appear here
+        catalog.ensure_catalog(path)
     return path
 
 
@@ -91,6 +95,11 @@ def _first_word(sql: str) -> str:
 
 
 def execute_sql(path: Path, sql: str) -> list[dict]:
+    if RENAME_TABLE.match(sql):
+        raise ValueError(
+            "renaming a table through SQL leaves the catalog, provenance and history "
+            "pointing at the old name - use `life table rename OLD NEW`"
+        )
     if _first_word(sql) in READ_KEYWORDS:
         with connect(path) as conn:
             return [dict(r) for r in conn.execute(sql).fetchall()]
@@ -127,20 +136,29 @@ COLSPEC = re.compile(r"^(?P<col>\w+):(?P<type>\w+)(?P<req>!)?(?:\((?P<opts>[^)]*
 _STORAGE_TO_CATALOG_TYPE = {"REAL": "number", "INTEGER": "int"}
 
 
-def create_table(path: Path, name: str, columns: list[str]) -> None:
-    """Create a table plus a `catalog_properties` row per column.
-
-    Each column is `col:type[!][(a|b|c)]`: `type` is a catalog type (mapped
-    to its SQLite storage via `catalog.STORAGE`) or a raw SQLite type used
-    as-is; `!` marks the column required; `(a|b|c)` sets select/multi_select
-    options.
-    """
+def _parse_specs(columns: list[str]) -> list[dict]:
     specs = []
     for c in columns:
         m = COLSPEC.match(c)
         if not m:
             raise ValueError(f"bad column spec {c!r}; expected col:type[!][(a|b)]")
         specs.append(m.groupdict())
+    return specs
+
+
+def _trigger_ddl(name: str) -> str:
+    return f"""CREATE TRIGGER {qi(f"{name}_updated_at")} AFTER UPDATE ON {qi(name)} FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE {qi(name)} SET updated_at = ({NOW}) WHERE rowid = NEW.rowid;
+END"""
+
+
+def table_ddl(name: str, columns: list[str]) -> list[str]:
+    """The two statements a synced table is made of: CREATE TABLE with the sync
+    columns, and its updated_at trigger. One source, so every path that creates
+    a table logs byte-identical DDL."""
+    specs = _parse_specs(columns)
     user_cols = ",\n    ".join(
         f"{qi(s['col'])} {catalog.STORAGE.get(s['type'].lower(), s['type'].upper())}" for s in specs
     )
@@ -152,11 +170,19 @@ def create_table(path: Path, name: str, columns: list[str]) -> None:
     deleted_at TEXT,
     hub_at TEXT
 )"""
-    trigger = f"""CREATE TRIGGER {qi(f"{name}_updated_at")} AFTER UPDATE ON {qi(name)} FOR EACH ROW
-WHEN NEW.updated_at = OLD.updated_at
-BEGIN
-    UPDATE {qi(name)} SET updated_at = ({NOW}) WHERE rowid = NEW.rowid;
-END"""
+    return [ddl, _trigger_ddl(name)]
+
+
+def create_table(path: Path, name: str, columns: list[str]) -> None:
+    """Create a table plus a `catalog_properties` row per column.
+
+    Each column is `col:type[!][(a|b|c)]`: `type` is a catalog type (mapped
+    to its SQLite storage via `catalog.STORAGE`) or a raw SQLite type used
+    as-is; `!` marks the column required; `(a|b|c)` sets select/multi_select
+    options.
+    """
+    specs = _parse_specs(columns)
+    ddl, trigger = table_ddl(name, columns)
     execute_sql(path, ddl)
     execute_sql(path, trigger)
     if name in catalog.ENGINE_TABLES:
@@ -171,6 +197,33 @@ END"""
         if s["opts"] is not None:
             fields["options"] = [{"v": o.strip()} for o in s["opts"].split("|") if o.strip()]
         catalog.set_property(path, name, s["col"], **fields)
+
+
+def rename_table(path: Path, old: str, new: str) -> None:
+    """Rename a table and every reference to it - catalog rows, refs, rule SQL,
+    provenance, history - in one transaction, as logged DDL that replays to
+    the hub and every replica. The only sanctioned way to rename a table."""
+    qi(new)  # validates the identifier
+    if old in catalog.CATALOG_TABLES or old.startswith("_"):
+        raise ValueError(f"{old} is an engine table")
+
+    def run(conn):
+        if not catalog._table_exists(conn, old):
+            raise ValueError(f"no such table: {old}")
+        if catalog._table_exists(conn, new):
+            raise ValueError(f"table already exists: {new}")
+        for stmt in (
+            f"ALTER TABLE {qi(old)} RENAME TO {qi(new)}",
+            # SQLite rewrites the trigger body itself; the NAME must follow the
+            # convention too, or a later `life table create {old}` collides
+            f"DROP TRIGGER IF EXISTS {qi(f'{old}_updated_at')}",
+            _trigger_ddl(new),
+        ):
+            conn.execute(stmt)
+            conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (stmt,))
+        catalog.rename_refs(conn, old, new)
+
+    catalog.write(path, run, ddl=True)
 
 
 def dump_sql(path: Path) -> str:
@@ -502,13 +555,15 @@ def _set_state(path: Path, key: str, value: str) -> None:
         )
 
 
-def _already_applied(exc: Exception) -> bool:
+def _already_applied(exc: Exception, ddl: str = "") -> bool:
     """Replay is idempotent-by-skip: a CREATE that already exists, an ADD of a
-    column already there, or a RENAME of a column that is already gone (a fresh
+    column already there, a RENAME of a column that is already gone (a fresh
     replica creates engine tables in their current shape, then replays the log
-    that got them there)."""
+    that got them there), or a table RENAME whose source is already gone."""
     msg = str(exc).lower()
-    return "already exists" in msg or "duplicate column" in msg or "no such column" in msg
+    if "already exists" in msg or "duplicate column" in msg or "no such column" in msg:
+        return True
+    return "no such table" in msg and bool(RENAME_TABLE.match(ddl))
 
 
 def _user_tables(path: Path) -> list[str]:
@@ -529,7 +584,7 @@ def _apply_local_ddl(path: Path, entry: dict) -> None:
         try:
             conn.execute(entry["ddl"])
         except sqlite3.Error as exc:
-            if not _already_applied(exc):
+            if not _already_applied(exc, entry["ddl"]):
                 raise
         conn.execute(
             "INSERT INTO _schema_log (applied_at, ddl) VALUES (?, ?)",
@@ -727,6 +782,11 @@ def main(argv: list[str] | None = None) -> int:
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
     p_create.add_argument("name")
     p_create.add_argument("columns", nargs="+", metavar="name:type")
+    t_rename = t_sub.add_parser(
+        "rename", help="rename a table and every catalog/provenance/history reference to it"
+    )
+    t_rename.add_argument("old")
+    t_rename.add_argument("new")
     t_set = t_sub.add_parser("set", help="describe a table in the catalog")
     t_set.add_argument("name")
     for f in ("kind", "purpose", "id_semantics", "provenance", "owner", "consumers", "description"):
@@ -782,6 +842,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps({"rejected": [v.as_dict() for v in e.violations]}, indent=2), file=sys.stderr
         )
+        return 1
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
 
 
@@ -883,6 +946,9 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         if args.table_command == "create":
             create_table(path, args.name, args.columns)
             print(f"created table {args.name}")
+        elif args.table_command == "rename":
+            rename_table(path, args.old, args.new)
+            print(f"renamed {args.old} -> {args.new}")
         else:
             fields = {
                 k: v

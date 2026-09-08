@@ -88,7 +88,7 @@ export function validateRow(props, before, after, { inDerive = new Set(), refOk 
 }
 
 // provenance is engine-created but validated like a user table: clients write edges into it.
-const ENGINE_TABLES = new Set(["catalog_tables", "catalog_properties", "catalog_rules", "catalog_log"]);
+const ENGINE_TABLES = new Set(["catalog_tables", "catalog_properties", "catalog_rules", "catalog_log", "history"]);
 
 export async function sha256hex(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));

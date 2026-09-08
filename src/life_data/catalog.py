@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import re
+import socket
 import sqlite3
 import subprocess
 from dataclasses import dataclass
@@ -56,6 +57,18 @@ CATALOG_TABLES = {
         "enforce:integer",
     ],
     "catalog_log": ["tbl:text", "row_id:text", "action:text", "payload:text"],
+    # Every edit to every cataloged table, one row per changed cell, written in
+    # the same transaction as the edit. Updates only: an insert is already
+    # `created_at` plus the row, and a cell's first change records its original
+    # value in `old`, so updates alone reconstruct the full timeline.
+    "history": [
+        "tbl:text",
+        "row_id:text",
+        "col:text",
+        "old:text",
+        "new:text",
+        "origin:text",
+    ],
     # ONE table for every value's origin: hub derivations (rel=derived_from,
     # id `<to_kind>:<to_ref>:<field>`) and observation edges a client writes
     # (a text, an email, a photo backing a value; id
@@ -78,6 +91,23 @@ CATALOG_TABLES = {
 }
 ENGINE_TABLES = set(CATALOG_TABLES) - {"provenance"}
 
+# Sync columns that move on every write and say nothing a reader wants to replay.
+HISTORY_SKIP = {"updated_at", "hub_at"}
+
+HISTORY_PROPERTIES = {
+    "tbl": "The table the edited row lives in (follows the table through `life table rename`).",
+    "row_id": "The edited row's id.",
+    "col": "The column that changed. `deleted_at` going from null to a stamp is the row's soft delete.",
+    "old": "The cell's value before the edit, as SQLite rendered it (null for a cell that was empty).",
+    "new": "The cell's value after the edit.",
+    "origin": "Hostname of the machine that made the edit (a pulled row is never re-logged: the origin replica logged it).",
+}
+HISTORY_TABLE = {
+    "purpose": "Every edit to every cataloged user table (never provenance or the catalog itself), one row per changed cell, written in the same transaction as the edit - the answer to 'when did this become X'. Engine-written; never edit by hand.",
+    "id_semantics": "random; `created_at` IS the edit time (ISO-8601 UTC ms).",
+    "owner": "the engine (`catalog.write`)",
+}
+
 # The parts of the provenance contract the `col:type` spec cannot say.
 PROVENANCE_PROPERTIES = {
     "from_kind": {
@@ -88,7 +118,7 @@ PROVENANCE_PROPERTIES = {
         "description": "The source's own stable id (message GUID, mail id, photo UUID, archive key). For a derivation: the endpoint's _source_ref, else the inputs hash. Never a URL - links are derived from kind + ref.",
     },
     "to_kind": {
-        "options_sql": "SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 1) != '_' AND name NOT LIKE 'catalog!_%' ESCAPE '!' AND name NOT LIKE 'sqlite%' AND name != 'provenance'",
+        "options_sql": "SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 1) != '_' AND name NOT LIKE 'catalog!_%' ESCAPE '!' AND name NOT LIKE 'sqlite%' AND name NOT IN ('provenance', 'history')",
         "description": "The table of the row this is about (any user table; add an option for a kind that lives outside life-data).",
     },
     "to_ref": {"description": "The id of that row."},
@@ -146,6 +176,7 @@ STORAGE = {
     "phone": "TEXT",
 }
 RULE_KINDS = {"invariant", "doctrine", "audit"}
+ORIGIN = socket.gethostname()  # stamped on every history row this machine writes
 JSON_COLS = {"options", "inputs", "consumers"}
 
 
@@ -175,8 +206,22 @@ def has_catalog(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, "catalog_properties")
 
 
+_ensuring = False
+
+
 def ensure_catalog(path: Path) -> None:
     """Create the catalog tables through the logged-DDL path so they sync."""
+    global _ensuring
+    if _ensuring:
+        return  # the outer call is mid-bootstrap; its set_* writes re-enter here
+    _ensuring = True
+    try:
+        _ensure_catalog(path)
+    finally:
+        _ensuring = False
+
+
+def _ensure_catalog(path: Path) -> None:
     pkg = _pkg()
     with pkg.connect(path) as conn:
         missing = [t for t in CATALOG_TABLES if not _table_exists(conn, t)]
@@ -192,6 +237,17 @@ def ensure_catalog(path: Path) -> None:
             id_semantics="derivations: <to_kind>:<to_ref>:<field>; observation edges: <from_kind>:<from_ref>:<to_ref> - one edge per source/row pair, so re-running a pass is idempotent.",
             owner="the hub (derivations); scripts and agents (edges)",
         )
+    # keyed on the description row, not on `missing`: an estate that predates
+    # history gets the table lazily from the write path (see `write`) and its
+    # documentation here, on the next catalog op.
+    with pkg.connect(path) as conn:
+        documented = conn.execute(
+            "SELECT 1 FROM catalog_tables WHERE id = 'history' AND deleted_at IS NULL"
+        ).fetchone()
+    if not documented:
+        for col, description in HISTORY_PROPERTIES.items():
+            set_property(path, "history", col, description=description)
+        set_table(path, "history", **HISTORY_TABLE)
 
 
 def _parse(row: dict) -> dict:
@@ -576,6 +632,13 @@ def write(path: Path, fn, *, ddl: bool = False):
     try:
         tables = [t for t in _validated_tables(conn) if _table_exists(conn, t)]
         conn.execute("BEGIN")
+        if tables and not ddl and not _table_exists(conn, "history"):
+            # an estate cataloged before history existed: create it here, as
+            # logged DDL, so the first edit after an upgrade is not lost. Not
+            # on the DDL path, where fn may be ensure_catalog creating it.
+            for stmt in pkg.table_ddl("history", CATALOG_TABLES["history"]):
+                conn.execute(stmt)
+                conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (stmt,))
         t0 = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
         marks = {}
         for t in tables:
@@ -587,7 +650,7 @@ def write(path: Path, fn, *, ddl: bool = False):
             marks[t] = conn.execute(f"SELECT coalesce(max(rowid), 0) FROM {qi(t)}").fetchone()[0]
         try:
             result = fn(conn)
-            violations = _validate_changed(conn, marks, t0)
+            violations, changes = _validate_changed(conn, marks, t0)
             if ddl:
                 for rid in compile_all(conn):
                     violations.append(
@@ -605,14 +668,22 @@ def write(path: Path, fn, *, ddl: bool = False):
         if violations:
             conn.execute("ROLLBACK")
             raise ValidationError(violations)
+        if changes and _table_exists(conn, "history"):
+            conn.executemany(
+                "INSERT INTO history (tbl, row_id, col, old, new, origin) VALUES (?, ?, ?, ?, ?, ?)",
+                [(*c, ORIGIN) for c in changes],
+            )
         conn.execute("COMMIT")
         return result
     finally:
         conn.close()
 
 
-def _validate_changed(conn, marks, t0) -> list[Violation]:
+def _validate_changed(conn, marks, t0) -> tuple[list[Violation], list[tuple]]:
+    """Validate every changed row; also return the cell diffs of UPDATEd rows
+    as (tbl, row_id, col, old, new) - the history the write leaves behind."""
     out: list[Violation] = []
+    changes: list[tuple] = []
     for t, max_rowid in marks.items():
         if not _table_exists(conn, t):
             continue  # fn dropped it
@@ -628,7 +699,8 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
             r[1] for r in conn.execute(f"PRAGMA temp.table_info({qi(f'_before_{t}')})").fetchall()
         ]
         live = {r[1] for r in conn.execute(f"PRAGMA table_info({qi(t)})").fetchall()}
-        shared = [qi(c) for c in snap[1:] if c in live]
+        shared_names = [c for c in snap[1:] if c in live]
+        shared = [qi(c) for c in shared_names]
         rows = conn.execute(
             f"SELECT * FROM {qi(t)} WHERE rowid > ? OR rowid IN (SELECT _rowid FROM "
             f"(SELECT {', '.join(['rowid AS _rowid'] + shared)} FROM {qi(t)} "
@@ -644,6 +716,14 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
             before = dict(b) if b else None
             if before:
                 before.pop("_rowid", None)
+            if before and t not in CATALOG_TABLES:  # user data only, never provenance
+                changes += [
+                    (t, after["id"], c, before[c], after[c])
+                    for c in shared_names
+                    if c not in HISTORY_SKIP and before[c] != after[c]
+                ]
+            if after.get("deleted_at"):
+                continue  # a tombstone's values are history, not a claim to check
             out += validate_row(
                 props,
                 before,
@@ -658,7 +738,74 @@ def _validate_changed(conn, marks, t0) -> list[Violation]:
             hits = run_invariant(conn, rule, changed_ids=changed_ids, now=t0)
             for h in hits:
                 out.append(Violation(t, h.get("id"), rule.get("col"), rule["id"], rule["text"]))
-    return out
+    return out, changes
+
+
+# --- rename -------------------------------------------------------------------
+
+
+def _rekey(conn, table: str, old_id: str, new_id: str, **changes) -> None:
+    """Move a row to a new id the sync-safe way: insert the copy, soft-delete
+    the original (an in-place id change would leave the hub's copy alive and
+    pull it straight back)."""
+    row = dict(conn.execute(f"SELECT * FROM {qi(table)} WHERE id = ?", (old_id,)).fetchone())
+    row.update(changes, id=new_id, hub_at=None)
+    row.pop("updated_at")  # fresh stamp: the copy must be newer than the push cursor
+    cols = list(row)
+    conn.execute(
+        f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "
+        f"VALUES ({', '.join('?' for _ in cols)})",
+        list(row.values()),
+    )
+    conn.execute(f"UPDATE {qi(table)} SET deleted_at = updated_at WHERE id = ?", (old_id,))
+
+
+def rename_refs(conn, old: str, new: str) -> None:
+    """Point every catalog, provenance and history reference at the new name.
+    Runs inside the rename's transaction; the caller has already renamed the
+    table itself."""
+    # ponytail: rule/options SQL is rewritten by word boundary; the DDL
+    # recompile in `write` rejects the rename if anything still fails to compile
+    word = re.compile(rf"\b{re.escape(old)}\b")
+    for p in conn.execute(
+        "SELECT id, col FROM catalog_properties WHERE tbl = ? AND deleted_at IS NULL", (old,)
+    ).fetchall():
+        _rekey(conn, "catalog_properties", p["id"], f"{new}.{p['col']}", tbl=new)
+    conn.execute(
+        "UPDATE catalog_properties SET ref_table = ? WHERE ref_table = ? AND deleted_at IS NULL",
+        (new, old),
+    )
+    for p in conn.execute(
+        "SELECT id, options_sql FROM catalog_properties WHERE options_sql IS NOT NULL AND deleted_at IS NULL"
+    ).fetchall():
+        conn.execute(
+            "UPDATE catalog_properties SET options_sql = ? WHERE id = ?",
+            (word.sub(new, p["options_sql"]), p["id"]),
+        )
+    if conn.execute("SELECT 1 FROM catalog_tables WHERE id = ?", (old,)).fetchone():
+        _rekey(conn, "catalog_tables", old, new)
+    conn.execute(
+        "UPDATE catalog_rules SET tbl = ? WHERE tbl = ? AND deleted_at IS NULL", (new, old)
+    )
+    for r in conn.execute(
+        "SELECT id, sql FROM catalog_rules WHERE sql IS NOT NULL AND deleted_at IS NULL"
+    ).fetchall():
+        conn.execute(
+            "UPDATE catalog_rules SET sql = ? WHERE id = ?", (word.sub(new, r["sql"]), r["id"])
+        )
+    if _table_exists(conn, "provenance"):
+        # derivation ids embed the table (`<to_kind>:<to_ref>:<field>`); edges do not
+        for r in conn.execute(
+            "SELECT id FROM provenance WHERE to_kind = ? AND rel = 'derived_from' "
+            "AND id LIKE ? AND deleted_at IS NULL",
+            (old, f"{old}:%"),
+        ).fetchall():
+            _rekey(conn, "provenance", r["id"], new + r["id"][len(old) :], to_kind=new)
+        conn.execute(
+            "UPDATE provenance SET to_kind = ? WHERE to_kind = ? AND deleted_at IS NULL", (new, old)
+        )
+    if _table_exists(conn, "history"):
+        conn.execute("UPDATE history SET tbl = ? WHERE tbl = ?", (new, old))
 
 
 # --- invariants --------------------------------------------------------------

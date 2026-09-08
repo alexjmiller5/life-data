@@ -13,6 +13,7 @@ import { ident, qident, sha256hex, validatePush } from "./validate.js";
 const SWEEP_CRON = "*/15 * * * *";
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+const RENAME_TABLE = /^\s*ALTER\s+TABLE\s+\S+\s+RENAME\s+TO\b/i;
 
 const PLUMBING = [
   `CREATE TABLE IF NOT EXISTS _schema_log (
@@ -192,8 +193,10 @@ const ROUTES = {
       } catch (e) {
         const msg = String(e).toLowerCase();
         // replay is idempotent-by-skip for DDL the hub already has: a CREATE that
-        // exists, an ADD of a column it has, a RENAME of a column already gone
-        if (!msg.includes("already exists") && !msg.includes("duplicate column") && !msg.includes("no such column")) throw e;
+        // exists, an ADD of a column it has, a RENAME of a column already gone, a
+        // table RENAME whose source is already gone
+        const renamedAway = msg.includes("no such table") && RENAME_TABLE.test(entry.ddl);
+        if (!msg.includes("already exists") && !msg.includes("duplicate column") && !msg.includes("no such column") && !renamedAway) throw e;
       }
       await db
         .prepare("INSERT INTO _schema_log (applied_at, ddl) VALUES (?, ?)")
