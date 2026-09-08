@@ -964,3 +964,23 @@ def test_every_derivation_is_an_allowed_from_kind(db):
         insert_rows(db, "provenance", [bad])
     set_property(db, "movies", "title", type="text", derived_by="http:tmdb", inputs=["id"])
     insert_rows(db, "provenance", [bad])
+
+
+def test_set_property_defaults_type_to_text_on_create(db):
+    set_property(db, "places", "id", immutable=1)
+    set_property(db, "places", "id", description="Google place_id")  # an update never resets type
+    with connect(db) as conn:
+        assert properties(conn, "places")[0]["type"] == "text"
+        assert "| id | text |  | immutable | Google place_id |" in doc(conn)
+
+
+def test_cli_table_set_consumers_accepts_json_or_comma_list(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    from life_data import main
+
+    main(["init"])
+    capsys.readouterr()  # drop init's path line
+    main(["table", "set", "pets", "--consumers", '["a", "b"]'])
+    assert json.loads(capsys.readouterr().out)["consumers"] == ["a", "b"]
+    main(["table", "set", "pets", "--consumers", "a, b"])
+    assert json.loads(capsys.readouterr().out)["consumers"] == ["a", "b"]

@@ -252,6 +252,8 @@ def _upsert(path: Path, table: str, row_id: str, fields: dict) -> dict:
                 [*enc.values(), row_id],
             )
         else:
+            if table == "catalog_properties":
+                enc.setdefault("type", "text")  # a bare `--immutable 1` still yields a typed column
             cols = ["id", *enc]
             conn.execute(
                 f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "

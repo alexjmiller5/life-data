@@ -900,7 +900,10 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
                 and v is not None
             }
             if "consumers" in fields:
-                fields["consumers"] = [s.strip() for s in fields["consumers"].split(",")]
+                raw = fields["consumers"].strip()
+                fields["consumers"] = (
+                    json.loads(raw) if raw.startswith("[") else [s.strip() for s in raw.split(",")]
+                )
             print(json.dumps(catalog.set_table(path, args.name, **fields), indent=2))
     elif args.command == "property":
         if args.property_command == "set":
