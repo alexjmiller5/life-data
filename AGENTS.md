@@ -133,6 +133,17 @@ CLI.
   `to_kind`) and validated like a user table on both sides. Schema replay
   also skips `no such column` (a RENAME COLUMN a fresh replica's
   current-shape engine table never had).
+- **`with connect(...)` CLOSES the connection** (`_Connection.__exit__`).
+  The stdlib context manager only commits, and a sqlite3 connection sits in a
+  reference cycle, so an un-closed one holds `life.db`/`-wal`/`-shm` until
+  the cyclic GC runs; a sync opens hundreds, and launchd caps a daemon at
+  256 files. Never hold a connection past its `with` block.
+- **The watch daemon never exits on a failure it can wait out.** The wrapper
+  retries the credential command in-process with backoff (60s doubling to
+  1h) and `watch()` logs and continues on ANY sync exception, because a
+  launchd restart (`ThrottleInterval = 30`) re-runs the credential command,
+  and a secret manager's request budget is finite - two machines crash-
+  looping every 30s exhausted a 1000/day budget by themselves.
 - `just test` runs pytest AND `bun test` in `worker/`.
 
 ## Sync internals

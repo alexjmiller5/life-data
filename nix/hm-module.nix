@@ -22,7 +22,15 @@ let
     name = "life-data-watch";
     runtimeInputs = [ cfg.package ] ++ cfg.watch.packages;
     text = ''
-      LIFE_HUB_TOKEN="$(${cfg.watch.tokenCommand})"
+      # The credential command is retried IN-PROCESS with backoff: exiting
+      # would make launchd restart us in seconds, and every restart spends
+      # another request against a finite secret-manager budget.
+      delay=60
+      until LIFE_HUB_TOKEN="$(${cfg.watch.tokenCommand})" && [ -n "$LIFE_HUB_TOKEN" ]; do
+        echo "token command failed; retrying in ''${delay}s" >&2
+        sleep "$delay"
+        delay=$(( delay < 3600 ? delay * 2 : 3600 ))
+      done
       export LIFE_HUB_TOKEN
       life init >/dev/null
       exec life watch
@@ -68,8 +76,9 @@ in
         default = null;
         example = ''TOKEN_ENV="$(cat /path/to/session)" fetch-secret hub-token'';
         description = ''
-          Credential command for the DAEMON, evaluated once at startup and
-          exported as LIFE_HUB_TOKEN. Must be self-sufficient: background
+          Credential command for the DAEMON, run at startup (retried in-process
+          with backoff until it succeeds) and exported as LIFE_HUB_TOKEN. Must
+          be self-sufficient: background
           agents start with no login-shell environment, so include any
           environment its own tooling needs inline.
         '';

@@ -66,8 +66,21 @@ def qi(name: str) -> str:
     return f'"{name}"'
 
 
+class _Connection(sqlite3.Connection):
+    """`with connect(...)` closes on exit. The stdlib context manager only
+    commits/rolls back, and a connection sits in a reference cycle, so an
+    un-closed one holds its files until the cyclic GC gets around to it - a
+    daemon under launchd's 256-file cap ran out mid-sync."""
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            self.close()
+
+
 def connect(path: Path, manual_tx: bool = False) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, isolation_level=None if manual_tx else "")
+    conn = sqlite3.connect(path, isolation_level=None if manual_tx else "", factory=_Connection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -696,8 +709,10 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
                 stats = sync(path, hub)
                 if stats["pushed"] or stats["pulled"] or stats["ddl_applied"]:
                     print(json.dumps(stats), flush=True)
-            except RuntimeError as e:  # offline or hub down: keep watching
-                print(f"sync deferred: {e}", file=sys.stderr, flush=True)
+            except Exception as e:  # noqa: BLE001 - offline, hub down, or a local
+                # hiccup: keep watching. A launchd restart re-runs the credential
+                # command, and that budget is finite.
+                print(f"sync deferred: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             if changed:
                 try:
                     findings = catalog.check(path)

@@ -1108,3 +1108,37 @@ def test_cli_table_rename(monkeypatch, tmp_path, capsys):
     assert main(["sql", "ALTER TABLE animals RENAME TO x"]) == 1
     assert "life table rename" in capsys.readouterr().err
     assert main(["sql", "SELECT count(*) AS n FROM animals"]) == 0
+
+
+# --- daemon hygiene ---------------------------------------------------------
+
+
+def test_with_connect_closes_the_connection_under_a_small_fd_limit(db):
+    """sqlite3 connections sit in a reference cycle (statement cache), so an
+    un-closed one lives until the cyclic GC runs. launchd caps a daemon at
+    256 files; a sync opens far more connections than that, and the daemon
+    died with 'unable to open database file' thousands of times."""
+    import gc
+    import resource
+
+    _mk_people(db, ["Ada"])
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    gc.disable()
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (64, hard))
+        for _ in range(300):
+            execute_sql(db, "SELECT name FROM people")
+            db_version(db)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        gc.enable()
+
+
+def test_watch_survives_a_sync_crash(db, hub, monkeypatch, capsys):
+    def boom(path, hub):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr("life_data.sync", boom)
+    _mk_people(db, ["Ada"])
+    watch(db, hub, once=True)  # must not raise: a launchd restart costs a credential read
+    assert "sync deferred" in capsys.readouterr().err
