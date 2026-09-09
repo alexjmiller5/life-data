@@ -16,7 +16,7 @@ async function fresh(table = 'items') {
 const push = (db, rows, table = 'items') => ROUTES['/v1/rows/push']({ table, columns: [...new Set(rows.flatMap(Object.keys))], rows }, db);
 
 test('F1: a real local numeric edit retains only its original event on acceptance and replay', async () => {
-  const fixture = Bun.spawnSync(['python3','-B',`${import.meta.dir}/fixtures/numeric-history.py`], {
+  const fixture = Bun.spawnSync(['uv','run','--quiet','--project',`${import.meta.dir}/../..`,'python','-B',`${import.meta.dir}/fixtures/numeric-history.py`], {
     env:{...process.env,PYTHONPATH:`${import.meta.dir}/../../src`},
   });
   expect(fixture.stderr.toString()).toBe('');
