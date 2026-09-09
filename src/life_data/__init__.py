@@ -382,6 +382,16 @@ class LocalHub:
             )
             now = conn.execute(f"SELECT {NOW}").fetchone()[0]
             hub_at = now if stamping else ""
+            # Facts imported by an earlier row can still explain a later revision
+            # in this batch, but facts present before the batch cannot be reused.
+            has_history = catalog._table_exists(conn, "history")
+            remaining = [
+                e
+                for e in (history or [])
+                if not has_history
+                or not conn.execute("SELECT 1 FROM history WHERE id=?", (e.get("id"),)).fetchone()
+            ]
+            history_batch = {"events": remaining, "matched": {}}
             for row in rows:
                 if not catalog.valid_edit_timestamp(row.get("updated_at")):
                     rejected.append(
@@ -423,6 +433,18 @@ class LocalHub:
                             before_rows={row["id"]: dict(before) if before else None},
                             after_rows={row["id"]: actual},
                         )
+                        if (
+                            not catalog.valid_edit_timestamp(actual.get("updated_at"))
+                            or actual.get("updated_at") != row["updated_at"]
+                        ):
+                            violations.append(
+                                {
+                                    "id": row["id"],
+                                    "col": "updated_at",
+                                    "rule": "type",
+                                    "message": "Stored updated_at must match the canonical pushed timestamp.",
+                                }
+                            )
                         for rule in catalog.rules(conn, tbl=table, kind="invariant"):
                             if rule.get("enforce") and rule.get("tbl") == table:
                                 for hit in catalog.run_invariant(
@@ -440,7 +462,13 @@ class LocalHub:
                     if not violations:
                         try:
                             catalog.push_history(
-                                conn, table, row, dict(before) if before else None, events, now
+                                conn,
+                                table,
+                                row,
+                                dict(before) if before else None,
+                                events,
+                                now,
+                                history_batch,
                             )
                         except ValueError as exc:
                             violations.append(
@@ -738,26 +766,40 @@ def sync(path: Path, hub) -> dict:
     # gets hub_at > pull_cursor, so the next sync still sees it.
     pull_cursor = hub.cursor(tables)
 
-    # Snapshot original events before ANY pulls, even if a user table sorts
-    # before history. Attach them to the corresponding mutation transaction.
-    pending_history = (
-        execute_sql(path, f"SELECT * FROM history WHERE updated_at >= '{last_push}'")
-        if "history" in tables
-        else []
-    )
+    # One local read transaction captures rows, original events and the push
+    # cursor together. A local edit during network work belongs to next sync.
+    with connect(path) as snapshot:
+        snapshot.execute("BEGIN")
+        candidates, columns = {}, {}
+        push_cursor = ""
+        for table in tables:
+            columns[table] = [
+                r["name"] for r in snapshot.execute(f"PRAGMA table_info({qi(table)})")
+            ]
+            candidates[table] = [
+                dict(r)
+                for r in snapshot.execute(
+                    f"SELECT * FROM {qi(table)} WHERE updated_at > ?", (last_push,)
+                )
+            ]
+            top = snapshot.execute(f"SELECT max(updated_at) FROM {qi(table)}").fetchone()[0]
+            push_cursor = max(push_cursor, top or "")
+        pending_history = (
+            [
+                dict(r)
+                for r in snapshot.execute(
+                    "SELECT * FROM history WHERE updated_at >= ?", (last_push,)
+                )
+            ]
+            if "history" in tables
+            else []
+        )
     withheld = set()
     tables = [t for t in tables if t != "history"] + (["history"] if "history" in tables else [])
     pulled = pushed = 0
     rejected = []
     for table in tables:
-        cols = _columns(path, table)
-        # snapshot push candidates BEFORE applying the pull, so pulled rows
-        # are never echoed straight back at the hub
-        mine = execute_sql(
-            path,
-            f"SELECT {', '.join(qi(c) for c in cols)} FROM {qi(table)} "
-            f"WHERE updated_at > '{last_push}'",
-        )
+        cols, mine = columns[table], candidates[table]
         remote = hub.rows_pull(table, cols, last_pull)
         if remote:
             # `pulled` counts rows the LWW upsert actually APPLIED, not rows
@@ -782,7 +824,7 @@ def sync(path: Path, hub) -> dict:
 
     _set_state(path, "last_pull", pull_cursor)
     if not rejected:
-        _set_state(path, "last_push", _local_cursor(path, tables))
+        _set_state(path, "last_push", push_cursor)
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 

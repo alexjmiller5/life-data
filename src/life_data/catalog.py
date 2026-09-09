@@ -1074,7 +1074,39 @@ def history_trail(events, old, new) -> bool:
     return len(seen) == len(neighbors)
 
 
-def push_history(conn, table, row, before, events, now):
+def _history_segments(events, transitions):
+    """Match ordered edits to disjoint paths, revisiting ambiguous earlier choices."""
+    if len(transitions) == 1 and history_trail(events, *transitions[0]):
+        return True
+    edges = {}
+    for event in events:
+        edges.setdefault(event["old"], []).append(event)
+    start = transitions[0][0]
+    todo = [(0, start, frozenset(), frozenset({start}))]
+    # ponytail: cap ambiguous search at 10,000 states, then reconcile conservatively;
+    # larger ambiguous batches would need a more efficient path matcher.
+    budget = 10_000
+    while todo and budget:
+        step, value, used, visited = todo.pop()
+        target = transitions[step][1]
+        if value == target:
+            if step + 1 == len(transitions):
+                return True
+            start = transitions[step + 1][0]
+            todo.append((step + 1, start, used, frozenset({start})))
+            budget -= 1
+            continue
+        # Prefer direct events before considering a coalesced path.
+        for event in sorted(edges.get(value, []), key=lambda e: e["new"] == target):
+            if event["id"] not in used and event["new"] not in visited:
+                if not budget:
+                    return False
+                todo.append((step, event["new"], used | {event["id"]}, visited | {event["new"]}))
+                budget -= 1
+    return False
+
+
+def push_history(conn, table, row, before, events, now, batch=None):
     """Import original facts by ID and log only the unexplained hub transition."""
     if table in CATALOG_TABLES:
         if events:
@@ -1111,12 +1143,17 @@ def push_history(conn, table, row, before, events, now):
         else:
             unseen.append(event)
             seen[event["id"]] = event
+    available = unseen if batch is None else batch["events"]
     for col in changed:
         old, new = [
             conn.execute("SELECT CAST(? AS TEXT)", (r[col],)).fetchone()[0] for r in (before, after)
         ]
-        related = [e for e in unseen if e["col"] == col]
-        if history_trail(related, old, new):
+        related = [e for e in available if e.get("row_id") == row["id"] and e.get("col") == col]
+        key = (row["id"], col)
+        transitions = (batch["matched"].get(key, []) if batch is not None else []) + [(old, new)]
+        if _history_segments(related, transitions):
+            if batch is not None:
+                batch["matched"][key] = transitions
             continue
         conn.execute(
             "INSERT INTO history (tbl,row_id,col,old,new,origin,created_at,updated_at,hub_at) "

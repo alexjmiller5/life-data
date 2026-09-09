@@ -1,5 +1,7 @@
 """Hub boundary regressions using only isolated, synthetic stores."""
 
+from itertools import pairwise
+
 import pytest
 
 from life_data import LocalHub, catalog, connect, create_table, execute_sql, init, sync
@@ -225,3 +227,155 @@ def test_invalid_history_id_reuse_rolls_back_row_and_does_not_rewrite_events(hub
     assert out["rejected"][0]["rule"] == "history"
     assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "B"}]
     assert execute_sql(hub.path, "SELECT old,new FROM history") == [{"old": "A", "new": "B"}]
+
+
+@pytest.mark.parametrize(
+    ("values", "revisions"),
+    [
+        ("ABC", "ABC"),
+        ("ABAB", "ABAB"),
+        ("ABCBC", "ABCBC"),
+        ("ABAC", "ABAC"),
+        ("DBACACBADCB", "DACACBCB"),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_I4_duplicate_revisions_share_original_history(hub, values, revisions, reverse):
+    push(hub, [{"id": "a", "name": values[0], "updated_at": T0}])
+    rows = [
+        {"id": "a", "name": name, "updated_at": f"2025-01-{i + 2:02}T00:00:00.000Z"}
+        for i, name in enumerate(revisions[1:])
+    ]
+    events = [event(f"e{i}", old, new) for i, (old, new) in enumerate(pairwise(values))]
+    if reverse:
+        events.reverse()  # Tied event stamps and random IDs do not establish edit order.
+    out = hub.rows_push("items", ["id", "name", "updated_at"], rows, history=events)
+    assert out["upserted"] == len(rows)
+    assert not out["rejected"]
+    assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": values[-1]}]
+    assert execute_sql(hub.path, "SELECT id FROM history ORDER BY id") == [
+        {"id": f"e{i}"} for i in range(len(events))
+    ]
+    assert not hub.rows_push("items", ["id", "name", "updated_at"], rows, history=events)[
+        "rejected"
+    ]
+    assert len(execute_sql(hub.path, "SELECT * FROM history")) == len(events)
+
+
+def test_I4_sparse_revisions_preserve_null_clearing_and_originals(hub):
+    push(hub, [{"id": "a", "name": "A", "qty": 1, "updated_at": T0}])
+    rows = [{"id": "a", "qty": None, "updated_at": T1}, {"id": "a", "qty": 2, "updated_at": T2}]
+    events = [
+        {**event("e1", "1", None), "col": "qty"},
+        {**event("e2", None, "2"), "col": "qty"},
+    ]
+    out = hub.rows_push("items", ["id", "qty", "updated_at"], rows, history=events)
+    assert out["upserted"] == 2 and not out["rejected"]
+    assert execute_sql(hub.path, "SELECT name,qty FROM items") == [{"name": "A", "qty": 2}]
+    assert execute_sql(hub.path, "SELECT id,old,new FROM history ORDER BY id") == [
+        {"id": "e1", "old": "1", "new": None},
+        {"id": "e2", "old": None, "new": "2"},
+    ]
+
+
+def test_I4_one_original_cannot_explain_two_distinct_updates(hub):
+    push(hub, [{"id": "a", "name": "A", "updated_at": T0}])
+    rows = [
+        {"id": "a", "name": name, "updated_at": f"2025-01-0{i + 2}T00:00:00.000Z"}
+        for i, name in enumerate("BAB")
+    ]
+    out = hub.rows_push("items", list(rows[0]), rows, history=[event("e1", "A", "B")])
+    assert out["upserted"] == 3 and not out["rejected"]
+    records = execute_sql(hub.path, "SELECT id,old,new FROM history")
+    assert {"id": "e1", "old": "A", "new": "B"} in records
+    assert [(r["old"], r["new"]) for r in records if r["id"] != "e1"] == [("B", "A"), ("A", "B")]
+
+
+def test_I5_sync_snapshots_rows_and_events_together(hub, tmp_path, monkeypatch):
+    replica = init(tmp_path / "replica.db")
+    push(hub, [{"id": "a", "name": "A", "updated_at": T0}])
+    sync(replica, hub)
+    original = hub.rows_pull
+    edited = False
+
+    def pull(table, columns, since):
+        nonlocal edited
+        if not edited:
+            edited = True
+            execute_sql(replica, "UPDATE items SET name='B' WHERE id='a'")
+        return original(table, columns, since)
+
+    with monkeypatch.context() as m:
+        m.setattr(hub, "rows_pull", pull)
+        assert not sync(replica, hub)["rejected"]
+    assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "A"}]
+    assert execute_sql(hub.path, "SELECT * FROM history") == []
+    assert not sync(replica, hub)["rejected"]
+    assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "B"}]
+    assert execute_sql(hub.path, "SELECT old,new FROM history") == [{"old": "A", "new": "B"}]
+    assert execute_sql(hub.path, "SELECT id FROM history") == execute_sql(
+        replica, "SELECT id FROM history"
+    )
+
+
+def test_I5_local_write_between_snapshot_reads_is_deferred(hub, tmp_path, monkeypatch):
+    import life_data
+
+    replica = init(tmp_path / "replica.db")
+    push(hub, [{"id": "a", "name": "A", "updated_at": T0}])
+    sync(replica, hub)
+    edited = False
+
+    def interleave(sql):
+        nonlocal edited
+        if not edited and sql.startswith('SELECT * FROM "items" WHERE updated_at >'):
+            edited = True
+            execute_sql(replica, "UPDATE items SET name='B' WHERE id='a'")
+
+    def traced_connect(path, manual_tx=False):
+        conn = connect(path, manual_tx)
+        if path == replica:
+            conn.set_trace_callback(interleave)
+        return conn
+
+    with monkeypatch.context() as m:
+        m.setattr(life_data, "connect", traced_connect)
+        assert not sync(replica, hub)["rejected"]
+    assert edited
+    assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "A"}]
+    assert execute_sql(hub.path, "SELECT * FROM history") == []
+    assert not sync(replica, hub)["rejected"]
+    assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "B"}]
+    assert execute_sql(hub.path, "SELECT old,new FROM history") == [{"old": "A", "new": "B"}]
+    assert execute_sql(hub.path, "SELECT id FROM history") == execute_sql(
+        replica, "SELECT id FROM history"
+    )
+
+
+@pytest.mark.parametrize("actual", ["invalid", T2, None])
+@pytest.mark.parametrize("operation", ["INSERT", "UPDATE"])
+def test_I9_actual_uncataloged_timestamp_must_match_approved_edit(hub, actual, operation):
+    with connect(hub.path) as c:
+        c.execute("CREATE TABLE raw (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT)")
+        if operation == "UPDATE":
+            c.execute("INSERT INTO raw VALUES ('a', 'A', ?)", (T0,))
+        stamp = "NULL" if actual is None else f"'{actual}'"
+        c.execute(
+            f"CREATE TRIGGER corrupt_stamp AFTER {operation} ON raw WHEN NEW.id='a' "
+            f"BEGIN UPDATE raw SET updated_at={stamp} WHERE id=NEW.id; END"
+        )
+    rows = [
+        {"id": "a", "name": "B", "updated_at": T1},
+        {"id": "b", "name": "valid", "updated_at": T1},
+    ]
+    out = hub.rows_push(
+        "raw", list(rows[0]), rows, history=[{**event("e1", "A", "B"), "tbl": "raw"}]
+    )
+    assert out["upserted"] == 1
+    assert out["rejected"][0]["id"] == "a"
+    assert out["rejected"][0]["col"] == "updated_at"
+    expected = ([{"id": "a", "name": "A", "updated_at": T0}] if operation == "UPDATE" else []) + [
+        rows[1]
+    ]
+    assert execute_sql(hub.path, "SELECT * FROM raw ORDER BY id") == expected
+    assert execute_sql(hub.path, "SELECT * FROM history") == []
