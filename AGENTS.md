@@ -343,3 +343,20 @@ Credentials, two layers:
   (`qxri5llxvud5dq7l3727pfchxe`; read-only, = the Worker's `R2_SQL_TOKEN`
   secret). The claude-code SA cannot read project vaults - agents needing
   these use the op-temp-sa flow or desktop auth (see 1password skill).
+
+## File service
+
+`PUT/GET/HEAD /v1/files/<key>` serves retained originals through the hub's
+ARCHIVE binding. Prefix scopes `files:read:<prefix>/` and
+`files:write:<prefix>/` are independent and match canonical decoded keys.
+The same checks protect the legacy `/v1/archive/<key>` read route;
+`tables:read` never grants object access. Full/admin retain archive access.
+Reject encoded separators, double encoding, dot/empty segments and control
+characters before touching storage. Tests exercise real token creation,
+revocation and requests against an in-memory archive.
+
+Approved consumers: People Sync retains person/record photos and source
+profile snapshots through its scoped file token; Music Sync retains raw
+Spotify pulls through its scoped file token. They depend on this supported
+service contract only. Each consumer's operational recovery state stays in
+its own store; Life Data storage credentials never leave this service.

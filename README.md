@@ -165,3 +165,19 @@ There is no importer command by design: an agent (or you) maps any source
 into the generic primitives — `life table create`, then transform records to
 JSON and pipe them into `life insert <table>`. Use source record ids as row
 `id`s so re-imports stay idempotent and cross-source relations survive.
+
+### Files
+
+`PUT /v1/files/<key>` stores a binary body with its `Content-Type`.
+`GET` and `HEAD` on the same URL return the stored bytes or metadata (404
+for an absent key). URL-encode each key segment; empty segments, dot
+segments, encoded separators, control characters and percent signs in
+stored keys are rejected. Uploading an existing key replaces its contents.
+There is no file deletion or listing endpoint.
+
+Mint client tokens with literal, slash-terminated namespace scopes, for
+example `files:read:photos/client/,files:write:photos/client/`. Read and
+write grants are independent. A table scope grants no file access. The
+legacy `/v1/archive/<key>` read route uses the same file read grants;
+`full` and `admin` retain whole-archive access. Clients need only the hub
+URL and their scoped bearer token, never storage-provider credentials.
