@@ -60,7 +60,7 @@ function historySegments(events, transitions) {
   return false;
 }
 
-export async function historyPlan(view, db, table, rows, supplied = [], transitions = []) {
+export async function historyPlan(view, db, table, rows, supplied = [], transitions = [], upsertSql = null) {
   if (ENGINE.has(table)) return null;
   const ids = new Set(rows.map(r=>r.id));
   const events = supplied.filter(e=>ids.has(e.row_id));
@@ -86,28 +86,47 @@ export async function historyPlan(view, db, table, rows, supplied = [], transiti
     } else { unseen.push(e); stored.set(e.id,e); }
   }
   const summaries = [], matched = new Map();
-  const cellText = (row,c) => {
-    const v = row[c];
-    if (v == null) return null;
-    if (typeof v === 'number' && Number.isInteger(v) && /REAL|FLOA|DOUB/i.test(schema.find(x=>x.name===c).type)) return v.toFixed(1);
-    return String(v);
-  };
-  for (const {before, after} of transitions) {
-    if (!before) continue;
-    for (const c of cols.filter(c=>!['updated_at','hub_at'].includes(c))) {
-      const old = cellText(before,c), value = cellText(after,c);
-      if (old === value) continue;
-      const related = unseen.filter(e=>e.row_id===after.id && e.col===c);
-      if (!related.length) continue;
-      const key = JSON.stringify([after.id,c]);
-      const sequence = [...(matched.get(key) ?? []),[old,value]];
-      const valid = historySegments(related,sequence);
-      if (valid) matched.set(key,sequence);
-      summaries.push({row_id:after.id,col:c,updated_at:after.updated_at,old,new:value,valid});
-    }
+  const changes = unseen.length && transitions.length
+    ? await storedTransitions(db,table,schema,rows,upsertSql) : [];
+  for (const change of changes) {
+    const related = unseen.filter(e=>e.row_id===change.row_id && e.col===change.col);
+    if (!related.length) continue;
+    const key = JSON.stringify([change.row_id,change.col]);
+    const sequence = [...(matched.get(key) ?? []),[change.old,change.new]];
+    const valid = historySegments(related,sequence);
+    if (valid) matched.set(key,sequence);
+    summaries.push({...change,valid});
   }
   const histCols = exists ? (await db.prepare('PRAGMA table_info(history)').all()).results.map(c=>c.name) : [...FIELDS,'deleted_at','hub_at'];
   return {cols, unseen, summaries, exists, stamp:histCols.includes('hub_at')};
+}
+
+// Let SQLite apply column affinity and render OLD/NEW, using the same upsert
+// as the real write. Copy stored cells directly: a JS round trip loses storage
+// types (and integer precision). Helpers are created/dropped in one batch;
+// existing read guards and final receipt comparisons still protect the commit.
+async function storedTransitions(db, table, schema, rows, upsertSql) {
+  const key = '_life_write_' + crypto.randomUUID().replaceAll('-', '');
+  const copy = qident(key), changes = qident(key + '_changes');
+  const cols = schema.map(c=>qident(c.name)).join(',');
+  const statements = [
+    db.prepare(`CREATE TABLE ${copy} (${schema.map(c=>`${qident(c.name)} ${literal(c.type)}`).join(',')}, PRIMARY KEY(id))`),
+    db.prepare(`INSERT INTO ${copy} (${cols}) SELECT ${cols} FROM ${qident(table)} WHERE id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`).bind(JSON.stringify(rows)),
+    db.prepare(`CREATE TABLE ${changes} (row_id TEXT, col TEXT, updated_at TEXT, old TEXT, new TEXT)`),
+    db.prepare(`CREATE TRIGGER ${qident(key + '_capture')} AFTER UPDATE ON ${copy} BEGIN ${schema.filter(c=>!['updated_at','hub_at'].includes(c.name)).map(c=>
+      `INSERT INTO ${changes} SELECT NEW.id,${literal(c.name)},NEW.updated_at,CAST(OLD.${qident(c.name)} AS TEXT),CAST(NEW.${qident(c.name)} AS TEXT) WHERE OLD.${qident(c.name)} IS NOT NEW.${qident(c.name)};`
+    ).join('\n')} END`),
+  ];
+  const groups = [];
+  for (const row of rows) {
+    const cols = Object.keys(row), last = groups.at(-1);
+    if (last && last.cols.join(',')===cols.join(',')) last.rows.push(row);
+    else groups.push({cols,rows:[row]});
+  }
+  for (const {cols,rows} of groups) statements.push(db.prepare(upsertSql(key,cols)).bind(JSON.stringify(rows)));
+  const result = statements.length;
+  statements.push(db.prepare(`SELECT * FROM ${changes} ORDER BY rowid`), db.prepare(`DROP TABLE ${copy}`), db.prepare(`DROP TABLE ${changes}`));
+  return (await db.batch(statements))[result].results;
 }
 
 export function historyStatements(db, table, key, plan, now) {

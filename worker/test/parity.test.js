@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { D1Shim } from './d1shim.js';
 import { ROUTES } from '../src/index.js';
+import { queryBudget } from '../src/write.js';
 
 const T0 = '2025-01-01T00:00:00.000Z', T1 = '2025-01-02T00:00:00.000Z', T2 = '2025-01-03T00:00:00.000Z';
 async function fresh(table = 'items') {
@@ -13,6 +14,91 @@ async function fresh(table = 'items') {
   return db;
 }
 const push = (db, rows, table = 'items') => ROUTES['/v1/rows/push']({ table, columns: [...new Set(rows.flatMap(Object.keys))], rows }, db);
+
+test('F1: a real local numeric edit retains only its original event on acceptance and replay', async () => {
+  const fixture = Bun.spawnSync(['python3','-B',`${import.meta.dir}/fixtures/numeric-history.py`], {
+    env:{...process.env,PYTHONPATH:`${import.meta.dir}/../../src`},
+  });
+  expect(fixture.stderr.toString()).toBe('');
+  expect(fixture.exitCode).toBe(0);
+  const {body,results} = JSON.parse(fixture.stdout.toString());
+  const original = body.history[0];
+  const receipt = [{id:original.id,old:'1.0e-07',new:'2.0e-07',origin:'replica'}];
+  const db = new D1Shim();
+  db.db.exec(`CREATE TABLE items (id TEXT PRIMARY KEY, qty REAL, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+    CREATE TABLE history (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, old TEXT, new TEXT, origin TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT);`);
+  db.db.query('INSERT INTO items(id,qty,updated_at) VALUES (?,?,?)').run('a',1e-7,T0);
+  for (let attempt=0; attempt<2; attempt++) {
+    const out = await ROUTES['/v1/rows/push'](body,db);
+    expect(out.upserted).toBe(1);
+    expect(out.rejected).toEqual([]);
+    const history = db.db.query('SELECT id,old,new,origin FROM history').all();
+    expect(history).toEqual(receipt);
+    expect({upserted:out.upserted,rejected:out.rejected,history}).toEqual(results[attempt]);
+    expect(db.db.query('SELECT qty FROM items').get().qty).toBe(2e-7);
+    expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+  }
+});
+
+for (const [type,initial,value] of [
+  ['REAL','1',2], ['REAL','-1e20',2e20], ['REAL','1.234567890123456',1.234567890123457],
+  ['INTEGER','1e-7',2e-7], ['NUMERIC','1.0',2], ['BLOB','4.0',5], ['REAL',"'not numeric'",1e-7],
+]) test(`F1: native ${type} history ${initial} -> ${value}`, async () => {
+  const db = new D1Shim();
+  db.db.exec(`CREATE TABLE items(id TEXT PRIMARY KEY, qty ${type}, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+    INSERT INTO items(id,qty,updated_at) VALUES ('a',${initial},'${T0}');`);
+  const old = db.db.query('SELECT CAST(qty AS TEXT) AS v FROM items').get().v;
+  // Store the JSON payload exactly as the push does, then capture native text.
+  db.db.query('UPDATE items SET qty=json_extract(?,\'$.qty\')').run(JSON.stringify({qty:value}));
+  const next = db.db.query('SELECT CAST(qty AS TEXT) AS v FROM items').get().v;
+  db.db.exec(`UPDATE items SET qty=${initial}`);
+  const original = {...event('numeric-edit',old,next),col:'qty'};
+  const body = {table:'items',columns:['id','qty','updated_at'],rows:[{id:'a',qty:value,updated_at:T1}],history:[original]};
+  for (let attempt=0; attempt<2; attempt++) {
+    expect((await ROUTES['/v1/rows/push'](body,db)).rejected).toEqual([]);
+    expect(db.db.query('SELECT id,old,new,origin FROM history').all()).toEqual([{id:original.id,old,new:next,origin:'replica'}]);
+  }
+});
+
+for (const [stored,old] of [[3e-7,'1.0e-07'],[1e-7,'1e-7']]) test(`F1: numeric divergence is preserved for ${stored}/${old}`, async () => {
+  const db = new D1Shim();
+  db.db.exec('CREATE TABLE items(id TEXT PRIMARY KEY, qty REAL, updated_at TEXT, deleted_at TEXT, hub_at TEXT)');
+  db.db.query('INSERT INTO items(id,qty,updated_at) VALUES (?,?,?)').run('a',stored,T0);
+  const native = db.db.query('SELECT CAST(qty AS TEXT) AS old FROM items').get().old;
+  const original = {...event('numeric-edit',old,'2.0e-07'),col:'qty'};
+  const body = {table:'items',columns:['id','qty','updated_at'],rows:[{id:'a',qty:2e-7,updated_at:T1}],history:[original]};
+  for (let attempt=0; attempt<2; attempt++) {
+    expect((await ROUTES['/v1/rows/push'](body,db)).rejected).toEqual([]);
+    expect(db.db.query('SELECT id FROM history WHERE origin=\'replica\'').all()).toEqual([{id:original.id}]);
+    expect(db.db.query('SELECT old,new,origin FROM history WHERE origin<>\'replica\'').all()).toEqual([{old:native,new:'2.0e-07',origin:'hub:reconcile'}]);
+  }
+});
+
+test('F1: native history planning stays bulk and budget exhaustion leaves no writes or helpers', async () => {
+  const db = await fresh();
+  const rows = Array.from({length:500},(_,i)=>({id:String(i),name:'item',qty:1e-7,updated_at:T0}));
+  await push(db,rows);
+  const history = rows.map(r=>({...event(`numeric-${r.id}`,'1.0e-07','2.0e-07'),row_id:r.id,col:'qty'}));
+  const body = {table:'items',columns:Object.keys(rows[0]),rows:rows.map(r=>({...r,qty:2e-7,updated_at:T1})),history};
+  for (const limit of [12,20,35]) {
+    const out = await ROUTES['/v1/rows/push'](body,queryBudget(db,limit));
+    expect(out.upserted).toBe(0);
+    expect(out.rejected.length).toBe(500);
+    expect(out.rejected.every(r=>r.rule==='write-budget')).toBe(true);
+    expect(db.db.query('SELECT DISTINCT qty FROM items').all()).toEqual([{qty:1e-7}]);
+    expect(db.db.query('SELECT * FROM history').all()).toEqual([]);
+    expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+  }
+  const prepare = db.prepare.bind(db);
+  let count = 0;
+  db.prepare = sql => { count++; return prepare(sql); };
+  const out = await ROUTES['/v1/rows/push'](body,db);
+  expect(out.upserted).toBe(500);
+  expect(out.rejected).toEqual([]);
+  expect(count).toBeLessThan(75);
+  console.info(`500-row numeric history: accepted=${out.upserted} rejected=${out.rejected.length} statements=${count}`);
+  expect(db.db.query('SELECT id FROM history ORDER BY id').all()).toEqual(history.map(e=>({id:e.id})).sort((a,b)=>a.id.localeCompare(b.id)));
+});
 
 for (const stamp of ['', 'tomorrow', '2025-02-29T00:00:00.000Z', '2025-01-01T24:00:00.000Z', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00.000+00:00', 123, null]) {
   test(`protocol timestamp without a catalog: ${stamp}`, async () => {

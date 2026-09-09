@@ -197,7 +197,7 @@ async function pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history,
   if (!accepted.length) return {accepted,rejected};
   const rules=await enforcedRules(view,table);
   let log;
-  try { log=await historyPlan(view,db,table,accepted,history,transitions); }
+  try { log=await historyPlan(view,db,table,accepted,history,transitions,upsertSql); }
   catch (e) {
     if (!String(e).includes('life_history')) throw e;
     throw Object.assign(e,{accepted,rejected,failure:{col:null,rule:'history',message:String(e)}});
