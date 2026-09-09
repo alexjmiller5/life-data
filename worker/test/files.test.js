@@ -42,6 +42,7 @@ test("scoped client stores and reads exact binary bytes, metadata and missing ob
   expect(read.headers.get("Content-Type")).toBe("image/png");
   const head = await request(path, "HEAD");
   expect(head.headers.get("Content-Length")).toBe("4");
+  expect(head.headers.get("Cache-Control")).toContain("no-transform");
   expect(await head.text()).toBe("");
   expect((await request("/v1/files/photos/people/missing")).status).toBe(404);
 });
@@ -49,7 +50,7 @@ test("scoped client stores and reads exact binary bytes, metadata and missing ob
 test("prefix scopes cannot cross namespaces or bypass via legacy archive routes", async () => {
   const { request, objects } = await setup("tables:read,files:read:photos/people/,files:write:photos/people/");
   for (const method of ["PUT", "GET", "HEAD", "DELETE", "POST"]) {
-    for (const path of ["/v1/files/photos/records/a", "/v1/files/photos/people-other/a", "/v1/files/backups/a", "/v1/archive/backups/a"]) {
+    for (const path of ["/v1/files/photos/records/a", "/v1/files/photos/people-other/a", "/v1/files/backups/a", "/v1/archive/backups/a", "/v1/archive/query"]) {
       expect((await request(path, method, ["PUT", "POST"].includes(method) ? "x" : undefined)).status).toBe(403);
     }
   }

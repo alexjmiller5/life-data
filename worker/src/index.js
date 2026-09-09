@@ -120,7 +120,7 @@ function allowed(pathname, method, scopes) {
   if (scopes.includes("admin")) return true;
   if (pathname.startsWith("/v1/tokens/")) return false; // admin only
   if (pathname.startsWith("/v1/files/") ||
-      (pathname.startsWith("/v1/archive/") && pathname !== "/v1/archive/query")) {
+      (pathname.startsWith("/v1/archive/") && !(pathname === "/v1/archive/query" && method === "POST"))) {
     return scopes.includes("full") || fileAllowed(pathname, method, scopes);
   }
   if (pathname === "/v1/backup") return scopes.includes("full");
@@ -523,6 +523,7 @@ async function handleArchiveGet(request, env, url) {
     if (!head) return new Response(null, { status: 404 });
     const headers = new Headers();
     head.writeHttpMetadata(headers);
+    headers.set("Cache-Control", "private, no-store, no-transform");
     headers.set("Accept-Ranges", "bytes");
     headers.set("Content-Length", String(head.size));
     return new Response(null, { headers });
@@ -537,6 +538,7 @@ async function handleArchiveGet(request, env, url) {
   if (!obj) return json({ error: "not found" }, 404);
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "private, no-store, no-transform");
   headers.set("Accept-Ranges", "bytes");
   if (rangeHeader && obj.range) {
     const start = obj.range.offset ?? Math.max(0, obj.size - (obj.range.suffix ?? 0));
