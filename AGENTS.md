@@ -74,21 +74,31 @@ CLI.
   still rejected. Per-value checks (type/options/pattern/ref) judge only the
   columns the payload carries - a stored value is not this write's claim.
   `validateRow`'s `touched` option is what draws that line, and the shared
-  fixture covers both sides of it. The stored rows come from ONE chunked
-  `id IN (...)` query per push, never one per row. The local write path needs
-  none of this: it validates rows read back out of the table after the write,
-  which is already the merged row.
-  Both push implementations treat `columns` as the allowed write set and
-  project each row onto only its supplied keys before validation. Persistence
-  batches adjacent rows with identical keys, never filling omissions with NULL
-  or stored values; order and last-write-wins stay intact. Accepted SQL writes
-  run atomically across those batches. An explicit NULL still clears an optional
-  cell and is rejected for a required cell. Push validation checks properties
-  and derived provenance; enforced catalog invariants run on local writes,
-  not on the push route. Validation's read and the SQL write remain separate.
-  Every pushed row must supply non-null `updated_at` in its allowed payload;
-  missing, null or unlisted conflict timestamps cause per-row rejection before
-  persistence. SQLite defaults must never manufacture a pushed edit's timestamp.
+  fixture covers both sides of it.
+  The Worker resolves existing rows and references in bulk. LocalHub holds
+  BEGIN IMMEDIATE while validating, sparsely upserting, checking actual values,
+  running enforced invariants, and logging history, with a savepoint per row.
+  The Worker captures validation reads and asserts them unchanged inside its
+  D1 transaction. Ordinary triggers created and dropped in that batch check
+  actual NEW values and enforce invariants with OLD/NEW CTE contexts. INSERT
+  defaults are resolved once, validated, and stored explicitly. Physical column
+  affinity normalizes approved values. References/options_sql run at each
+  mutation to observe earlier accepted rows. Read assertions run before helper
+  DDL using SELECT CASE and SQLite integer overflow on mismatch. A failed
+  invariant rolls back the batch; ordered splitting isolates rejected rows and
+  revalidates duplicate IDs against earlier accepted state. Unexpected SQL
+  failures roll back the submitted batch and surface as errors.
+  Each pushed updated_at must be a real calendar timestamp in exact UTC
+  millisecond form, independently of the catalog. Missing, null, unlisted,
+  malformed, non-UTC or non-millisecond stamps reject per row. Stale/equal
+  revisions do not change values or generate new hub history.
+  Table writes/derivations require Workers Paid (1,000 D1 queries/invocation).
+  Pushes budget 750 SQL statements, background derivations another 200, and
+  direct/scheduled derivations share 900 across all nested callers, including
+  precommit reads. Exhaustion preserves committed progress and reports pending
+  work in failed; subsequent calls/sweeps resume. SQL text is bounded at D1's 100KB limit. Ordinary 500-row writes use bulk
+  upserts. Budget exhaustion is retryable per row; sync leaves its push cursor
+  unchanged whenever any row rejects.
 - **Checks are pure; producers may touch the world.** Invariant SQL is one
   SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
   now)`; `changed`/`before` are temp tables the engine provides). Audits run
@@ -111,19 +121,33 @@ CLI.
   path inside the upsert (`json_extract(value, '$.<col>')`) takes the RAW name:
   it is a JSON key, not SQL.
 - `catalog_*` and `provenance` sync before every other table.
-- **`history` is the engine's edit log**: `catalog.write` diffs every changed
-  row of every cataloged user table against its `temp._before_<t>` snapshot
-  and, after validation passes, inserts one row per changed cell (`tbl`,
-  `row_id`, `col`, `old`, `new`, `origin` = hostname; `created_at` is the edit
-  time). Updates only, never inserts; never `updated_at`/`hub_at`; never
-  provenance or the catalog (both are in `CATALOG_TABLES`). It is an engine
-  table (never validated, never snapshotted) that the write path creates
-  lazily as logged DDL on an estate that predates it - only on the non-DDL
-  path, because on the DDL path `fn` may be `ensure_catalog` creating it.
-  `ensure_catalog` documents it (keyed on its `catalog_tables` row, under a
-  reentrancy guard because those `set_*` calls re-enter it). Sync's pull
-  upsert bypasses `write`, so a pulled row is never re-logged: the origin
-  replica logged it. Hub derivations are covered by `provenance`, not history.
+- **`history` is the engine's edit log**: original random IDs identify cell
+  events. Local SQL writes, direct hub pushes and derivations log actual updates
+  transactionally. Inserts, noops, stale/replayed writes, catalog, provenance
+  and updated_at/hub_at churn generate no new hub events.
+  Sync attaches original local events through the optional `history` list on
+  rows/push. The hub validates and deduplicates these facts by ID, never
+  rewriting an existing event. A single-transition whole-trail check is linear.
+  Multiple revisions use bounded backtracking (10,000 generated states) to match
+  disjoint paths and revisit earlier choices, without ordering tied timestamps
+  or reusing an original for distinct updates. Proven no-match reconciles;
+  needing more search states rejects the WHOLE request as history-ambiguity,
+  retryable=true, with no values/history committed and an empty hub_at. Split
+  revisions into smaller requests to retry; sync keeps its push cursor unchanged.
+  History-bearing D1 failure isolation uses rollback-only prefix probes, then
+  commits accepted rows together. All probes count toward the same query budget;
+  their final named CHECK failure rolls back helpers, values and history.
+  A differing concurrent OLD preserves LWW and original events, plus
+  one `hub:reconcile` cell transition. Stale rows may import unseen originals.
+  Failed validation/invariants roll back both row and attached history.
+  Ordinary history-table sync remains as an ID-idempotent fallback for old
+  servers that ignore attachments. History sorts last, and events belonging
+  to rejected mutations are withheld. Old clients do not attach history, so a
+  new hub may log their transition before original random-ID events arrive;
+  legacy compatibility is explicitly best effort. Upgraded replicas supplying
+  originals receive the dedup guarantee; old or uninventoryed replicas can
+  duplicate aggregate/original history until upgraded. Never infer away or
+  delete original events, add client registries/gates, or require new endpoints.
 - **A soft-deleted row is never validated** (its cells are history, not a
   claim), but its cell changes are still logged.
 - **`rename_table` is the only table rename.** `execute_sql` refuses
@@ -175,7 +199,7 @@ State-based, never op-log. `sync(path, hub)`: `ensure_hub_at`, replay missing
 `_schema_log` DDL both ways (idempotent-by-skip on "already exists" /
 "duplicate column"), snapshot push candidates BEFORE applying the pull (else
 pulled rows echo straight back), pull then push, then advance the
-per-direction cursors in `_sync_state`.
+per-direction cursors in `_sync_state`; any rejection keeps last_push unchanged.
 
 **The two cursors measure different clocks.** `last_push` is local
 `updated_at`: which of our rows are new. `last_pull` is **`hub_at`, the
@@ -254,8 +278,9 @@ The hub POSTs `{tbl, id, inputs:{col: value}}` and writes back the response
 keys that are derived columns of that derivation (plus `_source_ref`);
 anything else is ignored. Output runs through `validateRow` first — a value
 failing its type/options/pattern is dropped and reported in `failed`, its
-siblings still land. A write is ONE `db.batch`: the value UPDATE plus a
-provenance upsert per column, so a replica pulls row and proof together.
+siblings still land. A write is ONE guarded `db.batch`: provenance, value UPDATE, enforced
+invariants and actual cell history commit together. Reads captured before the
+external request prevent a concurrent edit from receiving stale output.
 Runs three ways: after `/v1/rows/push` via `ctx.waitUntil` (never delays the
 response; a failure is retried by the sweep), on the 15-minute sweep
 (underived or `inputs_hash`-stale, 50 per property), and synchronously via

@@ -12,6 +12,7 @@ import socket
 import sqlite3
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 CATALOG_TABLES = {
@@ -613,7 +614,7 @@ def apply_defaults(conn: sqlite3.Connection, tbl: str, row: dict) -> dict:
 def _has_sync_cols(conn: sqlite3.Connection, tbl: str) -> bool:
     """The write path finds changed rows by `id` and `updated_at`; a table
     without them (raw `CREATE TABLE`) cannot be checked per row."""
-    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({qi(tbl)})").fetchall()}
+    cols = {r[1] for r in conn.execute(f"PRAGMA main.table_info({qi(tbl)})").fetchall()}
     return {"id", "updated_at"} <= cols
 
 
@@ -860,7 +861,8 @@ def _with_context(conn, sql, changed_ids, now, tbl):
         ph = ", ".join("?" for _ in ids) or "NULL"
         conn.execute("DROP TABLE IF EXISTS temp.changed")
         conn.execute(
-            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM {qi(tbl)} WHERE id IN ({ph})", ids
+            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM main.{qi(tbl)} WHERE id IN ({ph})",
+            ids,
         )
         conn.execute("DROP TABLE IF EXISTS temp.before")
         if _table_exists_temp(conn, f"_before_{tbl}"):
@@ -868,7 +870,7 @@ def _with_context(conn, sql, changed_ids, now, tbl):
             # _rowid bookkeeping column that would break shape-sensitive
             # queries (EXCEPT/UNION) against `changed`, which has tbl's shape
             cols = ", ".join(
-                qi(r[1]) for r in conn.execute(f"PRAGMA table_info({qi(tbl)})").fetchall()
+                qi(r[1]) for r in conn.execute(f"PRAGMA main.table_info({qi(tbl)})").fetchall()
             )
             conn.execute(
                 f"CREATE TEMP TABLE temp.before AS SELECT {cols} "
@@ -876,7 +878,7 @@ def _with_context(conn, sql, changed_ids, now, tbl):
                 ids,
             )
         else:
-            conn.execute(f"CREATE TEMP TABLE temp.before AS SELECT * FROM {qi(tbl)} WHERE 0")
+            conn.execute(f"CREATE TEMP TABLE temp.before AS SELECT * FROM main.{qi(tbl)} WHERE 0")
         made += ["changed", "before"]
 
     def cleanup():
@@ -1050,8 +1052,155 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
     return [v.as_dict() for v in out]
 
 
+def history_trail(events, old, new) -> bool:
+    """Linear Euler-trail check; timestamps and random IDs imply no ordering."""
+    degree, neighbors = {}, {}
+    for event in events:
+        a, b = event["old"], event["new"]
+        degree[a] = degree.get(a, 0) + 1
+        degree[b] = degree.get(b, 0) - 1
+        neighbors.setdefault(a, set()).add(b)
+        neighbors.setdefault(b, set()).add(a)
+    if old not in neighbors or new not in neighbors:
+        return False
+    if any(n != int(v == old) - int(v == new) for v, n in degree.items()):
+        return False
+    seen, todo = set(), [old]
+    while todo:
+        v = todo.pop()
+        if v not in seen:
+            seen.add(v)
+            todo.extend(neighbors[v] - seen)
+    return len(seen) == len(neighbors)
+
+
+_HISTORY_SEARCH_LIMIT = 10_000
+
+
+class _HistoryAmbiguity(Exception):
+    """The bounded matcher could neither prove nor disprove a history match."""
+
+
+def _history_segments(events, transitions):
+    """Match ordered edits to disjoint paths, revisiting ambiguous earlier choices."""
+    if len(transitions) == 1 and history_trail(events, *transitions[0]):
+        return True
+    edges = {}
+    for event in events:
+        edges.setdefault(event["old"], []).append(event)
+    start = transitions[0][0]
+    todo = [(0, start, frozenset(), frozenset({start}))]
+    # Bound generated states; exhausting the search is not proof of divergence.
+    budget = _HISTORY_SEARCH_LIMIT
+    while todo:
+        step, value, used, visited = todo.pop()
+        target = transitions[step][1]
+        if value == target:
+            if step + 1 == len(transitions):
+                return True
+            if not budget:
+                raise _HistoryAmbiguity
+            start = transitions[step + 1][0]
+            todo.append((step + 1, start, used, frozenset({start})))
+            budget -= 1
+            continue
+        # Prefer direct events before considering a coalesced path.
+        for event in sorted(edges.get(value, []), key=lambda e: e["new"] == target):
+            if event["id"] not in used and event["new"] not in visited:
+                if not budget:
+                    raise _HistoryAmbiguity
+                todo.append((step, event["new"], used | {event["id"]}, visited | {event["new"]}))
+                budget -= 1
+    return False
+
+
+def push_history(conn, table, row, before, events, now, batch=None):
+    """Import original facts by ID and log only the unexplained hub transition."""
+    if table in CATALOG_TABLES:
+        if events:
+            raise ValueError("history cannot describe engine tables")
+        return
+    after = dict(conn.execute(f"SELECT * FROM {qi(table)} WHERE id=?", (row["id"],)).fetchone())
+    changed = [c for c in after if c not in HISTORY_SKIP and before and before[c] != after[c]]
+    if not changed and not events:
+        return
+    if not _table_exists(conn, "history"):
+        for ddl in _pkg().table_ddl("history", CATALOG_TABLES["history"]):
+            conn.execute(ddl)
+            conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (ddl,))
+    fields = ("id", "tbl", "row_id", "col", "old", "new", "origin", "created_at", "updated_at")
+    unseen, seen = [], {}
+    for event in events:
+        if (
+            any(c not in event for c in fields)
+            or not event["id"]
+            or event["tbl"] != table
+            or event["row_id"] != row["id"]
+            or event["col"] not in after
+            or event["col"] in HISTORY_SKIP
+            or any(event[c] is not None and not isinstance(event[c], str) for c in ("old", "new"))
+            or not valid_edit_timestamp(event["created_at"])
+            or not valid_edit_timestamp(event["updated_at"])
+        ):
+            raise ValueError("invalid attached history event")
+        existing = conn.execute("SELECT * FROM history WHERE id=?", (event["id"],)).fetchone()
+        previous = dict(existing) if existing else seen.get(event["id"])
+        if previous:
+            if any(previous[c] != event[c] for c in fields):
+                raise ValueError("history ID reused for a different event")
+        else:
+            unseen.append(event)
+            seen[event["id"]] = event
+    available = unseen if batch is None else batch["events"]
+    for col in changed:
+        old, new = [
+            conn.execute("SELECT CAST(? AS TEXT)", (r[col],)).fetchone()[0] for r in (before, after)
+        ]
+        related = [e for e in available if e.get("row_id") == row["id"] and e.get("col") == col]
+        key = (row["id"], col)
+        transitions = (batch["matched"].get(key, []) if batch is not None else []) + [(old, new)]
+        if _history_segments(related, transitions):
+            if batch is not None:
+                batch["matched"][key] = transitions
+            continue
+        conn.execute(
+            "INSERT INTO history (tbl,row_id,col,old,new,origin,created_at,updated_at,hub_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                table,
+                row["id"],
+                col,
+                old,
+                new,
+                "hub:reconcile" if related else "hub",
+                row["updated_at"],
+                now,
+                now,
+            ),
+        )
+    for event in unseen:
+        cols = list(fields) + ["hub_at"]
+        conn.execute(
+            f"INSERT INTO history ({','.join(qi(c) for c in cols)}) VALUES ({','.join('?' for _ in cols)})",
+            [event[c] for c in fields] + [now],
+        )
+
+
+def valid_edit_timestamp(value) -> bool:
+    """Protocol metadata, even for a table with no catalog."""
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", value
+    ):
+        return False
+    try:
+        datetime.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
+
+
 def validate_push(
-    conn: sqlite3.Connection, table: str, rows: list[dict]
+    conn: sqlite3.Connection, table: str, rows: list[dict], *, before_rows=None, after_rows=None
 ) -> tuple[list[dict], list[dict]]:
     """Split pushed rows into (accepted, rejected). Property checks plus provenance
     for derived columns. Pure over the hub's own db; never runs a derivation."""
@@ -1063,11 +1212,22 @@ def validate_push(
             if _table_exists(conn, table)
             else None
         )
-        before = dict(existing) if existing else None
+        before = (
+            before_rows[row["id"]]
+            if before_rows is not None
+            else (dict(existing) if existing else None)
+        )
         # A push carries only the columns it writes: validate the row as it
         # will BE (stored columns plus this write), so a partial update need
         # not echo required columns the stored row already has.
-        merged = {**before, **row} if before else row
+        merged = (
+            after_rows[row["id"]]
+            if after_rows is not None
+            else ({**before, **row} if before else row)
+        )
+        if merged.get("deleted_at"):
+            accepted.append(row)
+            continue
         derived = {p["col"] for p in props if p.get("derived_by")}
         viol = validate_row(
             props,

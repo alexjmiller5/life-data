@@ -290,3 +290,70 @@ test("push logs the derivation failures it can no longer return", async () => {
   });
   expect(JSON.parse(out).derive_failed[0]).toMatchObject({ id: "78", error: expect.stringContaining("no derivation configured") });
 });
+
+test('an edit during the external call cannot receive a derivation for stale inputs', async () => {
+  const db = await fresh();
+  const fetchImpl = async () => {
+    db.db.exec("UPDATE movies SET status='Finished', updated_at='2026-10-01T00:00:00.000Z' WHERE id='78'");
+    return new Response(JSON.stringify({title:'Outdated'}));
+  };
+  const out = await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl});
+  expect(out.derived).toBe(0);
+  expect(out.failed.length).toBeGreaterThan(0);
+  expect(db.db.query("SELECT title FROM movies WHERE id='78'").get().title).toBeNull();
+  expect(db.db.query('SELECT * FROM provenance').all()).toEqual([]);
+});
+
+test('derived invariant failure rolls back the value and proof', async () => {
+  const db = await fresh();
+  db.db.exec("CREATE TABLE catalog_rules (id TEXT, tbl TEXT, col TEXT, kind TEXT, enforce INTEGER, sql TEXT, text TEXT, deleted_at TEXT); INSERT INTO catalog_rules VALUES ('blocked','movies','title','invariant',1,\"SELECT id FROM changed WHERE title='Blocked'\",'blocked title',NULL)");
+  const { fetchImpl } = stub({body:{title:'Blocked'}});
+  const out = await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl});
+  expect(out.derived).toBe(0);
+  expect(out.failed.length).toBe(1);
+  expect(db.db.query("SELECT title FROM movies WHERE id='78'").get().title).toBeNull();
+  expect(db.db.query('SELECT * FROM provenance').all()).toEqual([]);
+});
+
+test('a derivation records real cell changes and repeated identical output adds no history', async () => {
+  const db = await fresh();
+  const { fetchImpl } = stub({body:{title:'Derived Title'}});
+  expect((await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl})).derived).toBe(1);
+  expect(db.db.query('SELECT col,old,new,origin FROM history').all()).toEqual([{col:'title',old:null,new:'Derived Title',origin:'hub'}]);
+  await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl});
+  expect(db.db.query('SELECT * FROM history').all().length).toBe(1);
+});
+
+for (const caller of ['direct','stale','sweep']) test(`I6: ${caller} derivations account for 50 IDs and resume within one invocation budget`, async () => {
+  const {deriveStale} = await import('../src/derive.js');
+  const db = await fresh();
+  const ids = ['78',...Array.from({length:49},(_,i)=>String(i))];
+  for (const id of ids.slice(1)) db.db.query("INSERT INTO movies (id,status,updated_at) VALUES (?,'Not Started','2025-01-01T00:00:00.000Z')").run(id);
+  const prepare = db.prepare.bind(db);
+  let queries = 0;
+  db.prepare = sql => {
+    const stmt = prepare(sql);
+    for (const method of ['all','first','run','raw']) {
+      const original = stmt[method].bind(stmt);
+      stmt[method] = (...args) => { if (++queries > 1000) throw new Error('simulated D1 invocation limit'); return original(...args); };
+    }
+    return stmt;
+  };
+  const {fetchImpl} = stub({body:{title:'Budgeted',genres:[]}});
+  const run = async pending => caller === 'direct' ? deriveRows(db,ENV,'movies',pending,{fetchImpl})
+    : caller === 'stale' ? deriveStale(db,ENV,'movies',db.db.query('SELECT * FROM movies').all(),{fetchImpl})
+    : sweep(db,ENV,{fetchImpl});
+  let out = await run(ids);
+  console.info(`${caller} derive: derived=${out.derived} remaining=${new Set(out.failed.map(r=>r.id)).size} statements=${queries}`);
+  expect(queries).toBeLessThan(1000);
+  expect(out.derived).toBeGreaterThan(0);
+  expect(out.derived + new Set(out.failed.map(r=>r.id)).size).toBe(50);
+  for (let attempt=0; out.failed.length && attempt<4; attempt++) {
+    queries = 0;
+    out = await run([...new Set(out.failed.map(r=>r.id))]);
+    expect(queries).toBeLessThan(1000);
+    expect(out.derived).toBeGreaterThan(0);
+  }
+  expect(out.failed).toEqual([]);
+  expect(db.db.query("SELECT count(*) AS n FROM movies WHERE title='Budgeted'").get().n).toBe(50);
+});

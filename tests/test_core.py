@@ -476,7 +476,7 @@ def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
     stats = sync(db, hub)
     assert stats["rejected"][0]["id"] == "bad" and stats["rejected"][0]["rule"] == "options"
     assert {r["id"] for r in hub.rows_pull("places", ["id"], "")} == {"good"}
-    assert sync(db, hub)["rejected"] == []  # cursor advanced; not re-pushed
+    assert sync(db, hub)["rejected"]  # rejected edits remain pending until repaired
 
 
 @pytest.fixture()

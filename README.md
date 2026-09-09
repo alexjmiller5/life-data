@@ -166,6 +166,62 @@ into the generic primitives — `life table create`, then transform records to
 JSON and pipe them into `life insert <table>`. Use source record ids as row
 `id`s so re-imports stay idempotent and cross-source relations survive.
 
+### Hub write contract
+
+`/v1/rows/push` retains sparse `columns`/`rows` patches and per-row rejection.
+Every row must supply valid `updated_at` in exact `YYYY-MM-DDTHH:MM:SS.sssZ`
+form, even on uncataloged tables. Only strictly newer revisions change stored
+values. Required properties judge the merged row; explicit null clears optional
+fields. Inserts validate SQLite defaults as well as supplied values; numeric
+strings retain SQLite INTEGER/REAL coercion. References and dynamic options are
+checked at each mutation, including changes earlier in the batch. Enforced catalog invariants and history are transactional on both hubs;
+advisory rules remain advisory.
+
+An optional `history` array carries original replica events for submitted rows,
+using the history-table shape and original IDs. Matching IDs are idempotent;
+conflicting reuse rejects the row. Original events that explain a cell transition
+replace an aggregate hub entry, including several ordered revisions of one ID. If a concurrent hub value differs, LWW still
+applies and one `hub:reconcile` event records the actual hub transition while
+preserving the local events. Single-transition whole trails use a linear check;
+ordered revisions use bounded backtracking over disjoint event paths, including
+cyclic/coalesced edits. Timestamp ties imply no ordering. Stale/replayed
+rows generate no hub events, though unseen originals can still replicate.
+Invariant rejection rolls back both mutation and attached events. A proven
+history mismatch still reconciles. If matching needs more than 10,000 generated
+search states, the whole request rolls back and returns zero upserts, empty
+`hub_at`, and one `history-ambiguity` rejection with `retryable: true` for every
+submitted row, in order. Split revisions into smaller requests and retry; an
+identical oversized request may reject again. No automatic split is added to sync.
+
+History-bearing D1 batches that need failure isolation use rollback-only probes
+before committing the accepted sequence once. Matcher or query exhaustion during
+isolation cannot leave earlier siblings, original events, or helper tables behind.
+Valid bulk requests still use one transaction.
+
+Sync keeps ordinary history-table replication as a fallback for servers that
+ignore the optional array. Rejections keep the push cursor in place and withhold
+those mutations' attached events from the fallback. Upgrade clients before the
+Worker where possible. Deduplication is guaranteed for upgraded replicas
+supplying original events; legacy compatibility is explicitly best effort.
+An older or uninventoryed replica sends history separately, so a new Worker
+cannot reliably recognize an original random-ID event before logging the direct
+transition. Historical rows are never rewritten to guess away legacy duplicates.
+
+The hosted Worker and self-hosted table-write/derivation service require
+**Workers Paid** (D1's 1,000-query invocation limit); the Free 50-query ceiling
+is not supported by these write budgets. Each batch statement counts as a query.
+Push validation/isolation allows 750 statements, background derivation 200, and
+direct/scheduled derivations share a 900-statement budget across all rows and
+nested callers. Headroom covers route/auth work. A partial derivation returns
+committed progress plus explicit `failed` entries for pending work; retry those
+IDs or let the next sweep resume. SQL stays within 100KB and bulk row data uses
+JSON parameters to remain below 100 binds per statement.
+
+Normal 500-row pushes and 200-row provenance chunks with schema-derived options
+and references use bulk reads/upserts and transaction-scoped triggers.
+D1 statement/text budgets fail closed with per-row rejections; retry those rows
+in smaller batches. No partial history remains after a failed transaction.
+
 ### Files
 
 `PUT /v1/files/<key>` stores a binary body with its `Content-Type`.

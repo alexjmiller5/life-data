@@ -6,8 +6,9 @@
 // changing that function and nothing else — no route, no query, no sync logic
 // knows how the caller was authenticated.
 
+import { pushChecked, queryBudget } from "./write.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
-import { ident, qident, sha256hex, validatePush } from "./validate.js";
+import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -265,32 +266,21 @@ const ROUTES = {
     const rows = (body.rows ?? []).map((row) => Object.fromEntries(
       columns.filter((col) => Object.hasOwn(row, col)).map((col) => [col, row[col]])
     ));
-    // Conflict timestamps belong to the caller, never an INSERT default.
-    const { accepted, rejected } = await validatePush(db, table, rows.filter((row) => row.updated_at != null));
-    rejected.push(...rows.filter((row) => row.updated_at == null).map((row) => ({
-      id: row.id, col: "updated_at", rule: "required", message: "updated_at is required for pushed rows.",
-    })));
-    // one hub, one clock: every row this push lands carries the same stamp
     const stamping = await hasHubAt(db, table);
     const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
-    if (accepted.length) {
-      // Batch adjacent equal shapes only: regrouping can reorder equal-stamp
-      // edits of the same id. Never fill omissions with a stored-row echo.
-      const groups = [];
-      for (const row of accepted) {
-        const cols = Object.keys(row);
-        const last = groups.at(-1);
-        if (last && last.cols.join(",") === cols.join(",")) last.rows.push(row);
-        else groups.push({ cols, rows: [row] });
-      }
-      await db.batch(groups.map(({ cols, rows }) => {
-        const args = stamping ? [hubAt, JSON.stringify(rows)] : [JSON.stringify(rows)];
-        return db.prepare(upsertSql(table, cols, stamping)).bind(...args);
-      }));
-    }
+    const { accepted, rejected } = await pushChecked(db, table,
+      rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, hubAt, stamping, body.history ?? []);
+    // Ambiguous history rolls back the entire request, including rows filtered
+    // by the timestamp gate, and supplies no committed arrival cursor.
+    const ambiguity = rejected.find(r=>r.rule === "history-ambiguity");
+    if (ambiguity) return {upserted:0, rejected:rows.map(row=>({...ambiguity,id:row.id})), hub_at:""};
+    rejected.push(...rows.filter(row => !validEditTimestamp(row.updated_at)).map(row => ({
+      id: row.id, col: "updated_at", rule: row.updated_at == null ? "required" : "type",
+      message: "updated_at must be a valid UTC millisecond timestamp.",
+    })));
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
-    if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(db, env, table, accepted)));
+    if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db, 200), env, table, accepted)));
     return { upserted: accepted.length, rejected, hub_at: hubAt };
   },
 

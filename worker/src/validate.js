@@ -4,6 +4,12 @@
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+export function validEditTimestamp(value) {
+  if (typeof value !== "string" || !DATETIME_RE.test(value) || value.startsWith("0000")) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PHONE_RE = /^\+?[0-9 ()\-.]{5,}$/;
 
@@ -158,7 +164,7 @@ export function qident(name) {
 }
 
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
-export async function validatePush(db, table, rows) {
+export async function validatePush(db, table, rows, storageDb = null) {
   const props = await propertiesFor(db, table);
   const typeOf = Object.fromEntries(props.map((p) => [p.col, p.type]));
   const exists = await tableExists(db, table);
@@ -169,15 +175,17 @@ export async function validatePush(db, table, rows) {
     if (!(await tableExists(db, p.ref_table))) continue;
     const ids = new Set();
     for (const r of rows) for (const x of asList(r[p.col]) ?? [r[p.col]]) if (x != null) ids.add(x);
-    for (const id of ids) {
-      const hit = await db.prepare(`SELECT 1 FROM ${qident(p.ref_table)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
-      if (hit) refSet.add(`${p.ref_table}:${id}`);
+    if (ids.size) {
+      const { results } = await db.prepare(`SELECT id FROM ${qident(p.ref_table)} WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL`)
+        .bind(JSON.stringify([...ids])).all();
+      for (const hit of results ?? []) refSet.add(`${p.ref_table}:${hit.id}`);
     }
   }
   const extra = {};
   for (const p of props.filter((p) => p.options_sql)) {
     const { results } = await db.prepare(p.options_sql).all();
     extra[p.col] = (results ?? []).map((r) => Object.values(r)[0]);
+    p.optionColumn = results?.length ? Object.keys(results[0])[0] : null;
   }
 
   // One read for the whole push (D1 caps bind params at ~100), not one per row:
@@ -194,16 +202,43 @@ export async function validatePush(db, table, rows) {
     }
   }
 
-  const accepted = [], rejected = [];
-  for (const row of rows) {
+  // Resolve INSERT defaults once, then explicitly store the approved values.
+  // Re-evaluating a clock/random default in a read guard would self-conflict.
+  let schema = [];
+  const defaults = new Map();
+  if (storageDb) {
+    schema = (await storageDb.prepare(`PRAGMA table_info(${qident(table)})`).all()).results;
+    const fresh = [...new Set(rows.filter(r=>!stored.has(r.id)).map(r=>r.id))];
+    if (fresh.length) {
+      const fields = schema.filter(c=>c.dflt_value != null && !['id','updated_at','hub_at'].includes(c.name));
+      const {results} = await storageDb.prepare(`SELECT value AS id${fields.map(c=>`, (${c.dflt_value}) AS ${qident(c.name)}`).join('')} FROM json_each(?)`)
+        .bind(JSON.stringify(fresh)).all();
+      for (const r of results) defaults.set(r.id, Object.fromEntries(schema.map(c=>[c.name,r[c.name] ?? null])));
+    }
+  }
+  const accepted = [], rejected = [], expected = [], transitions = [];
+  for (let row of rows) {
     // A push carries only the columns it writes. Required (and the derived
     // provenance check below) judge the row as it will BE - stored columns
     // plus this write - so a partial update need not echo the whole row.
     const before = stored.get(row.id) ?? null;
+    if (before && row.updated_at <= before.updated_at) {
+      accepted.push(row);
+      continue;
+    }
+    if (storageDb) row = storageRow(schema, before ? row : {...defaults.get(row.id), ...row});
     const merged = before ? { ...before, ...row } : row;
-    const viol = validateRow(props, before, merged, {
+    const approve = () => {
+      accepted.push(row); stored.set(row.id, merged); expected.push(merged);
+      transitions.push({before, after:merged, touched:Object.keys(row)});
+    };
+    if (merged.deleted_at) {
+      approve();
+      continue;
+    }
+    const viol = validateRow(storageDb ? props.map(p=>p.options_sql ? {...p,options:null,options_sql:null} : p) : props, before, merged, {
       inDerive: derivedCols,
-      refOk: (t, id) => refSet.has(`${t}:${id}`),
+      refOk: storageDb ? null : (t, id) => refSet.has(`${t}:${id}`),
       extraOptions: (p) => extra[p.col] ?? [],
       touched: before ? new Set(Object.keys(row)) : null,
     });
@@ -221,7 +256,26 @@ export async function validatePush(db, table, rows) {
       }
     }
     if (viol.length) rejected.push(...viol.map((v) => ({ id: row.id, ...v })));
-    else accepted.push(row);
+    else approve();
   }
-  return { accepted, rejected };
+  return { accepted, rejected, expected, transitions, props };
+}
+
+export const literal = (v) => v == null ? "NULL" : "'" + String(v).replaceAll("'", "''") + "'";
+
+// SQLite column affinity, applied before validation and approval comparison.
+// Non-numeric text in a numeric column remains text (CAST alone would turn it 0).
+export function storageRow(schema, row) {
+  const out = {...row};
+  for (const c of schema) {
+    let v = out[c.name];
+    if (v == null || typeof v === 'object' || typeof v === 'boolean') continue;
+    const type = c.type.toUpperCase();
+    if (/INT/.test(type)) {
+      if (typeof v === 'string' && /^[\t\n\r ]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[\t\n\r ]*$/.test(v)) v = Number(v);
+    } else if (/CHAR|CLOB|TEXT/.test(type)) v = String(v);
+    else if (type && !/BLOB/.test(type) && typeof v === 'string' && /^[\t\n\r ]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[\t\n\r ]*$/.test(v)) v = Number(v);
+    out[c.name] = v;
+  }
+  return out;
 }

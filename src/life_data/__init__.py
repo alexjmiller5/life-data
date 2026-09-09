@@ -10,7 +10,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from itertools import groupby
 from pathlib import Path
 
 VERSION = "0.2.0"
@@ -370,40 +369,142 @@ class LocalHub:
             [since or "", since or ""],
         )
 
-    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
-        # Validate exactly the sparse payload SQL will write. A listed but
-        # omitted key is not NULL; an unlisted value cannot satisfy required.
+    def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
+        qi(table)
         for col in columns:
             qi(col)
         rows = [{col: row[col] for col in columns if col in row} for row in rows]
-        # Conflict timestamps belong to the caller, never an INSERT default.
-        stamped = [row for row in rows if row.get("updated_at") is not None]
+        rejected, accepted = [], []
         with connect(self.path) as conn:
-            accepted, rejected = catalog.validate_push(conn, table, stamped)
-        rejected += [
-            {
-                "id": row["id"],
-                "col": "updated_at",
-                "rule": "required",
-                "message": "updated_at is required for pushed rows.",
-            }
-            for row in rows
-            if row.get("updated_at") is None
-        ]
-        # one hub, one clock: every row this push lands carries the same stamp.
-        # Whether to stamp is the HUB schema's call, never the pushed column
-        # list - a client that omits hub_at must not land unstamped rows.
-        stamping = self._has_hub_at(table)
-        hub_at = self._query(f"SELECT {NOW} AS t")[0]["t"] if stamping else ""
-        # Adjacent shapes preserve equal-timestamp input order. Keep all SQL
-        # writes atomic even when heterogeneous rows need separate statements.
-        with connect(self.path) as conn:
-            for cols, group in groupby(accepted, key=tuple):
-                shaped = list(group)
-                sql = _upsert_sql(table, list(cols), stamp_hub_at=stamping)
-                for i in range(0, len(shaped), CHUNK):
-                    blob = json.dumps(shaped[i : i + CHUNK])
-                    conn.execute(sql, [hub_at, blob] if stamping else [blob])
+            conn.execute("BEGIN IMMEDIATE")
+            stamping = any(
+                r["name"] == "hub_at" for r in conn.execute(f"PRAGMA main.table_info({qi(table)})")
+            )
+            now = conn.execute(f"SELECT {NOW}").fetchone()[0]
+            hub_at = now if stamping else ""
+            # Facts imported by an earlier row can still explain a later revision
+            # in this batch, but facts present before the batch cannot be reused.
+            has_history = catalog._table_exists(conn, "history")
+            remaining = [
+                e
+                for e in (history or [])
+                if not has_history
+                or not conn.execute("SELECT 1 FROM history WHERE id=?", (e.get("id"),)).fetchone()
+            ]
+            history_batch = {"events": remaining, "matched": {}}
+            for row in rows:
+                if not catalog.valid_edit_timestamp(row.get("updated_at")):
+                    rejected.append(
+                        {
+                            "id": row.get("id"),
+                            "col": "updated_at",
+                            "rule": "required" if row.get("updated_at") is None else "type",
+                            "message": "updated_at must be a valid UTC millisecond timestamp.",
+                        }
+                    )
+                    continue
+                before = conn.execute(
+                    f"SELECT * FROM {qi(table)} WHERE id = ?", (row.get("id"),)
+                ).fetchone()
+                stale = before and row["updated_at"] <= before["updated_at"]
+                conn.execute("SAVEPOINT pushed_row")
+                try:
+                    events = [e for e in (history or []) if e.get("row_id") == row.get("id")]
+                    _, violations = ([], []) if stale else catalog.validate_push(conn, table, [row])
+                    if not violations and not stale:
+                        conn.execute(
+                            f"CREATE TEMP TABLE temp.{qi('_before_' + table)} AS SELECT * FROM main.{qi(table)} WHERE id = ?",
+                            (row.get("id"),),
+                        )
+                        blob = json.dumps([row])
+                        conn.execute(
+                            _upsert_sql(table, list(row), stamp_hub_at=stamping),
+                            [hub_at, blob] if stamping else [blob],
+                        )
+                        actual = dict(
+                            conn.execute(
+                                f"SELECT * FROM {qi(table)} WHERE id=?", (row["id"],)
+                            ).fetchone()
+                        )
+                        _, violations = catalog.validate_push(
+                            conn,
+                            table,
+                            [row],
+                            before_rows={row["id"]: dict(before) if before else None},
+                            after_rows={row["id"]: actual},
+                        )
+                        if (
+                            not catalog.valid_edit_timestamp(actual.get("updated_at"))
+                            or actual.get("updated_at") != row["updated_at"]
+                        ):
+                            violations.append(
+                                {
+                                    "id": row["id"],
+                                    "col": "updated_at",
+                                    "rule": "type",
+                                    "message": "Stored updated_at must match the canonical pushed timestamp.",
+                                }
+                            )
+                        for rule in catalog.rules(conn, tbl=table, kind="invariant"):
+                            if rule.get("enforce") and rule.get("tbl") == table:
+                                for hit in catalog.run_invariant(
+                                    conn, rule, changed_ids=[row.get("id")], now=now
+                                ):
+                                    violations.append(
+                                        {
+                                            "id": row.get("id"),
+                                            "col": rule.get("col"),
+                                            "rule": rule["id"],
+                                            "message": rule["text"],
+                                        }
+                                    )
+                        conn.execute(f"DROP TABLE temp.{qi('_before_' + table)}")
+                    if not violations:
+                        try:
+                            catalog.push_history(
+                                conn,
+                                table,
+                                row,
+                                dict(before) if before else None,
+                                events,
+                                now,
+                                history_batch,
+                            )
+                        except ValueError as exc:
+                            violations.append(
+                                {
+                                    "id": row.get("id"),
+                                    "col": None,
+                                    "rule": "history",
+                                    "message": str(exc),
+                                }
+                            )
+                    if violations:
+                        conn.execute("ROLLBACK TO pushed_row")
+                        rejected.extend(violations)
+                    else:
+                        accepted.append(row)
+                except catalog._HistoryAmbiguity:
+                    # Earlier revisions may have imported all originals. Roll back
+                    # the request rather than preserve a misleading partial history.
+                    conn.rollback()
+                    return {
+                        "upserted": 0,
+                        "rejected": [
+                            {
+                                "id": submitted.get("id"),
+                                "col": None,
+                                "rule": "history-ambiguity",
+                                "retryable": True,
+                                "message": "History matching budget exhausted; split revisions into smaller requests and retry.",
+                            }
+                            for submitted in rows
+                        ],
+                        "hub_at": "",
+                    }
+                finally:
+                    if conn.in_transaction:
+                        conn.execute("RELEASE pushed_row")
         return {"upserted": len(accepted), "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:
@@ -457,13 +558,17 @@ class HttpHub:
             "/v1/rows/pull", {"table": table, "columns": columns, "since": since or ""}
         )["rows"]
 
-    def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
+    def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
         # the response also carries the hub_at the hub stamped; nothing reads it
         # - the pull cursor never advances on a push
         total, rejected = 0, []
         for i in range(0, len(rows), CHUNK):
             chunk = rows[i : i + CHUNK]
-            out = self._post("/v1/rows/push", {"table": table, "columns": columns, "rows": chunk})
+            body = {"table": table, "columns": columns, "rows": chunk}
+            if history:
+                ids = {r["id"] for r in chunk}
+                body["history"] = [e for e in history if e["row_id"] in ids]
+            out = self._post("/v1/rows/push", body)
             total += out["upserted"]
             rejected += out.get("rejected", [])
         return {"upserted": total, "rejected": rejected}
@@ -680,17 +785,40 @@ def sync(path: Path, hub) -> dict:
     # gets hub_at > pull_cursor, so the next sync still sees it.
     pull_cursor = hub.cursor(tables)
 
+    # One local read transaction captures rows, original events and the push
+    # cursor together. A local edit during network work belongs to next sync.
+    with connect(path) as snapshot:
+        snapshot.execute("BEGIN")
+        candidates, columns = {}, {}
+        push_cursor = ""
+        for table in tables:
+            columns[table] = [
+                r["name"] for r in snapshot.execute(f"PRAGMA table_info({qi(table)})")
+            ]
+            candidates[table] = [
+                dict(r)
+                for r in snapshot.execute(
+                    f"SELECT * FROM {qi(table)} WHERE updated_at > ?", (last_push,)
+                )
+            ]
+            top = snapshot.execute(f"SELECT max(updated_at) FROM {qi(table)}").fetchone()[0]
+            push_cursor = max(push_cursor, top or "")
+        pending_history = (
+            [
+                dict(r)
+                for r in snapshot.execute(
+                    "SELECT * FROM history WHERE updated_at >= ?", (last_push,)
+                )
+            ]
+            if "history" in tables
+            else []
+        )
+    withheld = set()
+    tables = [t for t in tables if t != "history"] + (["history"] if "history" in tables else [])
     pulled = pushed = 0
     rejected = []
     for table in tables:
-        cols = _columns(path, table)
-        # snapshot push candidates BEFORE applying the pull, so pulled rows
-        # are never echoed straight back at the hub
-        mine = execute_sql(
-            path,
-            f"SELECT {', '.join(qi(c) for c in cols)} FROM {qi(table)} "
-            f"WHERE updated_at > '{last_push}'",
-        )
+        cols, mine = columns[table], candidates[table]
         remote = hub.rows_pull(table, cols, last_pull)
         if remote:
             # `pulled` counts rows the LWW upsert actually APPLIED, not rows
@@ -702,13 +830,20 @@ def sync(path: Path, hub) -> dict:
                         _upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),)
                     )
                     pulled += cur.rowcount
+        if table == "history":
+            mine = [r for r in mine if r["id"] not in withheld]
         if mine:
-            out = hub.rows_push(table, cols, mine)
+            ids = {r["id"] for r in mine}
+            events = [e for e in pending_history if e["tbl"] == table and e["row_id"] in ids]
+            out = hub.rows_push(table, cols, mine, **({"history": events} if events else {}))
+            bad = {r["id"] for r in out["rejected"]}
+            withheld.update(e["id"] for e in events if e["row_id"] in bad)
             rejected += [{"table": table, **r} for r in out["rejected"]]
             pushed += out["upserted"]
 
     _set_state(path, "last_pull", pull_cursor)
-    _set_state(path, "last_push", _local_cursor(path, tables))
+    if not rejected:
+        _set_state(path, "last_push", push_cursor)
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 
