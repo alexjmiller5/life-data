@@ -333,7 +333,7 @@ for (const caller of ['direct','stale','sweep']) test(`I6: ${caller} derivations
   let queries = 0;
   db.prepare = sql => {
     const stmt = prepare(sql);
-    for (const method of ['all','first','run']) {
+    for (const method of ['all','first','run','raw']) {
       const original = stmt[method].bind(stmt);
       stmt[method] = (...args) => { if (++queries > 1000) throw new Error('simulated D1 invocation limit'); return original(...args); };
     }

@@ -55,6 +55,12 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   const key = '_life_write_' + crypto.randomUUID().replaceAll('-', '');
   const schema = (await db.prepare(`PRAGMA table_info(${qident(table)})`).all()).results;
   const cols = schema.map(c => c.name);
+  for (const p of props) if (p.options_sql && ['select','multi_select'].includes(p.type) && p.optionColumn == null) {
+    // D1 supplies column names even for empty results. Schema/catalog read
+    // guards protect this metadata; values are still checked at each mutation.
+    const [columns] = await db.prepare(`SELECT * FROM (${p.options_sql}) LIMIT 0`).raw({columnNames:true});
+    p.optionColumn = columns[0];
+  }
   const context = (prefix) => cols.map(c => `${prefix}.${qident(c)} AS ${qident(c)}`).join(',');
   const begin = readGuards(db, reads);
   const end = [];
@@ -234,7 +240,7 @@ function dependencyChecks(props, event, approval) {
     }
     if (p.options_sql && ['select','multi_select'].includes(p.type)) {
       // Our transaction-lifetime helper objects are not user schema options.
-      const query = `WITH sqlite_master AS (SELECT * FROM main.sqlite_master WHERE name NOT GLOB '_life_write_*') SELECT ${p.optionColumn ? quoteColumn(p.optionColumn) : '*'} FROM (${p.options_sql})`;
+      const query = `WITH sqlite_master AS (SELECT * FROM main.sqlite_master WHERE name NOT GLOB '_life_write_*') SELECT ${quoteColumn(p.optionColumn)} FROM (${p.options_sql})`;
       const choices = `WITH choices(v) AS (${query}) SELECT v FROM choices UNION SELECT json_extract(value,'$.v') FROM json_each(${literal(JSON.stringify(p.options ?? []))})`;
       const invalid = p.type === 'select' ? `NOT EXISTS (SELECT 1 FROM allowed WHERE v IS ${v})` : `EXISTS (SELECT 1 FROM json_each(${v}) item WHERE NOT EXISTS (SELECT 1 FROM allowed WHERE v IS item.value))`;
       checks += `SELECT RAISE(ABORT,'life_property_${i}_options') WHERE ${active} AND (WITH allowed AS (${choices}) SELECT EXISTS (SELECT 1 FROM allowed) AND ${invalid});`;

@@ -13,6 +13,10 @@ export class D1Shim {
       bind(...a) { args = a; return this; },
       async all() { return { results: query().all(...args) }; },
       async first() { return query().get(...args) ?? null; },
+      async raw({columnNames=false} = {}) {
+        const stmt=query(), rows=stmt.values(...args);
+        return columnNames ? [stmt.columnNames,...rows] : rows;
+      },
       async run() { return { results: query().all(...args) }; },
     };
   }

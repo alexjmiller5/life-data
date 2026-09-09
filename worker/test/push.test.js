@@ -320,7 +320,7 @@ test('200 provenance edges with schema options and target refs remain one bulk w
   const prepare=db.prepare.bind(db);
   db.prepare=sql=> {
     const stmt=prepare(sql);
-    for (const method of ['all','first','run']) {
+    for (const method of ['all','first','run','raw']) {
       const original=stmt[method].bind(stmt);
       stmt[method]=(...args)=> { queries++; return original(...args); };
     }

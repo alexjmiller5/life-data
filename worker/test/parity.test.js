@@ -348,3 +348,16 @@ test('I4 a cap after a failed batch cannot leave an earlier isolated sibling com
   expect(db.db.query('SELECT * FROM history').all()).toEqual([]);
   expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
 });
+
+test('N1 empty multi-column options preserve a permitted static value and first-column checks', async () => {
+  const db=await fresh();
+  db.db.exec("ALTER TABLE catalog_properties ADD COLUMN options_sql TEXT; CREATE TABLE option_values (code TEXT,label TEXT); UPDATE catalog_properties SET type='select',options='[{\"v\":\"ok\"}]',options_sql='SELECT code,label FROM option_values' WHERE col='name'");
+  const out=await push(db,[{id:'a',name:'ok',updated_at:T0}]);
+  expect(out.upserted).toBe(1);
+  expect(out.rejected).toEqual([]);
+  expect(db.db.query('SELECT id,name FROM items').all()).toEqual([{id:'a',name:'ok'}]);
+  db.db.exec("INSERT INTO option_values VALUES ('dynamic','label-only')");
+  const choices=await push(db,[{id:'b',name:'dynamic',updated_at:T1},{id:'c',name:'label-only',updated_at:T1}]);
+  expect(choices.upserted).toBe(1);
+  expect(choices.rejected.map(r=>[r.id,r.rule])).toEqual([['c','options']]);
+});
