@@ -235,6 +235,10 @@ const ROUTES = {
     const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
     const { accepted, rejected } = await pushChecked(db, table,
       rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, hubAt, stamping, body.history ?? []);
+    // Ambiguous history rolls back the entire request, including rows filtered
+    // by the timestamp gate, and supplies no committed arrival cursor.
+    const ambiguity = rejected.find(r=>r.rule === "history-ambiguity");
+    if (ambiguity) return {upserted:0, rejected:rows.map(row=>({...ambiguity,id:row.id})), hub_at:""};
     rejected.push(...rows.filter(row => !validEditTimestamp(row.updated_at)).map(row => ({
       id: row.id, col: "updated_at", rule: row.updated_at == null ? "required" : "type",
       message: "updated_at must be a valid UTC millisecond timestamp.",

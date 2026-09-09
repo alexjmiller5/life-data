@@ -51,7 +51,7 @@ export async function enforcedRules(db, table) {
 
 // Triggers exist only inside this batch transaction. No temp schema or user
 // context tables; OLD/NEW have SQLite's actual types, defaults and values.
-export async function commitChecked(db, reads, table, rules, statements, now, history = null, expected = [], props = [], transitions = []) {
+export async function commitChecked(db, reads, table, rules, statements, now, history = null, expected = [], props = [], transitions = [], probe = false) {
   const key = '_life_write_' + crypto.randomUUID().replaceAll('-', '');
   const schema = (await db.prepare(`PRAGMA table_info(${qident(table)})`).all()).results;
   const cols = schema.map(c => c.name);
@@ -82,7 +82,18 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
     end.unshift(db.prepare(`DROP TRIGGER ${qident(trigger)}`));
   }
   const log = historyStatements(db, table, key, history, now);
-  return db.batch([...begin, ...log.begin, ...statements, ...log.end, ...end]);
+  if (probe) {
+    // Deliberate final failure rolls the entire successful probe back. The
+    // named CHECK distinguishes it from a real guard/SQL failure; its table
+    // is created after all user reads/writes and can never persist.
+    end.push(db.prepare(`CREATE TABLE ${qident(key + '_probe')} (ok INTEGER CONSTRAINT life_probe_complete CHECK(ok=1))`));
+    end.push(db.prepare(`INSERT INTO ${qident(key + '_probe')} VALUES (0)`));
+  }
+  try { return await db.batch([...begin, ...log.begin, ...statements, ...log.end, ...end]); }
+  catch (e) {
+    if (probe && String(e).includes('life_probe_complete')) return;
+    throw e;
+  }
 }
 
 const budgeted = new WeakSet();
@@ -102,71 +113,109 @@ export function queryBudget(db, maximum) {
   return wrapper;
 }
 
-export async function pushChecked(db, table, rows, upsertSql, hubAt, stamping, history = []) {
-  // Every prepared batch statement counts. Leave space for route plumbing
-  // and the separately bounded background derivation (200 statements).
-  return pushGroup(queryBudget(db, 750), table, rows, upsertSql, hubAt, stamping, history, {known:new Set(),eligible:new Map(),consumed:new Set()});
-}
+const rejectAll = (rows, rule, message) => ({accepted:[],rejected:rows.map(row=>({id:row.id,col:null,rule,message}))});
 
-async function pushGroup(db, table, rows, upsertSql, hubAt, stamping, history = [], historyState) {
+export async function pushChecked(db, table, rows, upsertSql, hubAt, stamping, history = []) {
+  // Include rollback-only isolation probes in the same request budget.
+  db = queryBudget(db,750);
+  const attempt = (rows, probe=false) => pushAttempt(db,table,rows,upsertSql,hubAt,stamping,history,probe);
   try {
-    return await pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history, historyState);
+    return history.length ? await pushAtomicHistory(rows,attempt) : await pushGroup(rows,attempt);
   } catch (e) {
-    if (!String(e).includes('life_write_budget')) throw e;
-    return { accepted: [], rejected: rows.map(row => ({id:row.id, col:null, rule:'write-budget',
-      message:'Write budget reached; retry this row in a smaller batch.'})) };
+    if (e.code === 'history-ambiguity') {
+      const out=rejectAll(rows,e.code,e.message);
+      for (const r of out.rejected) r.retryable=true;
+      return out;
+    }
+    if (e.code === 'write-conflict') return rejectAll(rows,e.code,e.message);
+    if (String(e).includes('life_write_budget')) return rejectAll(rows,'write-budget','Write budget reached; retry this row in a smaller batch.');
+    throw e;
   }
 }
 
-async function pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history = [], historyState) {
-  if (!rows.length) return { accepted: [], rejected: [] };
-  const view = checkedReads(db);
-  // A concurrent DDL/trigger change also invalidates the validation decision.
+// With original events, no sibling may commit until ALL history decisions
+// are known. Invalid batches are isolated using rollback-only prefix probes;
+// then the accepted sequence is revalidated and committed in one transaction.
+async function pushAtomicHistory(rows, attempt) {
+  try { return await attempt(rows); }
+  catch (e) { if (!e.failure) throw e; }
+  const conflict = () => Object.assign(new Error('Write changed during isolation; retry against current state.'), {code:'write-conflict'});
+  const isolate = async (rows, prefix=[]) => {
+    let failure;
+    try {
+      const out = await attempt([...prefix,...rows],true);
+      if (!prefix.every((r,i)=>out.accepted[i]?.id===r.id && out.accepted[i]?.updated_at===r.updated_at)) throw conflict();
+      return out;
+    } catch (e) {
+      if (!e.failure) throw e;
+      if (!prefix.every((r,i)=>e.accepted[i]?.id===r.id && e.accepted[i]?.updated_at===r.updated_at)) throw conflict();
+      failure=e;
+    }
+    if (rows.length === 1) return {accepted:prefix,rejected:[...failure.rejected,{id:rows[0].id,...failure.failure}]};
+    const mid=Math.floor(rows.length/2);
+    const left=await isolate(rows.slice(0,mid),prefix);
+    const right=await isolate(rows.slice(mid),left.accepted);
+    return {accepted:right.accepted,rejected:[...left.rejected,...right.rejected]};
+  };
+  const isolated=await isolate(rows);
+  try {
+    const out=await attempt(isolated.accepted);
+    return {accepted:out.accepted,rejected:[...isolated.rejected,...out.rejected]};
+  } catch (e) {
+    if (e.failure) throw conflict();
+    throw e;
+  }
+}
+
+// Without attached originals, preserve the existing cheap ordered isolation.
+async function pushGroup(rows, attempt) {
+  try { return await attempt(rows); }
+  catch (e) {
+    if (String(e).includes('life_write_budget')) return rejectAll(rows,'write-budget','Write budget reached; retry this row in a smaller batch.');
+    if (!e.failure) throw e;
+    if (rows.length > 1) {
+      const mid=Math.floor(rows.length/2);
+      const left=await pushGroup(rows.slice(0,mid),attempt);
+      const right=await pushGroup(rows.slice(mid),attempt);
+      return {accepted:[...left.accepted,...right.accepted],rejected:[...left.rejected,...right.rejected]};
+    }
+    return {accepted:[],rejected:[...e.rejected,{id:rows[0].id,...e.failure}]};
+  }
+}
+
+async function pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history, probe) {
+  if (!rows.length) return {accepted:[],rejected:[]};
+  const view=checkedReads(db);
   await view.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
-  const { accepted, rejected, expected, props, transitions } = await validatePush(view, table, rows, db);
-  if (!accepted.length) return { accepted, rejected };
-  const rules = await enforcedRules(view, table);
+  const {accepted,rejected,expected,props,transitions}=await validatePush(view,table,rows,db);
+  if (!accepted.length) return {accepted,rejected};
+  const rules=await enforcedRules(view,table);
   let log;
-  try { log = await historyPlan(view, db, table, accepted, history, transitions, historyState); }
+  try { log=await historyPlan(view,db,table,accepted,history,transitions); }
   catch (e) {
     if (!String(e).includes('life_history')) throw e;
-    if (rows.length > 1) {
-      const mid = Math.floor(rows.length / 2);
-      const left = await pushGroup(db, table, rows.slice(0,mid), upsertSql, hubAt, stamping, history, historyState);
-      const right = await pushGroup(db, table, rows.slice(mid), upsertSql, hubAt, stamping, history, historyState);
-      return {accepted:[...left.accepted,...right.accepted], rejected:[...left.rejected,...right.rejected]};
-    }
-    return {accepted:[],rejected:[...rejected,{id:accepted[0].id,col:null,rule:'history',message:String(e)}]};
+    throw Object.assign(e,{accepted,rejected,failure:{col:null,rule:'history',message:String(e)}});
   }
-  const groups = [];
+  const groups=[];
   for (const row of accepted) {
-    const cols = Object.keys(row);
-    const last = groups.at(-1);
-    if (last && last.cols.join(',') === cols.join(',')) last.rows.push(row);
-    else groups.push({cols, rows:[row]});
+    const cols=Object.keys(row), last=groups.at(-1);
+    if (last && last.cols.join(',')===cols.join(',')) last.rows.push(row);
+    else groups.push({cols,rows:[row]});
   }
-  const statements = groups.map(({ cols, rows }) => db.prepare(upsertSql(table, cols, stamping))
-    .bind(...(stamping ? [hubAt, JSON.stringify(rows)] : [JSON.stringify(rows)])));
+  const statements=groups.map(({cols,rows})=>db.prepare(upsertSql(table,cols,stamping))
+    .bind(...(stamping?[hubAt,JSON.stringify(rows)]:[JSON.stringify(rows)])));
   try {
-    await commitChecked(db, view.reads, table, rules, statements, hubAt || new Date().toISOString(), log, expected, props, transitions);
-    for (const id of log?.consumed ?? []) historyState.consumed.add(id);
-    return { accepted, rejected };
+    await commitChecked(db,view.reads,table,rules,statements,hubAt || new Date().toISOString(),log,expected,props,transitions,probe);
+    return {accepted,rejected};
   } catch (e) {
     if (!/life_invariant_|life_property_|life_write_conflict|integer overflow/.test(String(e))) throw e;
-    // Revalidate after rollback. Split in order so one bad row cannot deny
-    // valid siblings, and duplicate IDs see earlier accepted patches.
-    if (rows.length > 1) {
-      const mid = Math.floor(rows.length / 2);
-      const left = await pushGroup(db, table, rows.slice(0, mid), upsertSql, hubAt, stamping, history, historyState);
-      const right = await pushGroup(db, table, rows.slice(mid), upsertSql, hubAt, stamping, history, historyState);
-      return { accepted: [...left.accepted, ...right.accepted], rejected: [...left.rejected, ...right.rejected] };
-    }
-    const property = /life_property_(\d+)_(ref|options)/.exec(String(e));
-    if (property) return {accepted:[], rejected:[...rejected,{id:accepted[0].id,col:props[Number(property[1])].col,rule:property[2],message:'Value is not allowed by the current dependency state.'}]};
-    const index = /life_invariant_(\d+)/.exec(String(e));
-    const rule = index ? rules[Number(index[1])] : null;
-    return { accepted: [], rejected: [...rejected, { id: accepted[0].id, col: rule?.col ?? null,
-      rule: rule?.id ?? 'write-conflict', message: rule?.text ?? 'Write could not be committed; retry against current state.' }] };
+    const property=/life_property_(\d+)_(ref|options)/.exec(String(e));
+    const index=/life_invariant_(\d+)/.exec(String(e));
+    const rule=index ? rules[Number(index[1])] : null;
+    const failure=property
+      ? {col:props[Number(property[1])].col,rule:property[2],message:'Value is not allowed by the current dependency state.'}
+      : {col:rule?.col ?? null,rule:rule?.id ?? 'write-conflict',message:rule?.text ?? 'Write could not be committed; retry against current state.'};
+    throw Object.assign(e,{accepted,rejected,failure});
   }
 }
 

@@ -262,3 +262,89 @@ test('I7: schema-derived options do not conflict with our own read guards', asyn
   expect((await push(db,[{id:'a',name:'items',updated_at:T0}])).rejected).toEqual([]);
   expect(db.db.query('SELECT name FROM items').get().name).toBe('items');
 });
+
+for (const [values,revisions] of [['ABC','ABC'],['ABAB','ABAB'],['ABCBC','ABCBC'],['ABAC','ABAC'],['DBACACBADCB','DACACBCB']]) {
+  for (const reverse of [false,true]) test(`I4 ordered/cyclic/coalesced ${values}/${revisions}, reversed=${reverse}`, async () => {
+    const db=await fresh();
+    await push(db,[{id:'a',name:values[0],updated_at:T0}]);
+    const rows=[...revisions.slice(1)].map((name,i)=>({id:'a',name,updated_at:`2025-01-${String(i+2).padStart(2,'0')}T00:00:00.000Z`}));
+    const history=[...values.slice(1)].map((value,i)=>event(`e${i}`,values[i],value));
+    if (reverse) history.reverse();
+    const body={table:'items',columns:Object.keys(rows[0]),rows,history};
+    const out=await ROUTES['/v1/rows/push'](body,db);
+    expect(out.upserted).toBe(rows.length);
+    expect(out.rejected).toEqual([]);
+    expect(db.db.query('SELECT name FROM items').get().name).toBe(revisions.at(-1));
+    expect(db.db.query('SELECT id FROM history ORDER BY id').all()).toEqual(history.map(e=>({id:e.id})).sort((a,b)=>a.id.localeCompare(b.id)));
+    expect((await ROUTES['/v1/rows/push'](body,db)).rejected).toEqual([]);
+    expect(db.db.query('SELECT count(*) AS n FROM history').get().n).toBe(history.length);
+  });
+}
+
+test('I4 one original cannot explain two distinct updates', async () => {
+  const db=await fresh();
+  await push(db,[{id:'a',name:'A',updated_at:T0}]);
+  const rows=[...'BAB'].map((name,i)=>({id:'a',name,updated_at:`2025-01-0${i+2}T00:00:00.000Z`}));
+  const out=await ROUTES['/v1/rows/push']({table:'items',columns:Object.keys(rows[0]),rows,history:[event('e1','A','B')]},db);
+  expect(out.upserted).toBe(3);
+  expect(out.rejected).toEqual([]);
+  expect(db.db.query("SELECT old,new FROM history WHERE id<>'e1' ORDER BY created_at").all()).toEqual([{old:'B',new:'A'},{old:'A',new:'B'}]);
+});
+
+function ambiguousHistory() {
+  // Many dead-end choices toward C. Even without a match, exhaustively proving
+  // absence exceeds the matcher budget; that uncertainty cannot create a log.
+  const history=[];
+  for (let i=0;i<8;i++) {
+    history.push(event(`start${i}`,'B',String(i)));
+    for (let j=0;j<8;j++) if (i!==j) history.push(event(`edge${i}_${j}`,String(i),String(j)));
+  }
+  return history;
+}
+
+test('I4 matcher cap rejects all rows and original events atomically', async () => {
+  const db=await fresh();
+  await push(db,[{id:'a',name:'B',updated_at:T0}]);
+  const rows=[{id:'sibling',name:'safe',updated_at:T1},{id:'a',name:'C',updated_at:T1},{id:'a',name:'D',updated_at:T2},{id:'suffix',name:'safe',updated_at:'invalid'}];
+  const out=await ROUTES['/v1/rows/push']({table:'items',columns:Object.keys(rows[0]),rows,history:ambiguousHistory()},db);
+  expect(out.upserted).toBe(0);
+  expect(out.hub_at).toBe('');
+  expect(out.rejected).toEqual(rows.map(row=>({id:row.id,col:null,rule:'history-ambiguity',retryable:true,message:'History matching budget exhausted; split revisions into smaller requests and retry.'})));
+  expect(db.db.query('SELECT id,name FROM items').all()).toEqual([{id:'a',name:'B'}]);
+  expect(db.db.query('SELECT * FROM history').all()).toEqual([]);
+});
+
+test('I4 history-bearing isolation keeps good rows and matches their actual sequence', async () => {
+  const db=await fresh();
+  await push(db,[{id:'a',name:'A',updated_at:T0}]);
+  db.db.exec("INSERT INTO catalog_rules VALUES ('positive','items',NULL,'invariant',1,'SELECT id FROM changed WHERE qty<0','positive',NULL)");
+  const rows=[{id:'a',name:'B',qty:1,updated_at:T1},{id:'bad',name:'bad',qty:-1,updated_at:T1},{id:'a',name:'C',qty:1,updated_at:T2}];
+  const history=[event('e1','A','B'),event('e2','B','C')];
+  const out=await ROUTES['/v1/rows/push']({table:'items',columns:Object.keys(rows[0]),rows,history},db);
+  expect(out.upserted).toBe(2);
+  expect(out.rejected.map(r=>[r.id,r.rule])).toEqual([['bad','positive']]);
+  expect(db.db.query("SELECT id FROM history WHERE col='name' ORDER BY id").all()).toEqual([{id:'e1'},{id:'e2'}]);
+  expect(db.db.query('SELECT id,name FROM items').all()).toEqual([{id:'a',name:'C'}]);
+});
+
+test('I4 a cap after a failed batch cannot leave an earlier isolated sibling committed', async () => {
+  const db=await fresh();
+  await push(db,[{id:'a',name:'A',updated_at:T0}]);
+  db.db.exec("INSERT INTO catalog_rules VALUES ('positive','items',NULL,'invariant',1,'SELECT id FROM changed WHERE qty<0','positive',NULL)");
+  const batch=db.batch.bind(db);
+  let once=true;
+  db.batch=async statements=> {
+    try { return await batch(statements); }
+    catch (e) {
+      if (once) { once=false; db.db.exec("UPDATE items SET name='B' WHERE id='a'"); }
+      throw e;
+    }
+  };
+  const rows=[{id:'sibling',name:'safe',qty:1,updated_at:T1},{id:'bad',name:'bad',qty:-1,updated_at:T1},{id:'a',name:'C',qty:1,updated_at:T1}];
+  const out=await ROUTES['/v1/rows/push']({table:'items',columns:Object.keys(rows[0]),rows,history:[...ambiguousHistory(),event('direct','A','C')]},db);
+  expect(out.upserted).toBe(0);
+  expect(out.rejected.map(r=>r.rule)).toEqual(rows.map(()=>'history-ambiguity'));
+  expect(db.db.query('SELECT id,name FROM items').all()).toEqual([{id:'a',name:'B'}]);
+  expect(db.db.query('SELECT * FROM history').all()).toEqual([]);
+  expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+});

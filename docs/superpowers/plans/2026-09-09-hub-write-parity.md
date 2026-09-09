@@ -48,3 +48,15 @@ count for 500-row batches. Logs stay in ignored `.venv/work-logs`.
 - [x] Run full Worker suite and required static checks, review diff, commit locally
   and append exact Worker RED/GREEN evidence. Parent integrates Python and runs
   combined checks plus the supplied workerd/D1 runtime smoke.
+
+## I4 bounded matching correction
+
+- [x] Reproduce cyclic and reverse-attachment coalesced histories, event reuse,
+  and cap rejection both before mutation and after failed-batch isolation.
+- [x] Match explained transition sequences with disjoint bounded paths, retaining
+  the single-transition linear fast path and genuine no-match reconciliation.
+- [x] Keep history-bearing isolation rollback-only until a final atomic commit;
+  report unknown as retryable history-ambiguity for every submitted row.
+- [x] Align shared docs with the Python cap correction; leave Python untouched.
+- [x] Verify Worker/static checks, commit with normal signing/hooks, and append
+  exact evidence for parent integration and scoped runtime re-review.

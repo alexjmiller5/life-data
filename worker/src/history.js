@@ -27,27 +27,40 @@ export function historyTrail(events, old, value) {
   return seen.size === neighbors.size;
 }
 
-// Find an explanatory segment for one accepted revision. Full Euler trails
-// handle coalesced edits/cycles; a bounded graph search handles intermediate
-// revisions. Neither uses timestamp ties as an invented chronological order.
-function historySegment(events, old, value) {
-  if (historyTrail(events, old, value)) return events.map(e=>e.id);
-  const outgoing = new Map();
+// Match disjoint paths for the explained transitions, revisiting earlier
+// choices when values repeat. Exhaustion is UNKNOWN, never proof of no match.
+function historySegments(events, transitions) {
+  if (transitions.length === 1 && historyTrail(events, ...transitions[0])) return true;
+  const edges = new Map();
   for (const e of events) {
-    if (!outgoing.has(e.old)) outgoing.set(e.old,[]);
-    outgoing.get(e.old).push(e);
+    if (!edges.has(e.old)) edges.set(e.old,[]);
+    edges.get(e.old).push(e);
   }
-  const parent = new Map([[old,null]]), todo = [old];
-  for (let i=0; i<todo.length && !parent.has(value); i++) for (const e of outgoing.get(todo[i]) ?? []) {
-    if (!parent.has(e.new)) { parent.set(e.new,e); todo.push(e.new); }
+  const start = transitions[0][0];
+  const todo = [{step:0,value:start,used:new Set(),visited:new Set([start])}];
+  let budget = 10_000;
+  const enqueue = state => {
+    if (!budget--) throw Object.assign(new Error('History matching budget exhausted; split revisions into smaller requests and retry.'), {code:'history-ambiguity'});
+    todo.push(state);
+  };
+  while (todo.length) {
+    const {step,value,used,visited} = todo.pop();
+    const target = transitions[step][1];
+    if (value === target) {
+      if (step+1 === transitions.length) return true;
+      const start = transitions[step+1][0];
+      enqueue({step:step+1,value:start,used,visited:new Set([start])});
+      continue;
+    }
+    // Direct events first in the DFS, without treating attachment order as time.
+    for (const e of [...(edges.get(value) ?? [])].sort((a,b)=>Number(a.new===target)-Number(b.new===target))) {
+      if (!used.has(e.id) && !visited.has(e.new)) enqueue({step,value:e.new,used:new Set([...used,e.id]),visited:new Set([...visited,e.new])});
+    }
   }
-  if (!parent.has(value)) return [];
-  const ids = [];
-  for (let v=value; v!==old;) { const e=parent.get(v); ids.push(e.id); v=e.old; }
-  return ids;
+  return false;
 }
 
-export async function historyPlan(view, db, table, rows, supplied = [], transitions = [], state = {known:new Set(), eligible:new Map(), consumed:new Set()}) {
+export async function historyPlan(view, db, table, rows, supplied = [], transitions = []) {
   if (ENGINE.has(table)) return null;
   const ids = new Set(rows.map(r=>r.id));
   const events = supplied.filter(e=>ids.has(e.row_id));
@@ -68,16 +81,11 @@ export async function historyPlan(view, db, table, rows, supplied = [], transiti
         !validEditTimestamp(e.created_at) || !validEditTimestamp(e.updated_at)) {
       throw new Error('life_history: invalid attached history event');
     }
-    if (!state.known.has(e.id)) {
-      state.known.add(e.id);
-      if (!stored.has(e.id)) state.eligible.set(e.id,e);
-    }
     if (stored.has(e.id)) {
       if (FIELDS.some(c=>stored.get(e.id)[c] !== e[c])) throw new Error('life_history: history ID reused for a different event');
     } else { unseen.push(e); stored.set(e.id,e); }
   }
-  const available = [...state.eligible.values()].filter(e=>!state.consumed.has(e.id));
-  const summaries = [], consumed = new Set();
+  const summaries = [], matched = new Map();
   const cellText = (row,c) => {
     const v = row[c];
     if (v == null) return null;
@@ -89,15 +97,17 @@ export async function historyPlan(view, db, table, rows, supplied = [], transiti
     for (const c of cols.filter(c=>!['updated_at','hub_at'].includes(c))) {
       const old = cellText(before,c), value = cellText(after,c);
       if (old === value) continue;
-      const related = available.filter(e=>e.row_id===after.id && e.col===c && !consumed.has(e.id));
+      const related = unseen.filter(e=>e.row_id===after.id && e.col===c);
       if (!related.length) continue;
-      const segment = historySegment(related,old,value);
-      for (const id of segment) consumed.add(id);
-      summaries.push({row_id:after.id,col:c,updated_at:after.updated_at,old,new:value,valid:segment.length>0});
+      const key = JSON.stringify([after.id,c]);
+      const sequence = [...(matched.get(key) ?? []),[old,value]];
+      const valid = historySegments(related,sequence);
+      if (valid) matched.set(key,sequence);
+      summaries.push({row_id:after.id,col:c,updated_at:after.updated_at,old,new:value,valid});
     }
   }
   const histCols = exists ? (await db.prepare('PRAGMA table_info(history)').all()).results.map(c=>c.name) : [...FIELDS,'deleted_at','hub_at'];
-  return {cols, unseen, summaries, consumed, exists, stamp:histCols.includes('hub_at')};
+  return {cols, unseen, summaries, exists, stamp:histCols.includes('hub_at')};
 }
 
 export function historyStatements(db, table, key, plan, now) {

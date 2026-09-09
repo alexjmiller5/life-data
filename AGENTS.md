@@ -127,10 +127,16 @@ CLI.
   and updated_at/hub_at churn generate no new hub events.
   Sync attaches original local events through the optional `history` list on
   rows/push. The hub validates and deduplicates these facts by ID, never
-  rewriting an existing event. A linear degree/connectivity trail check
-  determines whether they explain actual OLD->NEW, without ordering timestamp
-  ties. Ordered revisions consume explanatory segments only after commit.
-  Unused original events remain eligible through ordered batch isolation.
+  rewriting an existing event. A single-transition whole-trail check is linear.
+  Multiple revisions use bounded backtracking (10,000 generated states) to match
+  disjoint paths and revisit earlier choices, without ordering tied timestamps
+  or reusing an original for distinct updates. Proven no-match reconciles;
+  needing more search states rejects the WHOLE request as history-ambiguity,
+  retryable=true, with no values/history committed and an empty hub_at. Split
+  revisions into smaller requests to retry; sync keeps its push cursor unchanged.
+  History-bearing D1 failure isolation uses rollback-only prefix probes, then
+  commits accepted rows together. All probes count toward the same query budget;
+  their final named CHECK failure rolls back helpers, values and history.
   A differing concurrent OLD preserves LWW and original events, plus
   one `hub:reconcile` cell transition. Stale rows may import unseen originals.
   Failed validation/invariants roll back both row and attached history.

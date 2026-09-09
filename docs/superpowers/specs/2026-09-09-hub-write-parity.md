@@ -34,7 +34,8 @@ insufficient. Use CTE contexts, not connection-persistent temporary tables.
 
 Preserve original random event IDs. The existing push accepts an optional history
 array, never a skip-logging switch. A linear degree/connectivity check recognizes
-OLD->NEW trails without ordering tied timestamps. Preserve offline A->B->C as two
+a single whole trail; bounded ordered-segment matching handles several revisions
+without ordering tied timestamps. Preserve offline A->B->C as two
 events and A->B->A as two distinct events. Concurrent D->C accepts strict-newer
 LWW, retains original events, and adds one hub:reconcile transition. First-sync
 inserts can import original events. Stale/replayed rows create no hub events;
@@ -55,12 +56,34 @@ SQLite numeric-string affinity. Updates remain sparse. Schema-derived options
 shall remain valid; read assertions precede helper DDL and use SELECT CASE with
 native guaranteed integer overflow to abort on mismatch (I7).
 
-I4: An attached original event is eligible once per request until its segment
-explains an accepted transition. Consume segments after successful commit, not
-when planning an attempt that might roll back. Multiple ordered revisions of one
-ID use their own OLD/NEW segment, while coalesced edits use a complete trail.
-Tied event timestamps never determine order. Preserve original random IDs and
-all original facts, including divergent replica edits; no public list-shape change.
+I4: Only original events absent before the request can explain new transitions.
+For one transition, a linear whole-trail check is the fast path. Multiple revisions
+match disjoint paths through those originals with bounded backtracking, revisiting
+earlier choices for cycles and coalesced edits. An original cannot explain two
+distinct updates. Cases include ABAB, ABCBC, and DBACACBADCB originals explaining
+DACACBCB revisions, in either attachment order. Event IDs/timestamp ties never
+invent chronology. Preserve original random IDs and all original facts; the
+public optional history list shape is unchanged.
+
+The matcher has three outcomes: proven match, exhaustively proven no-match, and
+unknown because generating another state would exceed 10,000. Already-generated
+states can still prove match/no-match at a zero remaining generation budget.
+No-match retains the existing genuine hub/reconciliation behavior. Unknown shall
+reject the entire request atomically, including earlier accepted siblings and
+unprocessed rows, with zero upserts, empty hub_at, and one rejection per submitted
+row in original order (including duplicate IDs): col=null, rule=history-ambiguity,
+retryable=true, message="History matching budget exhausted; split revisions into
+smaller requests and retry." No values, arrival stamps, originals or hub events
+from that request may persist. Existing history remains unchanged. Sync retains
+its push cursor; automatic splitting is not introduced.
+
+D1 history-bearing failure isolation shall use rollback-only prefix probes before
+one final accepted-sequence commit. Probes execute the same validation/history
+logic and end with a deliberately failing named CHECK after user work, rolling
+back all helper tables and writes. A cap reached during isolation therefore
+cannot strand an earlier commit. Valid history-bearing bulk batches keep one
+transaction; requests without attached originals retain ordered commit splitting.
+No durable bookkeeping, new endpoint, client gate or caller logging opt-out.
 
 I6/M1: Table writes and derivations require Workers Paid. Every batch statement
 counts toward D1's 1,000-query invocation limit. Push isolation has 750 statements

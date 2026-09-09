@@ -182,9 +182,21 @@ using the history-table shape and original IDs. Matching IDs are idempotent;
 conflicting reuse rejects the row. Original events that explain a cell transition
 replace an aggregate hub entry, including several ordered revisions of one ID. If a concurrent hub value differs, LWW still
 applies and one `hub:reconcile` event records the actual hub transition while
-preserving the local events. Timestamp ties imply no ordering. Stale/replayed
+preserving the local events. Single-transition whole trails use a linear check;
+ordered revisions use bounded backtracking over disjoint event paths, including
+cyclic/coalesced edits. Timestamp ties imply no ordering. Stale/replayed
 rows generate no hub events, though unseen originals can still replicate.
-Invariant rejection rolls back both mutation and attached events.
+Invariant rejection rolls back both mutation and attached events. A proven
+history mismatch still reconciles. If matching needs more than 10,000 generated
+search states, the whole request rolls back and returns zero upserts, empty
+`hub_at`, and one `history-ambiguity` rejection with `retryable: true` for every
+submitted row, in order. Split revisions into smaller requests and retry; an
+identical oversized request may reject again. No automatic split is added to sync.
+
+History-bearing D1 batches that need failure isolation use rollback-only probes
+before committing the accepted sequence once. Matcher or query exhaustion during
+isolation cannot leave earlier siblings, original events, or helper tables behind.
+Valid bulk requests still use one transaction.
 
 Sync keeps ordinary history-table replication as a fallback for servers that
 ignore the optional array. Rejections keep the push cursor in place and withhold
