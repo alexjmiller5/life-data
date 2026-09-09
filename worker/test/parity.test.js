@@ -87,11 +87,13 @@ test('500-row invariant pushes stay below 50 SQL statements for inserts and upda
   let out = await push(db, rows);
   expect(out.upserted).toBe(500);
   expect(out.rejected).toEqual([]);
+  console.info(`500-row bulk: accepted=${out.upserted} rejected=${out.rejected.length} statements=${count}`);
   expect(count).toBeLessThan(50);
   count = 0;
   out = await push(db, rows.map(r => ({...r, qty:2, updated_at:T1})));
   expect(out.upserted).toBe(500);
   expect(out.rejected).toEqual([]);
+  console.info(`500-row bulk: accepted=${out.upserted} rejected=${out.rejected.length} statements=${count}`);
   expect(count).toBeLessThan(50);
 });
 
@@ -204,4 +206,59 @@ test('history IDs cannot be reused to rewrite original facts', async () => {
   expect(out.rejected[0].rule).toBe('history');
   expect(db.db.query('SELECT name FROM items').get().name).toBe('B');
   expect(db.db.query('SELECT old,new FROM history').all()).toEqual([{old:'A',new:'B'}]);
+});
+
+for (const kind of ['ref','options']) test(`I1: earlier rows change ${kind} dependencies`, async () => {
+  const db = await fresh();
+  db.db.exec("ALTER TABLE items ADD COLUMN link TEXT; ALTER TABLE catalog_properties ADD COLUMN ref_table TEXT; ALTER TABLE catalog_properties ADD COLUMN options_sql TEXT;");
+  const spec = kind === 'ref' ? "'ref','items',NULL" : "'select',NULL,'SELECT id FROM items WHERE deleted_at IS NULL'";
+  db.db.exec(`INSERT INTO catalog_properties (id,tbl,col,type,ref_table,options_sql) VALUES ('link','items','link',${spec})`);
+  await push(db,[{id:'a',name:'A',updated_at:T0},{id:'c',name:'C',updated_at:T0}]);
+  const out = await push(db,[{id:'a',deleted_at:T1,updated_at:T1},{id:'b',name:'B',link:'a',updated_at:T1}]);
+  expect(out.upserted).toBe(1);
+  expect(out.rejected[0].rule).toBe(kind);
+  expect(db.db.query("SELECT * FROM items WHERE id='b'").all()).toEqual([]);
+  const created = await push(db,[{id:'d',name:'D',updated_at:T2},{id:'e',name:'E',link:'d',updated_at:T2}]);
+  expect(created.rejected).toEqual([]);
+  expect(created.upserted).toBe(2);
+});
+
+for (const derived of [false,true]) test(`I2: omitted defaults are validated, derived=${derived}`, async () => {
+  const db = await fresh();
+  db.db.exec("ALTER TABLE items ADD COLUMN choice TEXT DEFAULT 'bad'; ALTER TABLE catalog_properties ADD COLUMN derived_by TEXT;");
+  db.db.exec(`INSERT INTO catalog_properties (id,tbl,col,type,options,derived_by,inputs) VALUES ('choice','items','choice','select','[{"v":"good"}]',${derived?"'http:demo'":"NULL"},'[]')`);
+  if (derived) db.db.exec('CREATE TABLE provenance (id TEXT,inputs_hash TEXT,value_hash TEXT,deleted_at TEXT)');
+  const out = await push(db,[{id:'a',name:'A',updated_at:T0}]);
+  expect(out.upserted).toBe(0);
+  expect(out.rejected.some(r=>r.rule===(derived?'provenance':'options'))).toBe(true);
+  expect(db.db.query('SELECT * FROM items').all()).toEqual([]);
+  if (!derived) {
+    db.db.exec("UPDATE catalog_properties SET options='[{\"v\":\"bad\"}]' WHERE col='choice'");
+    expect((await push(db,[{id:'a',name:'A',updated_at:T0}])).rejected).toEqual([]);
+    expect(db.db.query('SELECT choice FROM items').get().choice).toBe('bad');
+  }
+});
+
+test('I3: valid numeric strings retain SQLite INTEGER and REAL coercion', async () => {
+  const db = await fresh();
+  db.db.exec("ALTER TABLE items ADD COLUMN score REAL; INSERT INTO catalog_properties (id,tbl,col,type) VALUES ('qty','items','qty','int'),('score','items','score','number')");
+  expect((await push(db,[{id:'a',name:'A',qty:'2',score:'2.5',updated_at:T0}])).rejected).toEqual([]);
+  expect((await push(db,[{id:'a',qty:'3',score:'4',updated_at:T1}])).rejected).toEqual([]);
+  expect(db.db.query('SELECT qty,score,typeof(qty) AS qt,typeof(score) AS st FROM items').get()).toEqual({qty:3,score:4,qt:'integer',st:'real'});
+});
+
+test('I4: ordered revisions consume original history without aggregate duplicates', async () => {
+  const db = await fresh();
+  await push(db,[{id:'a',name:'A',updated_at:T0}]);
+  const out = await ROUTES['/v1/rows/push']({table:'items',columns:['id','name','updated_at'],rows:[{id:'a',name:'B',updated_at:T1},{id:'a',name:'C',updated_at:T2}],history:[event('e1','A','B'),event('e2','B','C')]},db);
+  expect(out.upserted).toBe(2);
+  expect(out.rejected).toEqual([]);
+  expect(db.db.query('SELECT id FROM history ORDER BY id').all()).toEqual([{id:'e1'},{id:'e2'}]);
+});
+
+test('I7: schema-derived options do not conflict with our own read guards', async () => {
+  const db = await fresh();
+  db.db.exec("ALTER TABLE catalog_properties ADD COLUMN options_sql TEXT; UPDATE catalog_properties SET type='select', options_sql=\"SELECT name FROM sqlite_master WHERE type='table'\" WHERE col='name'");
+  expect((await push(db,[{id:'a',name:'items',updated_at:T0}])).rejected).toEqual([]);
+  expect(db.db.query('SELECT name FROM items').get().name).toBe('items');
 });

@@ -34,3 +34,17 @@ count for 500-row batches. Logs stay in ignored `.venv/work-logs`.
 - [x] Self-review against every requirement; update current AGENTS.md/README
   descriptions, commit all safe changes, and report RED/GREEN commands,
   coverage, files, SHA and limitations. No pushes or deployments.
+
+## Review fix wave: Worker ownership
+
+- [x] Preserve/transfer Python changes by manifest, then restore only the three
+  transferred Python files to HEAD. Python I4/I5/I9 are integrated separately.
+- [x] Reproduce Worker I1-I4/I6/I7 against frozen base, including actual executed
+  query limits; retain identical optional history-list protocol.
+- [x] Fix per-mutation dependencies, default/affinity validation, revision history
+  segments, schema read assertions, and all derivation caller budgets.
+- [x] Verify normal 500-row writes and 200-row provenance chunks stay bulk.
+- [x] Document Workers Paid prerequisite and controller-approved I8 legacy cost.
+- [x] Run full Worker suite and required static checks, review diff, commit locally
+  and append exact Worker RED/GREEN evidence. Parent integrates Python and runs
+  combined checks plus the supplied workerd/D1 runtime smoke.

@@ -80,7 +80,11 @@ CLI.
   running enforced invariants, and logging history, with a savepoint per row.
   The Worker captures validation reads and asserts them unchanged inside its
   D1 transaction. Ordinary triggers created and dropped in that batch check
-  actual NEW values and enforce invariants with OLD/NEW CTE contexts. A failed
+  actual NEW values and enforce invariants with OLD/NEW CTE contexts. INSERT
+  defaults are resolved once, validated, and stored explicitly. Physical column
+  affinity normalizes approved values. References/options_sql run at each
+  mutation to observe earlier accepted rows. Read assertions run before helper
+  DDL using SELECT CASE and SQLite integer overflow on mismatch. A failed
   invariant rolls back the batch; ordered splitting isolates rejected rows and
   revalidates duplicate IDs against earlier accepted state. Unexpected SQL
   failures roll back the submitted batch and surface as errors.
@@ -88,8 +92,11 @@ CLI.
   millisecond form, independently of the catalog. Missing, null, unlisted,
   malformed, non-UTC or non-millisecond stamps reject per row. Stale/equal
   revisions do not change values or generate new hub history.
+  Table writes/derivations require Workers Paid (1,000 D1 queries/invocation).
   Pushes budget 750 SQL statements, background derivations another 200, and
-  SQL text is bounded at D1's 100KB limit. Ordinary 500-row writes use bulk
+  direct/scheduled derivations share 900 across all nested callers, including
+  precommit reads. Exhaustion preserves committed progress and reports pending
+  work in failed; subsequent calls/sweeps resume. SQL text is bounded at D1's 100KB limit. Ordinary 500-row writes use bulk
   upserts. Budget exhaustion is retryable per row; sync leaves its push cursor
   unchanged whenever any row rejects.
 - **Checks are pure; producers may touch the world.** Invariant SQL is one
@@ -122,14 +129,19 @@ CLI.
   rows/push. The hub validates and deduplicates these facts by ID, never
   rewriting an existing event. A linear degree/connectivity trail check
   determines whether they explain actual OLD->NEW, without ordering timestamp
-  ties. A differing concurrent OLD preserves LWW and original events, plus
+  ties. Ordered revisions consume explanatory segments only after commit.
+  Unused original events remain eligible through ordered batch isolation.
+  A differing concurrent OLD preserves LWW and original events, plus
   one `hub:reconcile` cell transition. Stale rows may import unseen originals.
   Failed validation/invariants roll back both row and attached history.
   Ordinary history-table sync remains as an ID-idempotent fallback for old
   servers that ignore attachments. History sorts last, and events belonging
   to rejected mutations are withheld. Old clients do not attach history, so a
   new hub may log their transition before original random-ID events arrive;
-  that legacy duplicate cannot be inferred away safely.
+  legacy compatibility is explicitly best effort. Upgraded replicas supplying
+  originals receive the dedup guarantee; old or uninventoryed replicas can
+  duplicate aggregate/original history until upgraded. Never infer away or
+  delete original events, add client registries/gates, or require new endpoints.
 - **A soft-deleted row is never validated** (its cells are history, not a
   claim), but its cell changes are still logged.
 - **`rename_table` is the only table rename.** `execute_sql` refuses

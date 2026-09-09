@@ -27,7 +27,27 @@ export function historyTrail(events, old, value) {
   return seen.size === neighbors.size;
 }
 
-export async function historyPlan(view, db, table, rows, supplied = []) {
+// Find an explanatory segment for one accepted revision. Full Euler trails
+// handle coalesced edits/cycles; a bounded graph search handles intermediate
+// revisions. Neither uses timestamp ties as an invented chronological order.
+function historySegment(events, old, value) {
+  if (historyTrail(events, old, value)) return events.map(e=>e.id);
+  const outgoing = new Map();
+  for (const e of events) {
+    if (!outgoing.has(e.old)) outgoing.set(e.old,[]);
+    outgoing.get(e.old).push(e);
+  }
+  const parent = new Map([[old,null]]), todo = [old];
+  for (let i=0; i<todo.length && !parent.has(value); i++) for (const e of outgoing.get(todo[i]) ?? []) {
+    if (!parent.has(e.new)) { parent.set(e.new,e); todo.push(e.new); }
+  }
+  if (!parent.has(value)) return [];
+  const ids = [];
+  for (let v=value; v!==old;) { const e=parent.get(v); ids.push(e.id); v=e.old; }
+  return ids;
+}
+
+export async function historyPlan(view, db, table, rows, supplied = [], transitions = [], state = {known:new Set(), eligible:new Map(), consumed:new Set()}) {
   if (ENGINE.has(table)) return null;
   const ids = new Set(rows.map(r=>r.id));
   const events = supplied.filter(e=>ids.has(e.row_id));
@@ -38,7 +58,8 @@ export async function historyPlan(view, db, table, rows, supplied = []) {
       .bind(JSON.stringify(events.map(e=>e.id))).all();
     for (const e of results ?? []) stored.set(e.id,e);
   }
-  const cols = (await db.prepare(`PRAGMA table_info(${qident(table)})`).all()).results.map(c=>c.name);
+  const schema = (await db.prepare(`PRAGMA table_info(${qident(table)})`).all()).results;
+  const cols = schema.map(c=>c.name);
   const unseen = [];
   for (const e of events) {
     if (FIELDS.some(c=>!Object.hasOwn(e,c)) || typeof e.id !== 'string' || !e.id ||
@@ -47,29 +68,36 @@ export async function historyPlan(view, db, table, rows, supplied = []) {
         !validEditTimestamp(e.created_at) || !validEditTimestamp(e.updated_at)) {
       throw new Error('life_history: invalid attached history event');
     }
+    if (!state.known.has(e.id)) {
+      state.known.add(e.id);
+      if (!stored.has(e.id)) state.eligible.set(e.id,e);
+    }
     if (stored.has(e.id)) {
       if (FIELDS.some(c=>stored.get(e.id)[c] !== e[c])) throw new Error('life_history: history ID reused for a different event');
     } else { unseen.push(e); stored.set(e.id,e); }
   }
-  const groups = new Map();
-  for (const e of unseen) {
-    const key = JSON.stringify([e.row_id,e.col]);
-    if (!groups.has(key)) groups.set(key,[]);
-    groups.get(key).push(e);
-  }
-  const summaries = [];
-  for (const events of groups.values()) {
-    const degree = new Map();
-    for (const e of events) {
-      degree.set(e.old,(degree.get(e.old) ?? 0)+1);
-      degree.set(e.new,(degree.get(e.new) ?? 0)-1);
+  const available = [...state.eligible.values()].filter(e=>!state.consumed.has(e.id));
+  const summaries = [], consumed = new Set();
+  const cellText = (row,c) => {
+    const v = row[c];
+    if (v == null) return null;
+    if (typeof v === 'number' && Number.isInteger(v) && /REAL|FLOA|DOUB/i.test(schema.find(x=>x.name===c).type)) return v.toFixed(1);
+    return String(v);
+  };
+  for (const {before, after} of transitions) {
+    if (!before) continue;
+    for (const c of cols.filter(c=>!['updated_at','hub_at'].includes(c))) {
+      const old = cellText(before,c), value = cellText(after,c);
+      if (old === value) continue;
+      const related = available.filter(e=>e.row_id===after.id && e.col===c && !consumed.has(e.id));
+      if (!related.length) continue;
+      const segment = historySegment(related,old,value);
+      for (const id of segment) consumed.add(id);
+      summaries.push({row_id:after.id,col:c,updated_at:after.updated_at,old,new:value,valid:segment.length>0});
     }
-    const start = [...degree].find(([,n])=>n===1), end = [...degree].find(([,n])=>n===-1);
-    summaries.push({row_id:events[0].row_id, col:events[0].col, old:start?.[0] ?? null, new:end?.[0] ?? null,
-      valid:!!start && !!end && historyTrail(events,start[0],end[0])});
   }
   const histCols = exists ? (await db.prepare('PRAGMA table_info(history)').all()).results.map(c=>c.name) : [...FIELDS,'deleted_at','hub_at'];
-  return {cols, unseen, summaries, exists, stamp:histCols.includes('hub_at')};
+  return {cols, unseen, summaries, consumed, exists, stamp:histCols.includes('hub_at')};
 }
 
 export function historyStatements(db, table, key, plan, now) {
@@ -84,7 +112,7 @@ export function historyStatements(db, table, key, plan, now) {
   }
   const receipts = key + '_receipts', trigger = key + '_history';
   begin.push(db.prepare(`CREATE TABLE ${qident(receipts)} AS SELECT value FROM json_each(?)`).bind(JSON.stringify(plan.summaries)));
-  const cell = (c) => `SELECT value FROM ${qident(receipts)} WHERE json_extract(value,'$.row_id') IS NEW.id AND json_extract(value,'$.col')=${literal(c)}`;
+  const cell = (c) => `SELECT value FROM ${qident(receipts)} WHERE json_extract(value,'$.row_id') IS NEW.id AND json_extract(value,'$.col')=${literal(c)} AND json_extract(value,'$.updated_at') IS NEW.updated_at`;
   const checks = plan.cols.filter(c=>!['updated_at','hub_at'].includes(c)).map(c=> {
     const old = `CAST(OLD.${qident(c)} AS TEXT)`, value = `CAST(NEW.${qident(c)} AS TEXT)`;
     return `INSERT INTO history (id,tbl,row_id,col,old,new,origin,created_at,updated_at${plan.stamp?',hub_at':''})

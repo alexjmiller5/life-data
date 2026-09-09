@@ -307,3 +307,32 @@ test("existing rows are read in one query, not one per row", async () => {
   expect(out.rejected).toEqual([]);
   expect(selects).toBe(1);
 });
+
+test('200 provenance edges with schema options and target refs remain one bulk write', async () => {
+  const db = new D1Shim();
+  await seed(db);
+  db.db.exec(`INSERT INTO catalog_properties (id,tbl,col,type,options_sql) VALUES
+    ('provenance.to_kind','provenance','to_kind','select','SELECT name FROM sqlite_master WHERE type=''table''');
+    INSERT INTO catalog_properties (id,tbl,col,type,ref_table) VALUES
+    ('provenance.to_ref','provenance','to_ref','ref','places');`);
+  for (let i=0;i<200;i++) db.db.query('INSERT INTO places (id,name) VALUES (?,?)').run(String(i),'Target');
+  let queries=0;
+  const prepare=db.prepare.bind(db);
+  db.prepare=sql=> {
+    const stmt=prepare(sql);
+    for (const method of ['all','first','run']) {
+      const original=stmt[method].bind(stmt);
+      stmt[method]=(...args)=> { queries++; return original(...args); };
+    }
+    return stmt;
+  };
+  const rows=Array.from({length:200},(_,i)=>({id:`source:${i}:target`,from_kind:'source',from_ref:String(i),to_kind:'places',to_ref:String(i),rel:'imported_from',asserted_by:'test',updated_at:'2026-09-07T00:00:00.000Z'}));
+  const out=await ROUTES['/v1/rows/push']({table:'provenance',columns:Object.keys(rows[0]),rows},db);
+  console.info(`provenance bulk: accepted=${out.upserted} rejected=${out.rejected.length} statements=${queries}`);
+  expect(out.upserted).toBe(200);
+  expect(out.rejected).toEqual([]);
+  expect(queries).toBeLessThan(50);
+  db.db.exec("UPDATE places SET deleted_at='gone' WHERE id='0'");
+  const missing=await ROUTES['/v1/rows/push']({table:'provenance',columns:Object.keys(rows[0]),rows:[{...rows[0],id:'missing-target'}]},db);
+  expect(missing.rejected[0].rule).toBe('ref');
+});
