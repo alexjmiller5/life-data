@@ -84,11 +84,46 @@ async function authenticate(request, env, ctx) {
   return { db: env.DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name };
 }
 
+// Decode exactly once and reject ambiguous separators/escape sequences. The same
+// canonical key is used for authorization and storage, including legacy URLs.
+function fileKey(pathname) {
+  const encoded = pathname.replace(/^\/v1\/(files|archive)\//, "");
+  if (/%2f|%5c/i.test(encoded)) throw new Error("bad key");
+  const key = decodeURIComponent(encoded);
+  if (!key || /[%\\\x00-\x1f\x7f]/.test(key) ||
+      key.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("bad key");
+  }
+  return key;
+}
+
+function fileAllowed(pathname, method, scopes) {
+  let key;
+  try { key = fileKey(pathname); } catch { return false; }
+  const operation = method === "PUT" && pathname.startsWith("/v1/files/") ? "write"
+    : ["GET", "HEAD"].includes(method) ? "read" : null;
+  if (!operation) return false;
+  return scopes.some((scope) => {
+    const grant = `files:${operation}:`;
+    if (!scope.startsWith(grant)) return false;
+    const prefix = scope.slice(grant.length);
+    // Prefixes are literal object-key namespaces, with a mandatory boundary.
+    return prefix.endsWith("/") && prefix.length > 1 &&
+      !/[%\\\x00-\x1f\x7f]/.test(prefix) &&
+      prefix.slice(0, -1).split("/").every((p) => p && p !== "." && p !== "..") &&
+      key.startsWith(prefix);
+  });
+}
+
 // Route family → scopes that may use it. "admin" implies everything;
 // "full" implies everything except token management.
 function allowed(pathname, method, scopes) {
   if (scopes.includes("admin")) return true;
   if (pathname.startsWith("/v1/tokens/")) return false; // admin only
+  if (pathname.startsWith("/v1/files/") ||
+      (pathname.startsWith("/v1/archive/") && !(pathname === "/v1/archive/query" && method === "POST"))) {
+    return scopes.includes("full") || fileAllowed(pathname, method, scopes);
+  }
   if (pathname === "/v1/backup") return scopes.includes("full");
   if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
     return scopes.includes("full") || scopes.includes("streams:append");
@@ -470,14 +505,15 @@ async function handleStreams(request, env, url) {
 }
 
 async function handleArchiveGet(request, env, url) {
-  const key = decodeURIComponent(url.pathname.slice("/v1/archive/".length));
-  if (key.includes("..")) return json({ error: "bad key" }, 400);
+  let key;
+  try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
   // HEAD: DuckDB's httpfs sizes files with HEAD before ranged GETs
   if (request.method === "HEAD") {
     const head = await env.ARCHIVE.head(key);
     if (!head) return new Response(null, { status: 404 });
     const headers = new Headers();
     head.writeHttpMetadata(headers);
+    headers.set("Cache-Control", "private, no-store, no-transform");
     headers.set("Accept-Ranges", "bytes");
     headers.set("Content-Length", String(head.size));
     return new Response(null, { headers });
@@ -492,6 +528,7 @@ async function handleArchiveGet(request, env, url) {
   if (!obj) return json({ error: "not found" }, 404);
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "private, no-store, no-transform");
   headers.set("Accept-Ranges", "bytes");
   if (rangeHeader && obj.range) {
     const start = obj.range.offset ?? Math.max(0, obj.size - (obj.range.suffix ?? 0));
@@ -516,6 +553,16 @@ export default {
     }
 
     try {
+      if (url.pathname.startsWith("/v1/files/")) {
+        if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
+        if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
+        let key;
+        try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
+        const object = await tenant.archive.put(key, request.body, {
+          httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" },
+        });
+        return json({ key, etag: object.httpEtag }, 201);
+      }
       if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
         const route = TOKEN_ROUTES[url.pathname];
         if (!route) return json({ error: "not found" }, 404);
