@@ -60,6 +60,22 @@ for (const [type,initial,value] of [
   }
 });
 
+for (const [mode,old] of [['STRICT','000123'],['','123']]) test(`F2: ${mode || 'ordinary'} ANY keeps original history on acceptance and replay`, async () => {
+  const db = new D1Shim();
+  db.db.exec(`CREATE TABLE items(id TEXT PRIMARY KEY,qty ANY,updated_at TEXT,deleted_at TEXT,hub_at TEXT) ${mode};
+    INSERT INTO items(id,qty,updated_at) VALUES ('a','000123','${T0}');`);
+  const original = {...event('any-edit',old,'456'),col:'qty'};
+  const body = {table:'items',columns:['id','qty','updated_at'],rows:[{id:'a',qty:456,updated_at:T1}],history:[original]};
+  for (let attempt=0; attempt<2; attempt++) {
+    const out = await ROUTES['/v1/rows/push'](body,db);
+    expect(out.upserted).toBe(1);
+    expect(out.rejected).toEqual([]);
+    expect(db.db.query('SELECT id,old,new,origin FROM history').all()).toEqual([{id:original.id,old,new:'456',origin:'replica'}]);
+    expect(db.db.query('SELECT qty,typeof(qty) AS type,updated_at FROM items').get()).toEqual({qty:456,type:'integer',updated_at:T1});
+    expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+  }
+});
+
 for (const [stored,old] of [[3e-7,'1.0e-07'],[1e-7,'1e-7']]) test(`F1: numeric divergence is preserved for ${stored}/${old}`, async () => {
   const db = new D1Shim();
   db.db.exec('CREATE TABLE items(id TEXT PRIMARY KEY, qty REAL, updated_at TEXT, deleted_at TEXT, hub_at TEXT)');

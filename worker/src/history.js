@@ -106,11 +106,13 @@ export async function historyPlan(view, db, table, rows, supplied = [], transiti
 // types (and integer precision). Helpers are created/dropped in one batch;
 // existing read guards and final receipt comparisons still protect the commit.
 async function storedTransitions(db, table, schema, rows, upsertSql) {
+  // STRICT changes ANY affinity; the existing schema read guard protects this metadata.
+  const {strict} = await db.prepare("SELECT strict FROM pragma_table_list WHERE schema='main' AND name=?").bind(table).first();
   const key = '_life_write_' + crypto.randomUUID().replaceAll('-', '');
   const copy = qident(key), changes = qident(key + '_changes');
   const cols = schema.map(c=>qident(c.name)).join(',');
   const statements = [
-    db.prepare(`CREATE TABLE ${copy} (${schema.map(c=>`${qident(c.name)} ${literal(c.type)}`).join(',')}, PRIMARY KEY(id))`),
+    db.prepare(`CREATE TABLE ${copy} (${schema.map(c=>`${qident(c.name)} ${literal(c.type)}`).join(',')}, PRIMARY KEY(id))${strict?' STRICT':''}`),
     db.prepare(`INSERT INTO ${copy} (${cols}) SELECT ${cols} FROM ${qident(table)} WHERE id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`).bind(JSON.stringify(rows)),
     db.prepare(`CREATE TABLE ${changes} (row_id TEXT, col TEXT, updated_at TEXT, old TEXT, new TEXT)`),
     db.prepare(`CREATE TRIGGER ${qident(key + '_capture')} AFTER UPDATE ON ${copy} BEGIN ${schema.filter(c=>!['updated_at','hub_at'].includes(c.name)).map(c=>
