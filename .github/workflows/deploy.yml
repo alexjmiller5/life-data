@@ -12,9 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
+      - uses: oven-sh/setup-bun@v2
       - run: uv sync
       - run: uv run pytest -q
       - run: uv run ruff check .
+      - working-directory: worker
+        run: bun test
 
   deploy:
     needs: test

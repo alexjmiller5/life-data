@@ -224,14 +224,34 @@ const ROUTES = {
 
   "/v1/rows/push": async (body, db, env, ctx) => {
     const table = ident(body.table); // before any SQL is built from it
-    const rows = body.rows ?? [];
-    const { accepted, rejected } = await validatePush(db, table, rows);
+    const columns = body.columns.map(ident);
+    // The same sparse payload must reach validation and SQL: unlisted keys
+    // are not writes, and an omitted listed key is not an explicit NULL.
+    const rows = (body.rows ?? []).map((row) => Object.fromEntries(
+      columns.filter((col) => Object.hasOwn(row, col)).map((col) => [col, row[col]])
+    ));
+    // Conflict timestamps belong to the caller, never an INSERT default.
+    const { accepted, rejected } = await validatePush(db, table, rows.filter((row) => row.updated_at != null));
+    rejected.push(...rows.filter((row) => row.updated_at == null).map((row) => ({
+      id: row.id, col: "updated_at", rule: "required", message: "updated_at is required for pushed rows.",
+    })));
     // one hub, one clock: every row this push lands carries the same stamp
     const stamping = await hasHubAt(db, table);
     const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
     if (accepted.length) {
-      const args = stamping ? [hubAt, JSON.stringify(accepted)] : [JSON.stringify(accepted)];
-      await db.prepare(upsertSql(table, body.columns, stamping)).bind(...args).run();
+      // Batch adjacent equal shapes only: regrouping can reorder equal-stamp
+      // edits of the same id. Never fill omissions with a stored-row echo.
+      const groups = [];
+      for (const row of accepted) {
+        const cols = Object.keys(row);
+        const last = groups.at(-1);
+        if (last && last.cols.join(",") === cols.join(",")) last.rows.push(row);
+        else groups.push({ cols, rows: [row] });
+      }
+      await db.batch(groups.map(({ cols, rows }) => {
+        const args = stamping ? [hubAt, JSON.stringify(rows)] : [JSON.stringify(rows)];
+        return db.prepare(upsertSql(table, cols, stamping)).bind(...args);
+      }));
     }
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.

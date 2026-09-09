@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from itertools import groupby
 from pathlib import Path
 
 VERSION = "0.2.0"
@@ -370,17 +371,39 @@ class LocalHub:
         )
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict]) -> dict:
+        # Validate exactly the sparse payload SQL will write. A listed but
+        # omitted key is not NULL; an unlisted value cannot satisfy required.
+        for col in columns:
+            qi(col)
+        rows = [{col: row[col] for col in columns if col in row} for row in rows]
+        # Conflict timestamps belong to the caller, never an INSERT default.
+        stamped = [row for row in rows if row.get("updated_at") is not None]
         with connect(self.path) as conn:
-            accepted, rejected = catalog.validate_push(conn, table, rows)
+            accepted, rejected = catalog.validate_push(conn, table, stamped)
+        rejected += [
+            {
+                "id": row["id"],
+                "col": "updated_at",
+                "rule": "required",
+                "message": "updated_at is required for pushed rows.",
+            }
+            for row in rows
+            if row.get("updated_at") is None
+        ]
         # one hub, one clock: every row this push lands carries the same stamp.
         # Whether to stamp is the HUB schema's call, never the pushed column
         # list - a client that omits hub_at must not land unstamped rows.
         stamping = self._has_hub_at(table)
         hub_at = self._query(f"SELECT {NOW} AS t")[0]["t"] if stamping else ""
-        sql = _upsert_sql(table, columns, stamp_hub_at=stamping)
-        for i in range(0, len(accepted), CHUNK):
-            blob = json.dumps(accepted[i : i + CHUNK])
-            self._query(sql, [hub_at, blob] if stamping else [blob])
+        # Adjacent shapes preserve equal-timestamp input order. Keep all SQL
+        # writes atomic even when heterogeneous rows need separate statements.
+        with connect(self.path) as conn:
+            for cols, group in groupby(accepted, key=tuple):
+                shaped = list(group)
+                sql = _upsert_sql(table, list(cols), stamp_hub_at=stamping)
+                for i in range(0, len(shaped), CHUNK):
+                    blob = json.dumps(shaped[i : i + CHUNK])
+                    conn.execute(sql, [hub_at, blob] if stamping else [blob])
         return {"upserted": len(accepted), "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:

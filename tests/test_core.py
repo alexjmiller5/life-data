@@ -479,6 +479,174 @@ def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
     assert sync(db, hub)["rejected"] == []  # cursor advanced; not re-pushed
 
 
+@pytest.fixture()
+def shape_hub(hub):
+    init(hub.path)
+    create_table(hub.path, "places", ["name:text!", "status:select(want)"])
+    insert_rows(
+        hub.path,
+        "places",
+        [
+            {"id": rid, "name": "A", "status": "want", "updated_at": "2026-09-03T00:00:00.000Z"}
+            for rid in ("a", "b", "c")
+        ],
+    )
+    return hub
+
+
+@pytest.mark.parametrize("stamp", [{}, {"updated_at": None}], ids=["missing", "null"])
+def test_hub_unstamped_rows_never_gain_default_write_precedence(hub, stamp):
+    init(hub.path)
+    create_table(hub.path, "stamped", ["name:text!"])
+    insert_rows(
+        hub.path,
+        "stamped",
+        [
+            {"id": "a", "name": "stored", "updated_at": "2000-01-01T00:00:00.000Z"},
+        ],
+    )
+    cols = ["id", "name", "updated_at"]
+    out = hub.rows_push(
+        "stamped",
+        cols,
+        [
+            {"id": "a", "name": "first", "updated_at": "2001-01-01T00:00:00.000Z"},
+            {"id": "a", "name": "unstamped overwrite", **stamp},
+            {"id": "new", "name": "unstamped insert", **stamp},
+        ],
+    )
+    assert out["upserted"] == 1
+    assert [(r["id"], r["col"], r["rule"]) for r in out["rejected"]] == [
+        ("a", "updated_at", "required"),
+        ("new", "updated_at", "required"),
+    ]
+    expected = [{"id": "a", "name": "first", "updated_at": "2001-01-01T00:00:00.000Z"}]
+    assert hub.rows_pull("stamped", cols, "") == expected
+    out = hub.rows_push(
+        "stamped",
+        ["id", "name"],
+        [
+            {"id": "a", "name": "unlisted overwrite", "updated_at": "2002-01-01T00:00:00.000Z"},
+        ],
+    )
+    assert out["upserted"] == 0
+    assert out["rejected"][0]["col"] == "updated_at"
+    assert out["rejected"][0]["rule"] == "required"
+    assert hub.rows_pull("stamped", cols, "") == expected
+
+
+def test_hub_heterogeneous_rows_preserve_omitted_required_fields(shape_hub):
+    hub = shape_hub
+    cols = ["id", "name", "status", "updated_at", "hub_at"]
+    before = hub.rows_pull("places", cols, "")
+    stamp = "2026-09-09T00:00:00.000Z"
+    out = hub.rows_push(
+        "places",
+        cols,
+        [
+            {"id": "a", "status": None, "updated_at": stamp},
+            {"id": "b", "name": "B", "updated_at": stamp},
+            {"id": "c", "name": None, "status": "want", "updated_at": stamp},
+        ],
+    )
+    assert out["upserted"] == 2
+    assert [(r["id"], r["col"], r["rule"]) for r in out["rejected"]] == [("c", "name", "required")]
+    stored = {r["id"]: r for r in hub.rows_pull("places", cols, "")}
+    assert (stored["a"]["name"], stored["a"]["status"]) == ("A", None)
+    assert (stored["b"]["name"], stored["b"]["status"]) == ("B", "want")
+    assert stored["c"] == next(r for r in before if r["id"] == "c")
+
+
+def test_hub_required_insert_value_outside_columns_is_rejected(shape_hub):
+    out = shape_hub.rows_push(
+        "places",
+        ["id", "updated_at"],
+        [
+            {"id": "new", "name": "not written", "updated_at": "2026-09-09T00:00:00.000Z"},
+        ],
+    )
+    assert out["upserted"] == 0
+    assert out["rejected"][0]["rule"] == "required"
+    assert "new" not in {r["id"] for r in shape_hub.rows_pull("places", ["id"], "")}
+
+
+def test_hub_unlisted_values_are_not_validated_or_written(shape_hub):
+    out = shape_hub.rows_push(
+        "places",
+        ["id", "name", "updated_at"],
+        [
+            {
+                "id": "a",
+                "name": "B",
+                "status": "invalid but unlisted",
+                "updated_at": "2026-09-09T00:00:00.000Z",
+            },
+        ],
+    )
+    assert out["rejected"] == []
+    stored = next(
+        r for r in shape_hub.rows_pull("places", ["id", "name", "status"], "") if r["id"] == "a"
+    )
+    assert stored == {"id": "a", "name": "B", "status": "want"}
+
+
+def test_hub_heterogeneous_pushes_preserve_timestamp_order_without_echo(shape_hub):
+    hub = shape_hub
+    cols = ["id", "name", "status", "updated_at", "hub_at"]
+    out = hub.rows_push(
+        "places",
+        cols,
+        [
+            {"id": "a", "status": "want", "updated_at": "2026-09-09T00:00:00.000Z"},
+            {"id": "a", "name": "first", "updated_at": "2026-09-10T00:00:00.000Z"},
+            {"id": "a", "status": None, "updated_at": "2026-09-10T00:00:00.000Z"},
+        ],
+    )
+    assert out["rejected"] == []
+    stored = {r["id"]: r for r in hub.rows_pull("places", cols, "")}
+    assert (stored["a"]["name"], stored["a"]["status"]) == ("first", "want")
+    hub.rows_push(
+        "places",
+        cols,
+        [
+            {"id": "a", "name": "second", "updated_at": "2026-09-11T00:00:00.000Z"},
+            {"id": "a", "status": None, "updated_at": "2026-09-12T00:00:00.000Z"},
+        ],
+    )
+    stored = hub.rows_pull("places", cols, "")
+    a = next(r for r in stored if r["id"] == "a")
+    assert (a["name"], a["status"]) == ("second", None)
+    hub.rows_push(
+        "places",
+        ["id", "name", "updated_at"],
+        [
+            {"id": "a", "name": "stale", "updated_at": "2026-09-11T00:00:00.000Z"},
+        ],
+    )
+    assert hub.rows_pull("places", cols, "") == stored
+
+
+def test_hub_sql_failure_rolls_back_heterogeneous_accepted_rows(shape_hub):
+    hub = shape_hub
+    with connect(hub.path) as conn:
+        conn.execute(
+            "CREATE TRIGGER block_name BEFORE UPDATE ON places "
+            "WHEN NEW.name='blocked' BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+        )
+    cols = ["id", "name", "status", "updated_at", "hub_at"]
+    before = hub.rows_pull("places", cols, "")
+    with pytest.raises(sqlite3.IntegrityError, match="blocked"):
+        hub.rows_push(
+            "places",
+            cols,
+            [
+                {"id": "a", "status": None, "updated_at": "2026-09-09T00:00:00.000Z"},
+                {"id": "a", "name": "blocked", "updated_at": "2026-09-10T00:00:00.000Z"},
+            ],
+        )
+    assert hub.rows_pull("places", cols, "") == before
+
+
 def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
     from life_data.catalog import inputs_hash, set_property, value_hash
 

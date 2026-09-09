@@ -146,6 +146,110 @@ test("schema push skips a RENAME TO the hub already applied, and hub replay rena
 const push = (body, db) => ROUTES["/v1/rows/push"](body, db);
 const partial = (o) => ({ table: "places", columns: Object.keys(o), rows: [o] });
 
+for (const stamp of [{}, { updated_at: null }]) {
+  test(`a ${"updated_at" in stamp ? "null" : "missing"} conflict timestamp never gains default write precedence`, async () => {
+    const db = new D1Shim();
+    await seed(db);
+    for (const sql of [
+      `CREATE TABLE stamped (id TEXT PRIMARY KEY, name TEXT, created_at TEXT NOT NULL DEFAULT (${NOW}), updated_at TEXT NOT NULL DEFAULT (${NOW}), deleted_at TEXT, hub_at TEXT)`,
+      `CREATE TRIGGER stamped_updated_at AFTER UPDATE ON stamped FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE stamped SET updated_at = (${NOW}) WHERE rowid = NEW.rowid; END`,
+      `INSERT INTO catalog_properties (id, tbl, col, type, required) VALUES ('stamped.name','stamped','name','text',1)`,
+      `INSERT INTO stamped (id, name, updated_at) VALUES ('a','stored','2000-01-01T00:00:00.000Z')`,
+    ]) await db.prepare(sql).run();
+    const out = await push({ table: "stamped", columns: ["id", "name", "updated_at"], rows: [
+      { id: "a", name: "first", updated_at: "2001-01-01T00:00:00.000Z" },
+      { id: "a", name: "unstamped overwrite", ...stamp },
+      { id: "new", name: "unstamped insert", ...stamp },
+    ] }, db);
+    expect(out.upserted).toBe(1);
+    expect(out.rejected).toEqual(["a", "new"].map((id) => expect.objectContaining({ id, col: "updated_at", rule: "required" })));
+    expect((await db.prepare("SELECT id, name, updated_at FROM stamped").all()).results).toEqual([
+      { id: "a", name: "first", updated_at: "2001-01-01T00:00:00.000Z" },
+    ]);
+    // Supplying a timestamp outside the allowed columns is still unstamped.
+    const unlisted = await push({ table: "stamped", columns: ["id", "name"], rows: [
+      { id: "a", name: "unlisted overwrite", updated_at: "2002-01-01T00:00:00.000Z" },
+    ] }, db);
+    expect(unlisted.upserted).toBe(0);
+    expect(unlisted.rejected[0]).toMatchObject({ id: "a", col: "updated_at", rule: "required" });
+    expect((await db.prepare("SELECT name FROM stamped WHERE id='a'").first()).name).toBe("first");
+  });
+}
+
+test("heterogeneous accepted and rejected rows preserve omitted required fields", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: ["a", "b", "c"].map((id) => row({ id })) }, db);
+  const before = await db.prepare("SELECT * FROM places WHERE id='c'").first();
+  const updated_at = "2026-09-09T00:00:00.000Z";
+  const out = await push({ table: "places", columns: cols, rows: [
+    { id: "a", status: null, updated_at }, // explicit optional NULL clears
+    { id: "b", name: "B", updated_at },
+    { id: "c", name: null, status: "want", updated_at }, // required NULL rejects whole row
+  ] }, db);
+  expect(out.upserted).toBe(2);
+  expect(out.rejected).toEqual([expect.objectContaining({ id: "c", col: "name", rule: "required" })]);
+  expect(await db.prepare("SELECT name, status FROM places WHERE id='a'").first()).toEqual({ name: "A", status: null });
+  expect(await db.prepare("SELECT name, status FROM places WHERE id='b'").first()).toEqual({ name: "B", status: "want" });
+  expect(await db.prepare("SELECT * FROM places WHERE id='c'").first()).toEqual(before);
+});
+
+test("a required insert value outside columns cannot satisfy validation", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  const out = await push({ table: "places", columns: ["id", "updated_at"], rows: [row({ id: "new" })] }, db);
+  expect(out.upserted).toBe(0);
+  expect(out.rejected[0]).toMatchObject({ id: "new", col: "name", rule: "required" });
+  expect(await db.prepare("SELECT * FROM places WHERE id='new'").first()).toBeNull();
+});
+
+test("unlisted values are not validated or written in a partial update", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row()] }, db);
+  const out = await push({ table: "places", columns: ["id", "name", "updated_at"], rows: [
+    { id: "a", name: "B", status: "invalid but unlisted", updated_at: "2026-09-09T00:00:00.000Z" },
+  ] }, db);
+  expect(out.rejected).toEqual([]);
+  expect(await db.prepare("SELECT name, status FROM places WHERE id='a'").first()).toEqual({ name: "B", status: "want" });
+});
+
+test("heterogeneous partial pushes keep timestamp order and never echo stored cells", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row()] }, db);
+  const out = await push({ table: "places", columns: cols, rows: [
+    { id: "a", status: "want", updated_at: "2026-09-09T00:00:00.000Z" },
+    { id: "a", name: "first", updated_at: "2026-09-10T00:00:00.000Z" },
+    { id: "a", status: null, updated_at: "2026-09-10T00:00:00.000Z" },
+  ] }, db);
+  expect(out.rejected).toEqual([]);
+  expect(await db.prepare("SELECT name, status FROM places WHERE id='a'").first()).toEqual({ name: "first", status: "want" });
+  // A later partial row must not echo the pre-push name over the preceding edit.
+  await push({ table: "places", columns: cols, rows: [
+    { id: "a", name: "second", updated_at: "2026-09-11T00:00:00.000Z" },
+    { id: "a", status: null, updated_at: "2026-09-12T00:00:00.000Z" },
+  ] }, db);
+  const stored = await db.prepare("SELECT * FROM places WHERE id='a'").first();
+  expect(stored.name).toBe("second");
+  expect(stored.status).toBeNull();
+  await push(partial({ id: "a", name: "stale", updated_at: "2026-09-11T00:00:00.000Z" }), db);
+  expect(await db.prepare("SELECT * FROM places WHERE id='a'").first()).toEqual(stored);
+});
+
+test("a SQL failure rolls back every heterogeneous accepted row", async () => {
+  const db = new D1Shim();
+  await seed(db);
+  await push({ table: "places", columns: cols, rows: [row()] }, db);
+  await db.prepare("CREATE TRIGGER block_name BEFORE UPDATE ON places WHEN NEW.name='blocked' BEGIN SELECT RAISE(ABORT, 'blocked'); END").run();
+  const before = await db.prepare("SELECT * FROM places WHERE id='a'").first();
+  await expect(push({ table: "places", columns: cols, rows: [
+    { id: "a", status: null, updated_at: "2026-09-09T00:00:00.000Z" },
+    { id: "a", name: "blocked", updated_at: "2026-09-10T00:00:00.000Z" },
+  ] }, db)).rejects.toThrow("blocked");
+  expect(await db.prepare("SELECT * FROM places WHERE id='a'").first()).toEqual(before);
+});
+
 test("a partial update of an existing row is validated against the merged row", async () => {
   const db = new D1Shim();
   await seed(db);

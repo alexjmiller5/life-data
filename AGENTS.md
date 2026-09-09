@@ -78,6 +78,17 @@ CLI.
   `id IN (...)` query per push, never one per row. The local write path needs
   none of this: it validates rows read back out of the table after the write,
   which is already the merged row.
+  Both push implementations treat `columns` as the allowed write set and
+  project each row onto only its supplied keys before validation. Persistence
+  batches adjacent rows with identical keys, never filling omissions with NULL
+  or stored values; order and last-write-wins stay intact. Accepted SQL writes
+  run atomically across those batches. An explicit NULL still clears an optional
+  cell and is rejected for a required cell. Push validation checks properties
+  and derived provenance; enforced catalog invariants run on local writes,
+  not on the push route. Validation's read and the SQL write remain separate.
+  Every pushed row must supply non-null `updated_at` in its allowed payload;
+  missing, null or unlisted conflict timestamps cause per-row rejection before
+  persistence. SQLite defaults must never manufacture a pushed edit's timestamp.
 - **Checks are pure; producers may touch the world.** Invariant SQL is one
   SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
   now)`; `changed`/`before` are temp tables the engine provides). Audits run
@@ -156,6 +167,7 @@ CLI.
   and a secret manager's request budget is finite - two machines crash-
   looping every 30s exhausted a 1000/day budget by themselves.
 - `just test` runs pytest AND `bun test` in `worker/`.
+  The deploy workflow gates deployment on both suites.
 
 ## Sync internals
 
