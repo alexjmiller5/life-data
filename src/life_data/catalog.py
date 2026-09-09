@@ -1074,6 +1074,13 @@ def history_trail(events, old, new) -> bool:
     return len(seen) == len(neighbors)
 
 
+_HISTORY_SEARCH_LIMIT = 10_000
+
+
+class _HistoryAmbiguity(Exception):
+    """The bounded matcher could neither prove nor disprove a history match."""
+
+
 def _history_segments(events, transitions):
     """Match ordered edits to disjoint paths, revisiting ambiguous earlier choices."""
     if len(transitions) == 1 and history_trail(events, *transitions[0]):
@@ -1083,15 +1090,16 @@ def _history_segments(events, transitions):
         edges.setdefault(event["old"], []).append(event)
     start = transitions[0][0]
     todo = [(0, start, frozenset(), frozenset({start}))]
-    # ponytail: cap ambiguous search at 10,000 states, then reconcile conservatively;
-    # larger ambiguous batches would need a more efficient path matcher.
-    budget = 10_000
-    while todo and budget:
+    # Bound generated states; exhausting the search is not proof of divergence.
+    budget = _HISTORY_SEARCH_LIMIT
+    while todo:
         step, value, used, visited = todo.pop()
         target = transitions[step][1]
         if value == target:
             if step + 1 == len(transitions):
                 return True
+            if not budget:
+                raise _HistoryAmbiguity
             start = transitions[step + 1][0]
             todo.append((step + 1, start, used, frozenset({start})))
             budget -= 1
@@ -1100,7 +1108,7 @@ def _history_segments(events, transitions):
         for event in sorted(edges.get(value, []), key=lambda e: e["new"] == target):
             if event["id"] not in used and event["new"] not in visited:
                 if not budget:
-                    return False
+                    raise _HistoryAmbiguity
                 todo.append((step, event["new"], used | {event["id"]}, visited | {event["new"]}))
                 budget -= 1
     return False

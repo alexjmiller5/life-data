@@ -484,8 +484,27 @@ class LocalHub:
                         rejected.extend(violations)
                     else:
                         accepted.append(row)
+                except catalog._HistoryAmbiguity:
+                    # Earlier revisions may have imported all originals. Roll back
+                    # the request rather than preserve a misleading partial history.
+                    conn.rollback()
+                    return {
+                        "upserted": 0,
+                        "rejected": [
+                            {
+                                "id": submitted.get("id"),
+                                "col": None,
+                                "rule": "history-ambiguity",
+                                "retryable": True,
+                                "message": "History matching budget exhausted; split revisions into smaller requests and retry.",
+                            }
+                            for submitted in rows
+                        ],
+                        "hub_at": "",
+                    }
                 finally:
-                    conn.execute("RELEASE pushed_row")
+                    if conn.in_transaction:
+                        conn.execute("RELEASE pushed_row")
         return {"upserted": len(accepted), "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:

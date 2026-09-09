@@ -291,6 +291,52 @@ def test_I4_one_original_cannot_explain_two_distinct_updates(hub):
     assert [(r["old"], r["new"]) for r in records if r["id"] != "e1"] == [("B", "A"), ("A", "B")]
 
 
+def test_history_search_exhaustion_rolls_back_entire_request(hub, monkeypatch):
+    push(
+        hub,
+        [
+            {"id": "a", "name": "A", "updated_at": T0},
+            {"id": "b", "name": "before", "updated_at": T0},
+        ],
+    )
+    push(hub, [{"id": "b", "name": "old", "updated_at": T1}])
+    before_rows = execute_sql(hub.path, "SELECT * FROM items ORDER BY id")
+    before_history = execute_sql(hub.path, "SELECT * FROM history ORDER BY id")
+    rows = [
+        {"id": "b", "name": "prefix", "updated_at": T2},
+        {"id": "a", "name": "B", "updated_at": T1},
+        {"id": "a", "name": "C", "updated_at": T2},
+        {"id": "c", "name": "suffix", "updated_at": T1},
+    ]
+    monkeypatch.setattr(catalog, "_HISTORY_SEARCH_LIMIT", 1)
+    out = hub.rows_push(
+        "items", list(rows[0]), rows, history=[event("e1", "A", "B"), event("e2", "B", "C")]
+    )
+    assert out["upserted"] == 0
+    assert [r["id"] for r in out["rejected"]] == ["b", "a", "a", "c"]
+    assert all(r["rule"] == "history-ambiguity" and r["retryable"] for r in out["rejected"])
+    assert all("split revisions" in r["message"].lower() for r in out["rejected"])
+    assert execute_sql(hub.path, "SELECT * FROM items ORDER BY id") == before_rows
+    assert execute_sql(hub.path, "SELECT * FROM history ORDER BY id") == before_history
+
+
+@pytest.mark.parametrize("old", ["A", "D"])
+def test_history_search_cap_keeps_whole_trail_and_proven_divergence(hub, monkeypatch, old):
+    push(hub, [{"id": "a", "name": old, "updated_at": T0}])
+    monkeypatch.setattr(catalog, "_HISTORY_SEARCH_LIMIT", 0)
+    row = {"id": "a", "name": "C", "updated_at": T2}
+    out = hub.rows_push(
+        "items", list(row), [row], history=[event("e1", "A", "B"), event("e2", "B", "C")]
+    )
+    assert out["upserted"] == 1 and not out["rejected"]
+    assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "C"}]
+    records = execute_sql(hub.path, "SELECT id,old,new,origin FROM history")
+    assert {r["id"] for r in records if r["origin"] == "replica"} == {"e1", "e2"}
+    extra = [(r["old"], r["new"]) for r in records if r["origin"] == "hub:reconcile"]
+    assert extra == ([] if old == "A" else [("D", "C")])
+    assert len(records) == (2 if old == "A" else 3)
+
+
 def test_I5_sync_snapshots_rows_and_events_together(hub, tmp_path, monkeypatch):
     replica = init(tmp_path / "replica.db")
     push(hub, [{"id": "a", "name": "A", "updated_at": T0}])
