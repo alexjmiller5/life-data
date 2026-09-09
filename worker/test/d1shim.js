@@ -7,13 +7,13 @@ export class D1Shim {
     this.db = new Database(path);
   }
   prepare(sql) {
-    const stmt = this.db.query(sql);
+    const query = () => this.db.query(sql);
     let args = [];
     return {
       bind(...a) { args = a; return this; },
-      async all() { return { results: stmt.all(...args) }; },
-      async first() { return stmt.get(...args) ?? null; },
-      async run() { stmt.run(...args); return {}; },
+      async all() { return { results: query().all(...args) }; },
+      async first() { return query().get(...args) ?? null; },
+      async run() { return { results: query().all(...args) }; },
     };
   }
   // D1's batch: every statement in one transaction, in order.

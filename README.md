@@ -165,3 +165,32 @@ There is no importer command by design: an agent (or you) maps any source
 into the generic primitives — `life table create`, then transform records to
 JSON and pipe them into `life insert <table>`. Use source record ids as row
 `id`s so re-imports stay idempotent and cross-source relations survive.
+
+### Hub write contract
+
+`/v1/rows/push` retains sparse `columns`/`rows` patches and per-row rejection.
+Every row must supply valid `updated_at` in exact `YYYY-MM-DDTHH:MM:SS.sssZ`
+form, even on uncataloged tables. Only strictly newer revisions change stored
+values. Required properties judge the merged row; explicit null clears optional
+fields. Enforced catalog invariants and history are transactional on both hubs;
+advisory rules remain advisory.
+
+An optional `history` array carries original replica events for submitted rows,
+using the history-table shape and original IDs. Matching IDs are idempotent;
+conflicting reuse rejects the row. Original events that explain a cell transition
+replace an aggregate hub entry. If a concurrent hub value differs, LWW still
+applies and one `hub:reconcile` event records the actual hub transition while
+preserving the local events. Timestamp ties imply no ordering. Stale/replayed
+rows generate no hub events, though unseen originals can still replicate.
+Invariant rejection rolls back both mutation and attached events.
+
+Sync keeps ordinary history-table replication as a fallback for servers that
+ignore the optional array. Rejections keep the push cursor in place and withhold
+those mutations' attached events from the fallback. Upgrade clients before the
+Worker where possible: an older client sends history separately, so a new Worker
+cannot reliably recognize an original random-ID event before logging the direct
+transition. Historical rows are never rewritten to guess away legacy duplicates.
+
+Normal 500-row pushes use bulk reads/upserts and transaction-scoped triggers.
+D1 statement/text budgets fail closed with per-row rejections; retry those rows
+in smaller batches. No partial history remains after a failed transaction.

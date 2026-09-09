@@ -11,6 +11,8 @@
 // column, so a replica pulling the row also pulls the provenance that proves
 // it and the client's `derived` rule never fires.
 
+import { historyPlan } from "./history.js";
+import { checkedReads, commitChecked, enforcedRules } from "./write.js";
 import { ident, inputsHash, propertiesFor, qident, validateRow, valueHash } from "./validate.js";
 
 // A hung endpoint would otherwise stall the whole sequential sweep.
@@ -41,7 +43,8 @@ async function derivationProps(db, table) {
 export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names = null, col = null } = {}) {
   const t = ident(table);
   const derivations = loadDerivations(env);
-  const { typeOf, byName } = await derivationProps(db, t);
+  const catalogView = checkedReads(db);
+  const { typeOf, byName } = await derivationProps(catalogView, t);
   const out = { derived: 0, failed: [] };
 
   for (const id of ids) {
@@ -54,7 +57,10 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
       // Re-read per derivation: one derivation's output can be another's
       // input, and hashing a stale row would leave provenance that never
       // matches (an endless re-derive loop on the sweep).
-      const row = await db.prepare(`SELECT * FROM ${qident(t)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
+      const view = checkedReads(db);
+      for (const [key, read] of catalogView.reads) view.reads.set(key, read);
+      await view.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
+      const row = await view.prepare(`SELECT * FROM ${qident(t)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
       if (!row) break;
       const target = derivations.get(name);
       if (!target) {
@@ -137,8 +143,15 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
             )
         );
       }
-      await db.batch(stmts);
-      out.derived += 1;
+      const rules = await enforcedRules(view, t);
+      const log = await historyPlan(view, db, t, [row]);
+      try {
+        const { updated_at, hub_at, ...expected } = {...row, ...values};
+        await commitChecked(db, view.reads, t, rules, [...stmts.slice(1), stmts[0]], new Date().toISOString(), log, [expected]);
+        out.derived += 1;
+      } catch (e) {
+        out.failed.push({id, col: cols[0].col, error: String(e)});
+      }
     }
   }
   return out;

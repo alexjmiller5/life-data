@@ -4,6 +4,12 @@
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+export function validEditTimestamp(value) {
+  if (typeof value !== "string" || !DATETIME_RE.test(value) || value.startsWith("0000")) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PHONE_RE = /^\+?[0-9 ()\-.]{5,}$/;
 
@@ -169,9 +175,10 @@ export async function validatePush(db, table, rows) {
     if (!(await tableExists(db, p.ref_table))) continue;
     const ids = new Set();
     for (const r of rows) for (const x of asList(r[p.col]) ?? [r[p.col]]) if (x != null) ids.add(x);
-    for (const id of ids) {
-      const hit = await db.prepare(`SELECT 1 FROM ${qident(p.ref_table)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
-      if (hit) refSet.add(`${p.ref_table}:${id}`);
+    if (ids.size) {
+      const { results } = await db.prepare(`SELECT id FROM ${qident(p.ref_table)} WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL`)
+        .bind(JSON.stringify([...ids])).all();
+      for (const hit of results ?? []) refSet.add(`${p.ref_table}:${hit.id}`);
     }
   }
   const extra = {};
@@ -194,13 +201,23 @@ export async function validatePush(db, table, rows) {
     }
   }
 
-  const accepted = [], rejected = [];
+  const accepted = [], rejected = [], expected = [];
   for (const row of rows) {
     // A push carries only the columns it writes. Required (and the derived
     // provenance check below) judge the row as it will BE - stored columns
     // plus this write - so a partial update need not echo the whole row.
     const before = stored.get(row.id) ?? null;
+    if (before && row.updated_at <= before.updated_at) {
+      accepted.push(row);
+      continue;
+    }
     const merged = before ? { ...before, ...row } : row;
+    if (merged.deleted_at) {
+      accepted.push(row);
+      stored.set(row.id, merged);
+      expected.push(merged);
+      continue;
+    }
     const viol = validateRow(props, before, merged, {
       inDerive: derivedCols,
       refOk: (t, id) => refSet.has(`${t}:${id}`),
@@ -221,7 +238,9 @@ export async function validatePush(db, table, rows) {
       }
     }
     if (viol.length) rejected.push(...viol.map((v) => ({ id: row.id, ...v })));
-    else accepted.push(row);
+    else { accepted.push(row); stored.set(row.id, merged); expected.push(merged); }
   }
-  return { accepted, rejected };
+  return { accepted, rejected, expected };
 }
+
+export const literal = (v) => v == null ? "NULL" : "'" + String(v).replaceAll("'", "''") + "'";

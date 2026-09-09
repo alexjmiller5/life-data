@@ -290,3 +290,36 @@ test("push logs the derivation failures it can no longer return", async () => {
   });
   expect(JSON.parse(out).derive_failed[0]).toMatchObject({ id: "78", error: expect.stringContaining("no derivation configured") });
 });
+
+test('an edit during the external call cannot receive a derivation for stale inputs', async () => {
+  const db = await fresh();
+  const fetchImpl = async () => {
+    db.db.exec("UPDATE movies SET status='Finished', updated_at='2026-10-01T00:00:00.000Z' WHERE id='78'");
+    return new Response(JSON.stringify({title:'Outdated'}));
+  };
+  const out = await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl});
+  expect(out.derived).toBe(0);
+  expect(out.failed.length).toBeGreaterThan(0);
+  expect(db.db.query("SELECT title FROM movies WHERE id='78'").get().title).toBeNull();
+  expect(db.db.query('SELECT * FROM provenance').all()).toEqual([]);
+});
+
+test('derived invariant failure rolls back the value and proof', async () => {
+  const db = await fresh();
+  db.db.exec("CREATE TABLE catalog_rules (id TEXT, tbl TEXT, col TEXT, kind TEXT, enforce INTEGER, sql TEXT, text TEXT, deleted_at TEXT); INSERT INTO catalog_rules VALUES ('blocked','movies','title','invariant',1,\"SELECT id FROM changed WHERE title='Blocked'\",'blocked title',NULL)");
+  const { fetchImpl } = stub({body:{title:'Blocked'}});
+  const out = await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl});
+  expect(out.derived).toBe(0);
+  expect(out.failed.length).toBe(1);
+  expect(db.db.query("SELECT title FROM movies WHERE id='78'").get().title).toBeNull();
+  expect(db.db.query('SELECT * FROM provenance').all()).toEqual([]);
+});
+
+test('a derivation records real cell changes and repeated identical output adds no history', async () => {
+  const db = await fresh();
+  const { fetchImpl } = stub({body:{title:'Derived Title'}});
+  expect((await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl})).derived).toBe(1);
+  expect(db.db.query('SELECT col,old,new,origin FROM history').all()).toEqual([{col:'title',old:null,new:'Derived Title',origin:'hub'}]);
+  await deriveRows(db, ENV, 'movies', ['78'], {fetchImpl});
+  expect(db.db.query('SELECT * FROM history').all().length).toBe(1);
+});
