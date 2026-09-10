@@ -71,6 +71,8 @@ Use a fresh `LIFE_DATA_DIR` for a different hub; existing cursors and data
 are never silently reused against another service. A replica without a recorded
 endpoint performs one full sync to establish trustworthy cursors. This first
 round can take longer for a large existing database.
+The CLI requests rows in pages of 200 so large tables fit within the hub's
+response limits. A failed page leaves the sync cursors unchanged for retry.
 Keychain storage is also used by ordinary hub commands when no interactive
 credential override is configured. Disabling sync retains the credential.
 A locked or unavailable Keychain causes a retry with a visible error state.

@@ -244,18 +244,39 @@ const ROUTES = {
   },
 
   "/v1/rows/pull": async (body, db) => {
-    const cols = (body.columns ?? []).map(qident).join(", ");
+    const paginated = body.limit !== undefined;
+    if (paginated && (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > 200)) {
+      return json({ error: "limit must be an integer from 1 to 200" }, 400);
+    }
+    if (paginated && body.after !== undefined && typeof body.after !== "string") {
+      return json({ error: "after must be a string" }, 400);
+    }
+    const columns = body.columns ?? [];
+    const includeId = paginated && !columns.includes("id");
+    const cols = (includeId ? [...columns, "id"] : columns).map(qident).join(", ");
     const t = qident(body.table);
     const since = body.since ?? "";
     // arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond as
     // a cursor read must not be lost. A NULL hub_at is older than everything,
     // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
     // A table predating the migration falls back to the old client stamp.
-    const [sql, args] = (await hasHubAt(db, body.table))
-      ? [`SELECT ${cols} FROM ${t} WHERE ? = '' OR hub_at >= ?`, [since, since]]
+    let [sql, args] = (await hasHubAt(db, body.table))
+      ? [`SELECT ${cols} FROM ${t} WHERE (? = '' OR hub_at >= ?)`, [since, since]]
       : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
+    if (paginated) {
+      if (body.after !== undefined) {
+        sql += " AND id > ?";
+        args.push(body.after);
+      }
+      sql += " ORDER BY id ASC LIMIT ?";
+      args.push(body.limit);
+    }
     const { results } = await db.prepare(sql).bind(...args).all();
-    return { rows: results ?? [] };
+    const rows = results ?? [];
+    if (!paginated) return { rows };
+    const next_cursor = rows.length === body.limit ? rows.at(-1).id : null;
+    if (includeId) for (const row of rows) delete row.id;
+    return { rows, next_cursor };
   },
 
   "/v1/rows/push": async (body, db, env, ctx) => {
