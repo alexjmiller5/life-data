@@ -53,8 +53,19 @@ async function endpointError(res, target) {
     }
     let detail = JSON.parse(body + decoder.decode())?.error;
     if (typeof detail !== "string" || /[<>]/.test(detail)) return "";
-    for (const secret of [target.url, ...Object.values(target.headers)]) {
-      if (secret) detail = detail.replaceAll(secret, "[redacted]");
+    const secrets = [target.url, ...Object.values(target.headers)];
+    for (const [header, value] of Object.entries(target.headers)) {
+      if (/^(?:proxy-)?authorization$/i.test(header)) secrets.push(value.match(/^\s*\S+\s+(.+?)\s*$/)?.[1]);
+    }
+    const url = new URL(target.url);
+    secrets.push(...url.search.slice(1).split("&").map(part => part.split("=").slice(1).join("=")));
+    // URL userinfo and query values may carry credentials, including escaped forms.
+    for (const value of [url.username, url.password, ...url.searchParams.values()]) {
+      secrets.push(value, encodeURIComponent(value));
+      try { secrets.push(decodeURIComponent(value)); } catch { /* malformed escape: retain the raw value */ }
+    }
+    for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) {
+      detail = detail.replaceAll(secret, "[redacted]");
     }
     return detail
       .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"']+|\/\/[^\s"']+/gi, "[redacted URL]")
@@ -63,6 +74,11 @@ async function endpointError(res, target) {
       .replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
   } catch { return ""; }
   finally { await reader.cancel().catch(() => {}); }
+}
+
+function transportError(name, error, signal) {
+  const timeout = error?.name === "TimeoutError" || signal.reason?.name === "TimeoutError";
+  return new Error(`endpoint ${name} ${timeout ? "TimeoutError: request timeout" : "unreachable"}`);
 }
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -132,16 +148,17 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
         }
         const inputs = cols[0].inputs ?? [];
         const body = { tbl: t, id, inputs: Object.fromEntries(inputs.map((c) => [c, row[c] ?? null])) };
+        const signal = AbortSignal.timeout(ENDPOINT_TIMEOUT_MS);
         let res;
         try {
           res = await fetchImpl(target.url, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...target.headers },
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
+            signal,
           });
         } catch (e) {
-          throw new Error(`endpoint ${name} ${e?.name === "TimeoutError" ? "TimeoutError: request timeout" : "unreachable"}`);
+          throw transportError(name, e, signal);
         }
         if (!res.ok) {
           const retry_after = retryAfter(res);
@@ -158,7 +175,10 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
         }
         let result;
         try { result = await res.json(); }
-        catch { throw new Error(`endpoint ${name} returned invalid JSON`); }
+        catch (e) {
+          if (e instanceof SyntaxError) throw new Error(`endpoint ${name} returned invalid JSON`);
+          throw transportError(name, e, signal);
+        }
         if (!result || typeof result !== "object" || Array.isArray(result)) {
           throw new Error(`endpoint ${name} returned a non-object`);
         }

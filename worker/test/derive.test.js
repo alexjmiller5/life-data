@@ -417,6 +417,28 @@ test("endpoint diagnostics accept only bounded safe JSON error text", async () =
   }
 });
 
+for (const [label, echo] of [
+  ["bearer component", "fixture-token-123"],
+  ["proxy auth component", "Zml4dHVyZS11c2VyOmZpeHR1cmUtcGFzcw=="],
+  ["decoded URL credentials", "fixture-user fixture-password fixture+query"],
+  ["encoded URL credentials", "fixture%2Duser fixture%2Dpassword fixture%2Bquery"],
+  ["raw URL query escapes", "fixture%2dquery2"],
+]) test(`endpoint diagnostics redact configured ${label}`, async () => {
+  const db = await fresh();
+  const target = {
+    url: "https://fixture%2Duser:fixture%2Dpassword@derivations.example/movie?token=fixture%2Bquery&key=fixture%2dquery2",
+    headers: { Authorization: "Bearer fixture-token-123", "Proxy-Authorization": "Basic Zml4dHVyZS11c2VyOmZpeHR1cmUtcGFzcw==" },
+  };
+  const out = await deriveRows(db, { DERIVATIONS: JSON.stringify({ tmdb_movie: target }) }, "movies", ["78"], {
+    fetchImpl: async () => Response.json({ error: `source: Rejected credential ${echo}` }, { status: 401 }),
+  });
+  expect(out.derived).toBe(0);
+  expect(out.failed[0]).toMatchObject({ id: "78", col: "title", status: 401 });
+  expect(out.failed[0].error).toContain("source: Rejected credential");
+  expect(out.failed[0].error).not.toMatch(/fixture|Zml4dHVyZS/);
+  expect(db.db.query("SELECT * FROM provenance").all()).toEqual([]);
+});
+
 for (const [status, header, seconds] of [
   [429, null, 60], [429, "nonsense", 60], [429, "-5", 60], [429, "1.5", 60],
   [429, "1e3", 60], [429, "999999999999999999999", 60], [429, "9007199254740991", 60],
@@ -605,4 +627,34 @@ test("transport and malformed success responses preserve existing values, proof 
     expect(out.failed[0].error).not.toMatch(/private-|https:|key-1/);
     expect(snapshot()).toEqual(before);
   }
+});
+
+for (const [failure, abortTimeout, marker] of [
+  ["TimeoutError", false, "timeout"],
+  ["TypeError", false, "unreachable"],
+  ["AbortError", true, "timeout"],
+]) test(`response body ${failure} retains the ${marker} outage classification`, async () => {
+  const db = await fresh();
+  await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: stub({ body: { title: "Existing" } }).fetchImpl });
+  const snapshot = () => ["movies", "provenance", "history"].map(t => db.db.query(`SELECT * FROM ${t}`).all());
+  const before = snapshot();
+  const request = new AbortController();
+  const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(request.signal);
+  try {
+    const out = await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ title: "Must not land", _source_ref: "must-not-land" })));
+      },
+      pull(controller) {
+        const message = "private-body https://user:private-token@upstream.test";
+        if (abortTimeout) request.abort(new DOMException(message, "TimeoutError"));
+        controller.error(failure === "TypeError" ? new TypeError(message) : new DOMException(message, failure));
+      },
+    })) });
+    expect(out.derived).toBe(0);
+    expect(out.failed).toHaveLength(1);
+    expect(out.failed[0].error.toLowerCase()).toContain(marker);
+    expect(out.failed[0].error).not.toMatch(/invalid JSON|private-|https:/);
+    expect(snapshot()).toEqual(before);
+  } finally { timeout.mockRestore(); }
 });
