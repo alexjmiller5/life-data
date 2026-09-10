@@ -266,18 +266,31 @@ def db_changed(path: Path, previous) -> tuple[bool, tuple]:
 # --- config ------------------------------------------------------------------
 
 
-def load_config(data_dir: Path | None = None) -> dict:
+def load_config(data_dir: Path | None = None, *, resolve_auth: bool = True) -> dict:
     """Config precedence: env > config.json > defaults. A config file is optional."""
-    cfg_path = (data_dir or resolve_data_dir()) / "config.json"
+    data_dir = data_dir or resolve_data_dir()
+    cfg_path = data_dir / "config.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    from .background import read_json
+
+    prefs = read_json(data_dir / "background.json")
+    if prefs.get("hub_url"):
+        cfg["hub_url"] = prefs["hub_url"]
     cfg.setdefault("hub_url", DEFAULT_HUB_URL)
     cfg.setdefault("commands", {})
     cfg["hub_url"] = os.environ.get("LIFE_HUB_URL", cfg["hub_url"]).rstrip("/")
+    if not resolve_auth:
+        return cfg
     token = os.environ.get("LIFE_HUB_TOKEN") or cfg.get("token")
     if not token and cfg.get("token_cmd"):
         token = subprocess.run(
             cfg["token_cmd"], shell=True, capture_output=True, text=True, check=True
         ).stdout.strip()
+    if not token and prefs.get("keychain"):
+        from .background import keychain_account
+        from .credentials import read_token
+
+        token = read_token(keychain_account(data_dir, cfg["hub_url"]))
     cfg["token"] = token
     return cfg
 
@@ -758,6 +771,12 @@ def ensure_hub_at(path: Path) -> bool:
 
 def sync(path: Path, hub) -> dict:
     """State-based replica sync: schema replay, then pull, then push. LWW on updated_at."""
+    unbound_hub = False
+    if isinstance(hub, HttpHub):
+        previous_hub = _get_state(path, "hub_url")
+        unbound_hub = not previous_hub
+        if previous_hub and previous_hub != hub.base:
+            raise ValueError("hub changed; use a fresh data directory for a different hub")
     hub.ensure_ready()
     # before the schema replay, so the ALTERs travel to the hub in this sync
     upgraded = ensure_hub_at(path)
@@ -778,8 +797,10 @@ def sync(path: Path, hub) -> dict:
     # cursor stays local `updated_at` (which rows of ours are new).
     # A table that just gained hub_at has NULL for every existing row, so the
     # stored cursor would skip all of them: one full pull sets that right.
-    last_pull = "" if upgraded else _get_state(path, "last_pull")
-    last_push = _get_state(path, "last_push")
+    # Cursors without an endpoint cannot be trusted. A first HTTP sync
+    # verifies the full replica; subsequent rounds use the bound cursors.
+    last_pull = "" if upgraded or unbound_hub else _get_state(path, "last_pull")
+    last_push = "" if unbound_hub else _get_state(path, "last_push")
     # capture the pull cursor BEFORE pulling: the hub writes rows itself
     # (derivations on push and on cron), and anything it writes after this read
     # gets hub_at > pull_cursor, so the next sync still sees it.
@@ -844,6 +865,8 @@ def sync(path: Path, hub) -> dict:
     _set_state(path, "last_pull", pull_cursor)
     if not rejected:
         _set_state(path, "last_push", push_cursor)
+        if isinstance(hub, HttpHub):
+            _set_state(path, "hub_url", hub.base)
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 
@@ -913,6 +936,21 @@ def main(argv: list[str] | None = None) -> int:
     p_doc.add_argument("table", nargs="?")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
+    p_background = sub.add_parser("background", help="enable, disable or inspect background sync")
+    bg_sub = p_background.add_subparsers(dest="background_command", required=True)
+    bg_enable = bg_sub.add_parser("enable", help="turn on background sync")
+    bg_enable.add_argument("--hub-url", help="hub endpoint (optional for the hosted service)")
+    bg_auth = bg_enable.add_mutually_exclusive_group()
+    bg_auth.add_argument(
+        "--token-stdin", action="store_true", help="save a token from stdin in macOS Keychain"
+    )
+    bg_auth.add_argument("--token-command", help="command that supplies the background token")
+    bg_sub.add_parser("disable", help="stop syncing after the current round finishes")
+    bg_sub.add_parser("status", help="show enabled state, runner and last sync result")
+    bg_run = bg_sub.add_parser(
+        "run", help="supervised runner (provided by the Home Manager module)"
+    )
+    bg_run.add_argument("--poll", type=int, default=POLL_SECONDS)
     p_derive = sub.add_parser(
         "derive", help="request the hub derive a column for rows selected locally"
     )
@@ -1022,7 +1060,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch(args: argparse.Namespace, path: Path) -> int:
-    if args.command == "init":
+    if args.command == "background":
+        from .background import command
+
+        if args.background_command == "run" and args.poll < 1:
+            raise ValueError("poll interval must be at least one second")
+        return command(args, path.parent)
+    elif args.command == "init":
         init(path)
         print(path)
     elif args.command == "path":

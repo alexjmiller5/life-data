@@ -1,14 +1,5 @@
-# home-manager module for life-data — exported as `homeModules.default`.
-# Consumers toggle `lifeData.enable` and supply only what the product cannot
-# know: how each context on this machine obtains the hub credential.
-#
-# The two contexts are deliberately independent:
-#   cli.tokenCommand   → written to config.json as token_cmd; interactive
-#                        `life` invocations run it in the caller's own env.
-#   watch.tokenCommand → evaluated ONCE by the daemon wrapper at startup and
-#                        exported as LIFE_HUB_TOKEN, which the product
-#                        prefers over token_cmd — so the daemon never touches
-#                        config.json's credential path at all.
+# Installs Life and a supervised runner. Sync stays off until the user runs
+# `life background enable`; preferences and credentials are app state.
 self:
 {
   config,
@@ -22,18 +13,7 @@ let
     name = "life-data-watch";
     runtimeInputs = [ cfg.package ] ++ cfg.watch.packages;
     text = ''
-      # The credential command is retried IN-PROCESS with backoff: exiting
-      # would make launchd restart us in seconds, and every restart spends
-      # another request against a finite secret-manager budget.
-      delay=60
-      until LIFE_HUB_TOKEN="$(${cfg.watch.tokenCommand})" && [ -n "$LIFE_HUB_TOKEN" ]; do
-        echo "token command failed; retrying in ''${delay}s" >&2
-        sleep "$delay"
-        delay=$(( delay < 3600 ? delay * 2 : 3600 ))
-      done
-      export LIFE_HUB_TOKEN
-      life init >/dev/null
-      exec life watch
+      exec life background run
     '';
   };
 in
@@ -57,7 +37,7 @@ in
     cli.tokenCommand = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "op read 'op://vault/item/credential'";
+      example = "credential-tool read hub-token";
       description = ''
         Credential command for INTERACTIVE `life` use, written to config.json
         as token_cmd and run in the calling shell's environment. Null
@@ -69,18 +49,17 @@ in
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Run `life watch` as a background agent: pushes local writes within ~1s, polls for remote changes. (launchd; macOS only.)";
+        description = "Install the supervised background runner. Sync stays disabled until `life background enable`. (launchd; macOS only.)";
       };
       tokenCommand = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         example = ''TOKEN_ENV="$(cat /path/to/session)" fetch-secret hub-token'';
         description = ''
-          Credential command for the DAEMON, run at startup (retried in-process
-          with backoff until it succeeds) and exported as LIFE_HUB_TOKEN. Must
-          be self-sufficient: background
-          agents start with no login-shell environment, so include any
-          environment its own tooling needs inline.
+          Optional default credential command for background sync. Users may
+          instead supply a token through the CLI and macOS Keychain, or provide
+          LIFE_HUB_TOKEN in the runner environment. Independent of cli.tokenCommand.
+          Commands run only while sync is enabled, with bounded retries on failure.
         '';
       };
       packages = lib.mkOption {
@@ -92,13 +71,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = !cfg.watch.enable || cfg.watch.tokenCommand != null;
-        message = "lifeData.watch.enable requires lifeData.watch.tokenCommand (the daemon has no other way to authenticate).";
-      }
-    ];
-
     # duckdb powers `life archive query --raw` (analytical fallback over raw
     # stream objects)
     home.packages = [
@@ -111,6 +83,7 @@ in
     xdg.dataFile."life-data/config.json".text = builtins.toJSON (
       lib.optionalAttrs (cfg.cli.tokenCommand != null) { token_cmd = cfg.cli.tokenCommand; }
       // lib.optionalAttrs (cfg.hubUrl != null) { hub_url = cfg.hubUrl; }
+      // lib.optionalAttrs (cfg.watch.tokenCommand != null) { background_token_cmd = cfg.watch.tokenCommand; }
     );
 
     launchd.agents.life-data-watch = lib.mkIf (cfg.watch.enable && pkgs.stdenv.hostPlatform.isDarwin) {

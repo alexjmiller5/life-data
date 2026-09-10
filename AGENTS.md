@@ -19,7 +19,9 @@ CLI.
 
 ## Layout
 
-- `src/life_data/__init__.py` — the whole client (CLI, sync engine, hubs).
+- `src/life_data/__init__.py` - CLI, sync engine and hubs.
+- `src/life_data/background.py` - persistent CLI toggle, status and supervised loop.
+- `src/life_data/credentials.py` - native macOS Keychain storage; stdlib only.
 - `src/life_data/catalog.py` — the catalog engine: typed properties, rules,
   derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
   connection.
@@ -184,16 +186,23 @@ CLI.
   reference cycle, so an un-closed one holds `life.db`/`-wal`/`-shm` until
   the cyclic GC runs; a sync opens hundreds, and launchd caps a daemon at
   256 files. Never hold a connection past its `with` block.
-- **The watch daemon never exits on a failure it can wait out.** The wrapper
-  retries the credential command in-process with backoff (60s doubling to
-  1h) and `watch()` logs and continues on ANY sync exception, because a
-  launchd restart (`ThrottleInterval = 30`) re-runs the credential command,
-  and a secret manager's request budget is finite - two machines crash-
-  looping every 30s exhausted a 1000/day budget by themselves.
+- **Background sync is opt-in app state.** `life background enable|disable|status`
+  operates independently from the immutable installation defaults in config.json.
+  The exported module runs `life background run`, which waits without contacting
+  the hub or credential provider while disabled. Credentials are generic env,
+  a background-only command, or an explicitly saved macOS Keychain token.
+  Never inherit an interactive token command into the runner. Retry failures
+  in-process from 60s up to 3600s; do not restart to fetch credentials again.
+  Only a rejection-free sync advances last_success. Status and logs contain
+  counts and sanitized errors, never token values or rejected row payloads.
 - `just test` runs pytest AND `bun test` in `worker/`.
   The deploy workflow gates deployment on both suites.
 
 ## Sync internals
+
+HTTP sync binds cursors to the endpoint after a successful round. An unbound
+replica performs a full sync once; another endpoint requires a fresh data
+directory. Never reuse cursors from an unknown or different hub.
 
 State-based, never op-log. `sync(path, hub)`: `ensure_hub_at`, replay missing
 `_schema_log` DDL both ways (idempotent-by-skip on "already exists" /

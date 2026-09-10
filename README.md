@@ -16,22 +16,18 @@ editing this repo.
 nix profile install github:alexjmiller5/life-data
 ```
 
-Or, with home-manager, the flake ships a module — one toggle installs the
-CLI (plus DuckDB for `--raw` queries), declares `config.json`, and runs the
-continuous-sync daemon:
+Or use the exported Home Manager module on macOS. It installs the CLI,
+DuckDB and a supervised background runner. Sync starts **off**:
 
 ```nix
-# flake input: life-data.url = "github:alexjmiller5/life-data";
 imports = [ life-data.homeModules.default ];
-lifeData = {
-  enable = true;
-  # each context authenticates independently:
-  cli.tokenCommand = "op read 'op://vault/item/credential'";   # your shell's env
-  watch.tokenCommand = "SESSION=$(cat /path) fetch hub-token"; # self-sufficient —
-  # the daemon has no shell env; add its tools via watch.packages = [ ... ];
-  # hubUrl = "https://your-hub.example.com";                   # self-hosters
-};
+lifeData.enable = true;
 ```
+
+Optional defaults: `hubUrl`, `cli.tokenCommand`, and `watch.tokenCommand`.
+The two credential commands are independent; neither is required. Add any
+background command's dependencies through `watch.packages`.
+`watch.enable = false` omits the runner entirely.
 
 ## Use
 
@@ -53,31 +49,70 @@ with no account and no server.
 ## Sync (optional)
 
 ```bash
-life sync     # one round trip with the hub
-life watch    # continuous: pushes local writes within ~1s, polls for remote
+life sync                    # one round trip
+life watch                   # sync in this terminal until interrupted
+life background enable       # enable the installed background runner
+life background disable      # finish the current round, then stop syncing
+life background status       # enabled, running, last success/error and counts
 ```
 
-Sync is state-based and last-write-wins per row on `updated_at`; deletes are
-soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate — a
-hard `DELETE` will not. Schema changes replay from `_schema_log`, so a brand
-new device pulls the tables *and* the rows with one `life sync`.
+On macOS, supply a **Life-issued device token** once through stdin:
 
-Configure it in `config.json` in the data dir — every field is optional:
+```bash
+life background enable --token-stdin
+```
+
+Pipe the token from your credential provider. Life stores it in the macOS
+Keychain, never in a file, process arguments, or logs. Keychain access may
+require macOS approval. The token is scoped to this data directory and hub
+URL. `--hub-url https://your-hub.example.com` selects a self-hosted instance.
+Once a data directory has synced over HTTP, it is bound to that endpoint.
+Use a fresh `LIFE_DATA_DIR` for a different hub; existing cursors and data
+are never silently reused against another service. A replica without a recorded
+endpoint performs one full sync to establish trustworthy cursors. This first
+round can take longer for a large existing database.
+Keychain storage is also used by ordinary hub commands when no interactive
+credential override is configured. Disabling sync retains the credential.
+A locked or unavailable Keychain causes a retry with a visible error state.
+
+Alternatively, pass `--token-command 'credential-tool read hub-token'`.
+It runs in the daemon's environment; it must work without a terminal.
+`LIFE_HUB_TOKEN` in that environment takes precedence. No password manager,
+vault, or service account is required by Life. A credential command is read
+once per enabled session/configuration; a rejected credential is reloaded
+with backoff. Never put a token literal in a command or shell history.
+
+The Home Manager module owns installation and login startup. The CLI owns
+the mutable on/off setting, which survives process restarts and Nix rebuilds.
+With only the standalone package installed, `background status` reports
+`running: false`; install the module for automatic login startup, or run
+`life background run` under your own supervisor. The runner stays idle
+while disabled, making no hub or credential requests. Only one runner can
+hold a data directory at a time. Failures retry after 60 seconds, doubling
+to a maximum of one hour. Re-enabling resets that wait. `last_success`
+advances only after a round with no rejected rows. The status output never
+includes row payloads or credential-command output.
+
+Sync is state-based and last-write-wins per row on `updated_at`; deletes are
+soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate. A
+hard `DELETE` does not. Schema changes replay from `_schema_log`, so a new
+device pulls tables and rows with `life init` followed by `life sync`.
+
+`config.json` in the data directory provides optional installation defaults:
 
 ```json
 {
   "hub_url": "https://your-hub.example.com",
-  "token": "…",
-  "token_cmd": "op read op://vault/item/credential",
-  "headers": { "CF-Access-Client-Id": "…", "CF-Access-Client-Secret": "…" }
+  "token_cmd": "credential-tool read interactive-token",
+  "background_token_cmd": "credential-tool read device-token"
 }
 ```
 
-`hub_url` defaults to the hosted service. Credentials are a plain bearer
-token: give it literally (`token`), via a command (`token_cmd`), or via the
-`LIFE_HUB_TOKEN` environment variable, which wins over both. `headers` adds
-arbitrary headers for hubs behind an authenticating proxy (e.g. Cloudflare
-Access). The client has no provider-specific code.
+The interactive client also accepts `token` in config and extra proxy
+`headers`; `LIFE_HUB_TOKEN` and `LIFE_HUB_URL` override file configuration.
+Background credentials are separate from interactive `token`/`token_cmd`.
+User choices made through the CLI live in `background.json`; execution
+status lives in `background-status.json`. Neither contains saved tokens.
 
 ## Self-hosting the hub
 
