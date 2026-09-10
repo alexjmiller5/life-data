@@ -300,6 +300,25 @@ selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals —
 it never computes a derived value itself. Requires a hub token with
 `tables:write` (or `full`/admin).
 
+Endpoint requests have a 60-second abort timeout. Non-2xx failures retain
+`id`, `col`, `error` and integer `status`. Diagnostics use only sanitized
+string `JSON.error` from bodies up to 16 KiB, capped at 512 characters;
+URLs, credentials, headers and HTML are omitted or redacted. Values,
+provenance and history remain unchanged on endpoint failures.
+Safe source-prefixed error text is preserved. Transport failures retain
+`TimeoutError`/`timeout` or `unreachable` so callers can classify outages.
+429 and 503 `Retry-After` values accept integer seconds or an HTTP date;
+returned `retry_after` is a positive integer (at least one second). Missing
+or invalid 429 hints default to 60 seconds; 503 without a valid hint has no
+cooldown. `_derivation_cooldowns` is hub-owned operational D1 state keyed
+by the SHA-256 of `[endpoint name, URL]`, independent of header rotation.
+Every caller checks it before fetching and reports deferred failures with
+remaining seconds. Concurrent hints cannot shorten an existing cooldown;
+expired rows are reusable. Create this internal table before taking schema
+read guards. Its DDL is never logged for sync and it has no catalog rows;
+full operational backups retain it. Existing calls and sweeps retry after
+expiry, with no additional schedule or automatic retry loop.
+
 ## Streams
 
 Append-only events, hub-backed by design (tables are local-first; streams are

@@ -1,9 +1,12 @@
 // Hub derivation engine: named HTTP endpoints named only by the DERIVATIONS
 // secret, validated output, value + provenance in one batch, and the sweep
 // that finds underived and stale rows.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { D1Shim } from "./d1shim.js";
-import { deriveRows, loadDerivations, sweep } from "../src/derive.js";
+import { deriveRows, deriveStale, loadDerivations, sweep } from "../src/derive.js";
 import worker, { ROUTES } from "../src/index.js";
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -356,4 +359,250 @@ for (const caller of ['direct','stale','sweep']) test(`I6: ${caller} derivations
   }
   expect(out.failed).toEqual([]);
   expect(db.db.query("SELECT count(*) AS n FROM movies WHERE title='Budgeted'").get().n).toBe(50);
+});
+
+test("POST /v1/derive preserves endpoint errors and retry metadata without changing existing cells or proof", async () => {
+  const db = await fresh();
+  await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: stub({ body: { title: "Existing", genres: [] } }).fetchImpl });
+  const snapshot = () => ["movies", "provenance", "history"].map(t => db.db.query(`SELECT * FROM ${t}`).all());
+  const before = snapshot();
+  const upstream = spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
+    { error: "Lookup temporarily rate limited", title: "Must not land", _source_ref: "must-not-land" },
+    { status: 429, headers: { "Retry-After": "120" } },
+  ));
+  try {
+    const res = await worker.fetch(new Request("https://hub.example/v1/derive", {
+      method: "POST", headers: { Authorization: "Bearer test-token" },
+      body: JSON.stringify({ table: "movies", ids: ["78"] }),
+    }), { ...ENV, DB: db, HUB_TOKEN: "test-token" }, {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ derived: 0, failed: [{
+      id: "78", col: "title", status: 429, retry_after: 120,
+      error: "endpoint tmdb_movie returned 429: Lookup temporarily rate limited",
+    }] });
+    expect(snapshot()).toEqual(before);
+  } finally { upstream.mockRestore(); }
+});
+
+test("endpoint diagnostics accept only bounded safe JSON error text", async () => {
+  const cases = [
+    [JSON.stringify({ error: "Lookup failed", detail: "private-detail", headers: { Authorization: "private-token" } }), "Lookup failed"],
+    [JSON.stringify({ error: "spotify: search HTTP 429" }), "spotify: search HTTP 429"],
+    [JSON.stringify({ error: "musicbrainz: HTTP503" }), "musicbrainz: HTTP503"],
+    [JSON.stringify({ error: "x".repeat(2000) }), "x".repeat(100)],
+    [JSON.stringify({ error: "Lookup failed at https://user:private-password@upstream.example/path?token=private-token using key-1" }), "Lookup failed at"],
+    [JSON.stringify({ error: "Lookup failed\nAuthorization: Bearer private-token\nCookie: private-cookie" }), "Lookup failed"],
+    [JSON.stringify({ error: 'Lookup failed; headers: {"X-Key":"private-key"}' }), "Lookup failed"],
+    [JSON.stringify({ error: "Lookup failed with Bearer private-token" }), "Lookup failed"],
+    [JSON.stringify({ error: "<html>private-page</html>" }), null],
+    ["<html>private-page</html>", null],
+    ['{"error":"private-fragment",', null],
+    [JSON.stringify({ error: { token: "private-token" } }), null],
+    [JSON.stringify({ error: "too big", unused: "x".repeat(20_000) }), null],
+  ];
+  for (const [body, useful] of cases) {
+    const db = await fresh();
+    const out = await deriveRows(db, ENV, "movies", ["78"], {
+      fetchImpl: async () => new Response(body, { status: 502, headers: { "X-Secret": "private-header" } }),
+    });
+    expect(out.derived).toBe(0);
+    expect(out.failed[0]).toMatchObject({ id: "78", col: "title", status: 502 });
+    const error = out.failed[0].error;
+    if (useful) expect(error).toContain(useful);
+    else expect(error).toBe("endpoint tmdb_movie returned 502");
+    expect(error.length).toBeLessThanOrEqual(512);
+    expect(error).not.toMatch(/private-|https?:|Authorization|Cookie|key-1|<html>/);
+    expect(out.failed[0]).not.toHaveProperty("retry_after");
+    expect(db.db.query("SELECT * FROM provenance").all()).toEqual([]);
+  }
+});
+
+for (const [status, header, seconds] of [
+  [429, null, 60], [429, "nonsense", 60], [429, "-5", 60], [429, "1.5", 60],
+  [429, "1e3", 60], [429, "999999999999999999999", 60], [429, "9007199254740991", 60],
+  [429, "0", 1], [429, " 12 ", 12], [429, "Thu, 01 Jan 2026 00:01:30 GMT", 90],
+  [429, "Wed, 31 Dec 2025 23:59:00 GMT", 1], [503, "45", 45],
+  [503, "Thu, 01 Jan 2026 00:01:30 GMT", 90], [503, null, null], [503, "bad", null], [500, "45", null],
+]) test(`endpoint ${status} Retry-After ${header} yields ${seconds}`, async () => {
+  const db = await fresh();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+  try {
+    const out = await deriveRows(db, ENV, "movies", ["78"], {
+      fetchImpl: async () => Response.json({ error: "Unavailable" }, {
+        status, headers: header === null ? {} : { "Retry-After": header },
+      }),
+    });
+    expect(out.failed[0].status).toBe(status);
+    if (seconds === null) expect(out.failed[0]).not.toHaveProperty("retry_after");
+    else expect(out.failed[0].retry_after).toBe(seconds);
+  } finally { clock.mockRestore(); }
+});
+
+test("cooldown persists across fresh database handles, defers every caller, and expires", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "derive-cooldown-"));
+  const path = join(dir, "hub.db");
+  let db = await seed(new D1Shim(path));
+  const clock = spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    return calls === 1 ? Response.json({ error: "Slow down" }, { status: 429, headers: { "Retry-After": "120" } })
+      : Response.json({ title: "Recovered", genres: [] });
+  };
+  try {
+    db.db.exec("INSERT INTO movies (id) VALUES ('79')");
+    const first = await deriveRows(db, ENV, "movies", ["78", "79"], { fetchImpl });
+    expect(first.failed.map(f => [f.id, f.status, f.retry_after])).toEqual([["78", 429, 120], ["79", 429, 120]]);
+    expect(calls).toBe(1);
+    clock.mockReturnValue(Date.UTC(2026, 0, 1, 0, 0, 30, 100));
+    for (const caller of ["direct", "stale", "sweep"]) {
+      db.db.close();
+      db = new D1Shim(path);
+      const out = caller === "direct" ? await deriveRows(db, ENV, "movies", ["78"], { fetchImpl })
+        : caller === "stale" ? await deriveStale(db, ENV, "movies", db.db.query("SELECT * FROM movies").all(), { fetchImpl })
+        : await sweep(db, ENV, { fetchImpl });
+      expect(out.derived).toBe(0);
+      expect(out.failed.length).toBeGreaterThan(0);
+      for (const f of out.failed) {
+        expect(f).toMatchObject({ col: "title", status: 429, retry_after: 90 });
+        expect(f.error).toContain("deferred");
+      }
+      expect(calls).toBe(1);
+      expect(db.db.query("SELECT * FROM provenance").all()).toEqual([]);
+    }
+    clock.mockReturnValue(Date.UTC(2026, 0, 1, 0, 2));
+    db.db.close();
+    db = new D1Shim(path);
+    expect(await sweep(db, ENV, { fetchImpl })).toEqual({ derived: 2, failed: [] });
+    expect(calls).toBe(3);
+  } finally {
+    clock.mockRestore();
+    db.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cooldowns use endpoint name and URL, survive header rotation, and remain internal", async () => {
+  const db = await fresh();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+  const upstream = spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(
+    { error: "Service busy" }, { status: 503, headers: { "Retry-After": "90" } },
+  ));
+  const env = { ...ENV, DB: db, HUB_TOKEN: "test-token" };
+  const request = (path, body) => worker.fetch(new Request(`https://hub.example${path}`, {
+    method: body ? "POST" : "GET", headers: { Authorization: "Bearer test-token" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  }), env, {});
+  try {
+    await request("/v1/derive", { table: "movies", ids: ["78"] });
+    const endpoints = JSON.parse(env.DERIVATIONS);
+    endpoints.tmdb_movie.headers = { Authorization: "Bearer rotated-test-secret" };
+    env.DERIVATIONS = JSON.stringify(endpoints);
+    const deferred = await (await request("/v1/derive", { table: "movies", ids: ["78"] })).json();
+    expect(deferred.failed[0]).toMatchObject({ status: 503, retry_after: 90 });
+    expect(upstream).toHaveBeenCalledTimes(1);
+
+    endpoints.tmdb_movie.url = "https://derivations.example/another?token=private-url-token";
+    env.DERIVATIONS = JSON.stringify(endpoints);
+    await request("/v1/derive", { table: "movies", ids: ["78"] });
+    expect(upstream).toHaveBeenCalledTimes(2);
+    db.db.exec("UPDATE catalog_properties SET derived_by='http:renamed' WHERE derived_by='http:tmdb_movie'");
+    endpoints.renamed = endpoints.tmdb_movie;
+    env.DERIVATIONS = JSON.stringify(endpoints);
+    await request("/v1/derive", { table: "movies", ids: ["78"] });
+    expect(upstream).toHaveBeenCalledTimes(3);
+
+    const schema = await (await request("/v1/schema/pull", {})).json();
+    expect(schema.entries).toEqual([]);
+    const catalog = await (await request("/v1/catalog")).json();
+    expect(catalog.properties.every(p => p.tbl === "movies")).toBe(true);
+    expect(JSON.stringify(db.db.query("SELECT * FROM _derivation_cooldowns").all())).not.toMatch(/https:|private-|rotated-/);
+    expect(db.db.query("SELECT * FROM provenance").all()).toEqual([]);
+    expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+
+    // Full operational backups retain cooldowns, while schema/catalog sync above does not.
+    const backups = [];
+    env.BACKUPS = { put: async (_key, bytes) => backups.push(bytes) };
+    expect((await request("/v1/backup", {})).status).toBe(200);
+    const sql = await new Response(new Response(backups[0]).body.pipeThrough(new DecompressionStream("gzip"))).text();
+    const restored = new D1Shim();
+    try {
+      restored.db.exec(sql);
+      const out = await deriveRows(restored, env, "movies", ["78"]);
+      expect(out.failed[0]).toMatchObject({ status: 503, retry_after: 90 });
+      expect(upstream).toHaveBeenCalledTimes(3);
+    } finally { restored.db.close(); }
+  } finally { clock.mockRestore(); upstream.mockRestore(); }
+});
+
+test("endpoint fetch uses a 60 second abort signal and sanitizes transport failures", async () => {
+  const db = await fresh();
+  const controller = new AbortController();
+  const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+  let received;
+  try {
+    const out = await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: async (_url, { signal }) => {
+      received = signal;
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        queueMicrotask(() => controller.abort(new DOMException("private-url https://user:secret@example.test", "TimeoutError")));
+      });
+    } });
+    expect(timeout).toHaveBeenCalledWith(60_000);
+    expect(received.aborted).toBe(true);
+    expect(out.failed[0].error).toContain("TimeoutError");
+    expect(out.failed[0].error.toLowerCase()).toContain("timeout");
+    expect(out.failed[0].error).not.toMatch(/private-|https:|secret/);
+    expect(db.db.query("SELECT * FROM provenance").all()).toEqual([]);
+  } finally { timeout.mockRestore(); }
+});
+
+test("an overlapping shorter response cannot shorten the persisted endpoint cooldown", async () => {
+  const db = await fresh();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+  let started, release;
+  const ready = new Promise(resolve => { started = resolve; });
+  const response = new Promise(resolve => { release = resolve; });
+  try {
+    const first = deriveRows(db, ENV, "movies", ["78"], { fetchImpl: async () => { started(); return response; } });
+    await ready;
+    const second = await deriveRows(db, ENV, "movies", ["78"], {
+      fetchImpl: async () => Response.json({}, { status: 429, headers: { "Retry-After": "120" } }),
+    });
+    expect(second.failed[0].retry_after).toBe(120);
+    release(Response.json({}, { status: 503, headers: { "Retry-After": "10" } }));
+    await first;
+    clock.mockReturnValue(Date.UTC(2026, 0, 1, 0, 1));
+    const success = stub({ body: { title: "Recovered" } });
+    const deferred = await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: success.fetchImpl });
+    expect(deferred.failed[0]).toMatchObject({ status: 429, retry_after: 60 });
+    expect(success.calls).toEqual([]);
+    clock.mockReturnValue(Date.UTC(2026, 0, 1, 0, 2));
+    await deriveRows(db, ENV, "movies", ["78"], {
+      fetchImpl: async () => Response.json({}, { status: 503, headers: { "Retry-After": "15" } }),
+    });
+    expect((await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: success.fetchImpl })).failed[0])
+      .toMatchObject({ status: 503, retry_after: 15 });
+    expect(db.db.query("SELECT count(*) AS n FROM _derivation_cooldowns").get().n).toBe(1);
+    expect(success.calls).toEqual([]);
+  } finally { clock.mockRestore(); }
+});
+
+test("transport and malformed success responses preserve existing values, proof and history", async () => {
+  const db = await fresh();
+  await deriveRows(db, ENV, "movies", ["78"], { fetchImpl: stub({ body: { title: "Existing" } }).fetchImpl });
+  const snapshot = () => ["movies", "provenance", "history"].map(t => db.db.query(`SELECT * FROM ${t}`).all());
+  const before = snapshot();
+  for (const [fetchImpl, diagnostic] of [
+    [async () => { throw new Error("request https://user:private-token@upstream.test with key-1 failed"); }, "unreachable"],
+    [async () => new Response('{"error":"private-token",'), "invalid JSON"],
+    [async () => Response.json(["private-token"]), "non-object"],
+  ]) {
+    const out = await deriveRows(db, ENV, "movies", ["78"], { fetchImpl });
+    expect(out.derived).toBe(0);
+    expect(out.failed).toHaveLength(1);
+    expect(out.failed[0].error).toContain(diagnostic);
+    expect(out.failed[0].error).not.toMatch(/private-|https:|key-1/);
+    expect(snapshot()).toEqual(before);
+  }
 });

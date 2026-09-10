@@ -13,10 +13,57 @@
 
 import { historyPlan } from "./history.js";
 import { checkedReads, commitChecked, enforcedRules, queryBudget } from "./write.js";
-import { ident, inputsHash, propertiesFor, qident, validateRow, valueHash, storageRow } from "./validate.js";
+import { ident, inputsHash, propertiesFor, qident, sha256hex, validateRow, valueHash, storageRow } from "./validate.js";
 
 // A hung endpoint would otherwise stall the whole sequential sweep.
-const ENDPOINT_TIMEOUT_MS = 10_000;
+const ENDPOINT_TIMEOUT_MS = 60_000;
+
+// Hub-only operational state: no schema log, catalog rows or replica sync.
+const COOLDOWNS = `CREATE TABLE IF NOT EXISTS _derivation_cooldowns (
+  endpoint TEXT PRIMARY KEY, status INTEGER NOT NULL, retry_at INTEGER NOT NULL
+)`;
+
+function retryAfter(res) {
+  if (![429, 503].includes(res.status)) return null;
+  const header = res.headers.get("Retry-After")?.trim() ?? "";
+  const now = Date.now();
+  let seconds = NaN;
+  if (/^\d+$/.test(header)) seconds = Number(header);
+  else if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(header)) {
+    seconds = Math.max(0, Math.ceil((Date.parse(header) - now) / 1000));
+  }
+  if (Number.isSafeInteger(seconds) && Number.isSafeInteger(now + Math.max(1, seconds) * 1000)) return Math.max(1, seconds);
+  return res.status === 429 ? 60 : null;
+}
+
+async function endpointError(res, target) {
+  // Never echo arbitrary bodies, headers, URLs or JSON fields other than error.
+  // Bound the read as well as the diagnostic; endpoints can send HTML or huge bodies.
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  try {
+    const decoder = new TextDecoder();
+    let body = "", size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 16_384) return "";
+      body += decoder.decode(value, { stream: true });
+    }
+    let detail = JSON.parse(body + decoder.decode())?.error;
+    if (typeof detail !== "string" || /[<>]/.test(detail)) return "";
+    for (const secret of [target.url, ...Object.values(target.headers)]) {
+      if (secret) detail = detail.replaceAll(secret, "[redacted]");
+    }
+    return detail
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"']+|\/\/[^\s"']+/gi, "[redacted URL]")
+      .replace(/\b(?:headers?|authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/gi, "[redacted]")
+      .replace(/\b(?:bearer|basic)\s+\S+/gi, "[redacted]")
+      .replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+  } catch { return ""; }
+  finally { await reader.cancel().catch(() => {}); }
+}
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
@@ -47,7 +94,11 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
   const catalogView = checkedReads(db);
   const out = { derived: 0, failed: [] };
   let typeOf, byName;
-  try { ({typeOf, byName} = await derivationProps(catalogView, t)); }
+  try {
+    ({typeOf, byName} = await derivationProps(catalogView, t));
+    // Create before capturing schema read guards, including on the first lookup.
+    if (byName.size && ids.length) await db.prepare(COOLDOWNS).run();
+  }
   catch (e) { return {derived:0,failed:ids.map(id=>({id,col,error:String(e)}))}; }
 
   for (const id of ids) {
@@ -71,16 +122,43 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
           out.failed.push({ id, col: cols[0].col, error: `no derivation configured for ${name}` });
           continue;
         }
+        // Hash the full identity so URL credentials never enter stored state.
+        const endpoint = await sha256hex(JSON.stringify([name, target.url]));
+        const cooldown = await db.prepare("SELECT status, retry_at FROM _derivation_cooldowns WHERE endpoint = ?").bind(endpoint).first();
+        const remaining = Math.ceil(((cooldown?.retry_at ?? 0) - Date.now()) / 1000);
+        if (remaining > 0) {
+          out.failed.push({ id, col: cols[0].col, error: `endpoint ${name} deferred by cooldown`, status: cooldown.status, retry_after: remaining });
+          continue;
+        }
         const inputs = cols[0].inputs ?? [];
         const body = { tbl: t, id, inputs: Object.fromEntries(inputs.map((c) => [c, row[c] ?? null])) };
-        const res = await fetchImpl(target.url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...target.headers },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
-        });
-        if (!res.ok) throw new Error(`endpoint ${name} returned ${res.status}`);
-        const result = await res.json();
+        let res;
+        try {
+          res = await fetchImpl(target.url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...target.headers },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(ENDPOINT_TIMEOUT_MS),
+          });
+        } catch (e) {
+          throw new Error(`endpoint ${name} ${e?.name === "TimeoutError" ? "TimeoutError: request timeout" : "unreachable"}`);
+        }
+        if (!res.ok) {
+          const retry_after = retryAfter(res);
+          if (retry_after) await db.prepare(`INSERT INTO _derivation_cooldowns (endpoint, status, retry_at) VALUES (?, ?, ?)
+            ON CONFLICT(endpoint) DO UPDATE SET status = excluded.status, retry_at = excluded.retry_at
+            WHERE excluded.retry_at > _derivation_cooldowns.retry_at`)
+            .bind(endpoint, res.status, Date.now() + retry_after * 1000).run();
+          const detail = await endpointError(res, target);
+          out.failed.push({ id, col: cols[0].col, status: res.status,
+            error: (`endpoint ${name} returned ${res.status}` + (detail ? `: ${detail}` : "")).slice(0, 512),
+            ...(retry_after ? { retry_after } : {}),
+          });
+          continue;
+        }
+        let result;
+        try { result = await res.json(); }
+        catch { throw new Error(`endpoint ${name} returned invalid JSON`); }
         if (!result || typeof result !== "object" || Array.isArray(result)) {
           throw new Error(`endpoint ${name} returned a non-object`);
         }
