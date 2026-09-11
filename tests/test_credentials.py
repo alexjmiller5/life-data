@@ -47,6 +47,7 @@ class Native:
             SecItemCopyMatching=Mock(side_effect=self.read),
             SecItemUpdate=Mock(side_effect=self.update),
             SecItemAdd=Mock(side_effect=self.add),
+            SecItemDelete=Mock(side_effect=self.delete),
         )
 
     def allocate(self, value, owned=True):
@@ -127,6 +128,16 @@ class Native:
         self.items[key] = attributes["kSecValueData"]
         return 0
 
+    def delete(self, query_ref):
+        _query, key = self.query(query_ref)
+        status = self.status("delete")
+        if status:
+            return status
+        if key not in self.items:
+            return -25300
+        del self.items[key]
+        return 0
+
 
 @pytest.fixture
 def native(credentials, monkeypatch):
@@ -164,6 +175,19 @@ def test_update_preserves_other_accounts_and_services(credentials, native):
 def test_missing_read_returns_none(credentials, native):
     assert credentials.read_token("absent") is None
     assert not native.items
+
+
+def test_delete_removes_only_the_requested_account_and_treats_missing_as_success(
+    credentials, native
+):
+    native.items = {
+        ("life-data", "account-a"): b"a",
+        ("life-data", "account-b"): b"b",
+    }
+    credentials.delete_token("account-a")
+    credentials.delete_token("missing")
+    assert native.items == {("life-data", "account-b"): b"b"}
+    assert native.calls == ["delete", "delete"]
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])

@@ -22,11 +22,14 @@ CLI.
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.
 - `src/life_data/background.py` - persistent CLI toggle, status and supervised loop.
 - `src/life_data/credentials.py` - native macOS Keychain storage; stdlib only.
+- `src/life_data/login.py` - browser enrollment and device-token lifecycle.
 - `src/life_data/catalog.py` — the catalog engine: typed properties, rules,
   derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
   connection.
-- `worker/src/index.js` — the hub service; `worker/wrangler.jsonc` declares
-  its D1 + R2 bindings and backup cron (that declaration IS the provisioning).
+- `worker/src/index.js` - the hub service; `worker/src/auth.js` owns the
+  separate auth registry and `worker/src/login.js` owns the Access-gated
+  browser flow. `worker/wrangler.jsonc` declares the main data D1, auth D1,
+  R2 bindings and backup cron (those declarations ARE the provisioning).
 - `worker/src/validate.js` — the hub-side mirror of the row validator;
   `tests/fixtures/validation-cases.json` is the contract both run.
 - `scripts/cf-r2-lifecycle.py` — idempotent source of truth for backup
@@ -200,6 +203,13 @@ CLI.
   in-process from 60s up to 3600s; do not restart to fetch credentials again.
   Only a rejection-free sync advances last_success. Status and logs contain
   counts and sanitized errors, never token values or rejected row payloads.
+- **Device login is app-owned.** `life login` opens an Access-gated approval
+  page and saves the resulting scoped device token in the macOS Keychain;
+  `life logout` revokes it at the saved hub before deleting the local item.
+  The worker's auth registry is a separate `AUTH_DB` binding, so user schema
+  DDL in `DB` cannot alter token state. `LOGIN_ACCESS_AUD` must equal the
+  provisioned Access application's audience. `/login` never trusts identity
+  headers and no login route accepts a bearer token in the browser URL.
 - `just test` runs pytest AND `bun test` in `worker/`.
   The deploy workflow gates deployment on both suites.
 

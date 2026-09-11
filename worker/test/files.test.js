@@ -17,7 +17,7 @@ async function setup(scopes) {
     },
     async head(key) { return this.get(key); },
   };
-  const env = { HUB_TOKEN: "root", DB: new D1Shim(), ARCHIVE: archive };
+  const env = { HUB_TOKEN: "root", DB: new D1Shim(), AUTH_DB: new D1Shim(), ARCHIVE: archive };
   const ctx = { waitUntil() {} };
   const created = await worker.fetch(new Request("https://hub.test/v1/tokens/create", {
     method: "POST", headers: { Authorization: "Bearer root" },

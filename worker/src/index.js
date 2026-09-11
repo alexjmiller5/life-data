@@ -9,6 +9,8 @@
 import { pushChecked, queryBudget } from "./write.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
+import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
+import { handleLogin, loginPath } from "./login.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -33,24 +35,15 @@ function tokensMatch(a, b) {
   return diff === 0;
 }
 
-// THE AUTH SEAM. Returns a tenant handle {db, archive, scopes} or null.
+// THE AUTH SEAM. Returns a tenant handle {db, authDb, archive, scopes} or null.
 // Accepts Bearer (the CLI, dashboards) and HTTP Basic with the token as the
 // password (clients that only speak Basic, e.g. OwnTracks).
 //
 // Two tiers: the HUB_TOKEN Worker secret is the ADMIN/root credential (full
 // access + token management; lives only in 1Password and on the owner's
-// machines). Everything else authenticates against the _tokens table in D1 —
+// machines). Everything else authenticates against the _tokens table in AUTH_DB -
 // scoped, individually revocable, minted via /v1/tokens/* with the admin
 // token. Tokens are stored as SHA-256 hashes; a lost D1 leaks no secrets.
-const TOKENS_TABLE = `CREATE TABLE IF NOT EXISTS _tokens (
-  hash TEXT PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL,
-  scopes TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  revoked_at TEXT,
-  last_used_at TEXT
-)`;
-
 async function authenticate(request, env, ctx) {
   const header = request.headers.get("Authorization") || "";
   let token = "";
@@ -65,23 +58,25 @@ async function authenticate(request, env, ctx) {
   }
   if (!token || !env.HUB_TOKEN) return null;
   if (tokensMatch(token, env.HUB_TOKEN)) {
-    return { db: env.DB, archive: env.ARCHIVE, scopes: ["admin"], name: "admin" };
+    return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: ["admin"], name: "admin", admin: true };
   }
-  await env.DB.prepare(TOKENS_TABLE).run();
-  const row = await env.DB.prepare(
+  if (!env.AUTH_DB) return null;
+  await ensureAuthReady(env.AUTH_DB);
+  const hash = await hashToken(token);
+  const row = await env.AUTH_DB.prepare(
     "SELECT name, scopes FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
   )
-    .bind(await sha256hex(token))
+    .bind(hash)
     .first();
   if (!row) return null;
   ctx.waitUntil(
-    env.DB.prepare(
-      "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?"
+    env.AUTH_DB.prepare(
+      "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE hash = ?"
     )
-      .bind(row.name)
+      .bind(hash)
       .run()
   );
-  return { db: env.DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name };
+  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false };
 }
 
 // Decode exactly once and reject ambiguous separators/escape sequences. The same
@@ -143,18 +138,19 @@ function allowed(pathname, method, scopes) {
 }
 
 const TOKEN_ROUTES = {
-  "/v1/tokens/create": async (body, db) => {
+  "/v1/tokens/create": async (body, tenant) => {
     const value =
       "lt_" + [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
-    await db.prepare(TOKENS_TABLE).run();
-    await db
+    await ensureAuthReady(tenant.authDb);
+    await tenant.authDb
       .prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)")
-      .bind(await sha256hex(value), body.name, body.scopes || "full")
+      .bind(await hashToken(value), body.name, body.scopes || "full")
       .run();
     return { name: body.name, scopes: body.scopes || "full", token: value }; // value shown ONCE
   },
-  "/v1/tokens/revoke": async (body, db) => {
-    await db
+  "/v1/tokens/revoke": async (body, tenant) => {
+    await ensureAuthReady(tenant.authDb);
+    await tenant.authDb
       .prepare(
         "UPDATE _tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?"
       )
@@ -162,10 +158,10 @@ const TOKEN_ROUTES = {
       .run();
     return { revoked: body.name };
   },
-  "/v1/tokens/list": async (_body, db) => {
-    await db.prepare(TOKENS_TABLE).run();
-    const { results } = await db
-      .prepare("SELECT name, scopes, created_at, revoked_at, last_used_at FROM _tokens ORDER BY created_at")
+  "/v1/tokens/list": async (_body, tenant) => {
+    await ensureAuthReady(tenant.authDb);
+    const { results } = await tenant.authDb
+      .prepare("SELECT name, scopes, created_at, revoked_at, last_used_at, label FROM _tokens ORDER BY created_at")
       .all();
     return results ?? [];
   },
@@ -336,6 +332,17 @@ const json = (obj, status = 200) =>
     status,
     headers: { "Content-Type": "application/json" },
   });
+
+async function handleSession(request, tenant) {
+  if (request.method === "GET") return json({ name: tenant.name, scopes: tenant.scopes });
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+  if (tenant.admin) return json({ error: "admin token cannot self-revoke" }, 403);
+  await ensureAuthReady(tenant.authDb);
+  await tenant.authDb.prepare(
+    "UPDATE _tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE hash = ? AND revoked_at IS NULL"
+  ).bind(tenant.hash).run();
+  return json({ logged_out: true });
+}
 
 // --- backups: tiered SQL dumps to R2 ----------------------------------------
 //
@@ -567,8 +574,20 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/health") return json({ ok: true });
 
+    if (loginPath(url.pathname)) {
+      try {
+        return await handleLogin(request, env, ctx, url);
+      } catch {
+        return json({ error: "login unavailable" }, 500);
+      }
+    }
+
     const tenant = await authenticate(request, env, ctx);
-    if (!tenant) return json({ error: "forbidden" }, 403);
+    if (!tenant) {
+      const session = url.pathname.startsWith("/v1/session");
+      return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
+    }
+    if (url.pathname === "/v1/session") return handleSession(request, tenant);
     if (!allowed(url.pathname, request.method, tenant.scopes)) {
       return json({ error: "insufficient scope" }, 403);
     }
@@ -587,7 +606,7 @@ export default {
       if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
         const route = TOKEN_ROUTES[url.pathname];
         if (!route) return json({ error: "not found" }, 404);
-        return json(await route(await request.json(), tenant.db));
+        return json(await route(await request.json(), tenant));
       }
       if (url.pathname === "/v1/archive/query" && request.method === "POST") {
         // proxy to R2 SQL with the hub's own service credential, so clients
@@ -650,4 +669,4 @@ export default {
   },
 };
 
-export { ROUTES, allowed, validatePush };
+export { ROUTES, allowed, validatePush, TOKENS_TABLE };

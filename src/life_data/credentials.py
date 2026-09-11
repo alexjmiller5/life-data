@@ -39,6 +39,7 @@ def _frameworks():
             ("SecItemCopyMatching", [ptr, refs]),
             ("SecItemAdd", [ptr, refs]),
             ("SecItemUpdate", [ptr, ptr]),
+            ("SecItemDelete", [ptr]),
         ):
             function = getattr(security, name)
             function.argtypes = args
@@ -162,3 +163,44 @@ def read_token(account: str) -> str | None:
         return data.decode("utf-8")
     except UnicodeError:
         _check(_DECODE)
+
+
+def delete_token(account: str) -> None:
+    """Delete the caller's token, returning successfully when it is absent."""
+    _require_macos()
+    security, cf, key_callbacks, value_callbacks = _frameworks()
+    with ExitStack() as cleanup:
+
+        def own(ref):
+            if not ref:
+                _check(-108)
+            cleanup.callback(cf.CFRelease, ref)
+            return ref
+
+        def string(value):
+            try:
+                data = value.encode("utf-8")
+            except UnicodeError:
+                _check(_DECODE)
+            return own(cf.CFStringCreateWithBytes(None, data, len(data), 0x08000100, False))
+
+        attrs = {
+            _constant(security, "kSecClass"): _constant(security, "kSecClassGenericPassword"),
+            _constant(security, "kSecAttrService"): string(_SERVICE),
+            _constant(security, "kSecAttrAccount"): string(account),
+        }
+        refs = ctypes.c_void_p * len(attrs)
+        query = own(
+            cf.CFDictionaryCreate(
+                None,
+                refs(*attrs),
+                refs(*attrs.values()),
+                len(attrs),
+                key_callbacks,
+                value_callbacks,
+            )
+        )
+        status = security.SecItemDelete(query)
+        if status == _NOT_FOUND:
+            return
+        _check(status)

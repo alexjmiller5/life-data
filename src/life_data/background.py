@@ -115,6 +115,7 @@ def command(args, data: Path) -> int:
                 except RuntimeError as exc:
                     print(str(exc), file=sys.stderr)
                     return 1
+                prefs["hub_url"] = endpoint
                 prefs["keychain"] = True
                 prefs.pop("token_cmd", None)
         prefs["enabled"] = action == "enable"

@@ -944,6 +944,18 @@ def main(argv: list[str] | None = None) -> int:
     p_doc.add_argument("table", nargs="?")
     p_watch = sub.add_parser("watch", help="sync continuously (push instantly, poll for pulls)")
     p_watch.add_argument("--poll", type=int, default=POLL_SECONDS)
+    p_login = sub.add_parser("login", help="enroll this device through the browser")
+    p_login.add_argument("--hub-url", help="hub endpoint (optional for the hosted service)")
+    p_login.add_argument("--name", help="label shown in the device approval page")
+    p_login.add_argument(
+        "--no-browser", action="store_true", help="print the approval URL without opening it"
+    )
+    p_login.add_argument(
+        "--token-stdin",
+        action="store_true",
+        help="validate and save an existing device token from stdin",
+    )
+    sub.add_parser("logout", help="revoke and remove this device credential")
     p_background = sub.add_parser("background", help="enable, disable or inspect background sync")
     bg_sub = p_background.add_subparsers(dest="background_command", required=True)
     bg_enable = bg_sub.add_parser("enable", help="turn on background sync")
@@ -1074,6 +1086,24 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         if args.background_command == "run" and args.poll < 1:
             raise ValueError("poll interval must be at least one second")
         return command(args, path.parent)
+    elif args.command == "login":
+        from .login import login
+
+        print(
+            json.dumps(
+                login(
+                    path.parent,
+                    hub_url=args.hub_url,
+                    name=args.name,
+                    no_browser=args.no_browser,
+                    token_stdin=args.token_stdin,
+                )
+            )
+        )
+    elif args.command == "logout":
+        from .login import logout
+
+        print(json.dumps(logout(path.parent)))
     elif args.command == "init":
         init(path)
         print(path)

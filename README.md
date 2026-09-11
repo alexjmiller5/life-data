@@ -77,6 +77,21 @@ Keychain storage is also used by ordinary hub commands when no interactive
 credential override is configured. Disabling sync retains the credential.
 A locked or unavailable Keychain causes a retry with a visible error state.
 
+For a new Mac, enroll without copying a token from another machine:
+
+```bash
+life login --name "MacBook Air"
+```
+
+Life prints an approval URL and opens it in the browser. Sign in through the
+hub's Cloudflare Access email flow, approve the device, and the CLI stores the
+scoped app-issued token in Keychain. The browser sees only a short-lived
+fingerprint, never the bearer token. Login does not turn background sync on;
+run `life background enable` when you want that device to sync. `life logout`
+revokes the device at the saved hub before removing its Keychain item. The
+compatibility form `life login --token-stdin` validates an existing device
+token, but admin tokens are rejected.
+
 Alternatively, pass `--token-command 'credential-tool read hub-token'`.
 It runs in the daemon's environment; it must work without a terminal.
 `LIFE_HUB_TOKEN` in that environment takes precedence. No password manager,
@@ -119,13 +134,22 @@ status lives in `background-status.json`. Neither contains saved tokens.
 ## Self-hosting the hub
 
 The hub is a Cloudflare Worker in `worker/`, storing the canonical replica in
-D1 and writing backups to R2 — all declared in `worker/wrangler.jsonc`.
+one D1 and writing backups to R2. Token state lives in a separate D1 binding
+named `AUTH_DB`; the user-controlled data D1 is never used as the auth store.
+The bindings are declared in `worker/wrangler.jsonc`.
 
 ```bash
 cd worker && bunx wrangler@4 deploy
 bunx wrangler@4 secret put HUB_TOKEN     # the bearer token clients present
 ../scripts/cf-r2-lifecycle.py            # apply tiered backup retention
 ```
+
+Before the first deploy, create the auth D1, add its id as the `AUTH_DB`
+binding, and set the non-secret `LOGIN_ACCESS_AUD` variable to the audience
+returned by `scripts/cf-login.py`. If the existing hub has `_tokens`, run
+`scripts/migrate-auth-registry.py` once before switching clients to the new
+worker. The Access application protects `<domain>/login` and its children
+with email OTP; `/v1` remains bearer-token authenticated.
 
 Point clients at it with `hub_url`, and you own the whole loop.
 
