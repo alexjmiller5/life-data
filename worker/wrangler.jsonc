@@ -12,6 +12,11 @@
 			"binding": "DB",
 			"database_name": "life-data",
 			"database_id": "a7a10931-e427-428e-8d0d-1e4024a3312b"
+		},
+		{
+			"binding": "AUTH_DB",
+			"database_name": "life-data-auth",
+			"database_id": "572840fc-5179-4f42-b9d0-4474d97edc6a"
 		}
 	],
 	"r2_buckets": [
@@ -24,7 +29,8 @@
 	"pipelines": [{ "stream": "24ff9a5dd60549e7b1d0d931cf5ffea0", "binding": "EVENTS" }],
 	"vars": {
 		"ACCOUNT_ID": "1e69de15e5dc3dddea6db7b3ae8087bc",
-		"ARCHIVE_BUCKET": "life-data-archive"
+		"ARCHIVE_BUCKET": "life-data-archive",
+		"LOGIN_ACCESS_AUD": "9f21efcb47f8b63e252f64e20c3df14a9e7372999de4bb1ed6a84599c46f9f29"
 	},
 	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
 	// belongs to (daily / weekly / monthly / yearly). Every 15 minutes the

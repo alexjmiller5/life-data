@@ -118,16 +118,14 @@ def query(client: Client, account: str, database: str, sql: str, params=()) -> l
     )
 
 
+def table_exists(client: Client, account: str, database: str, table: str) -> bool:
+    return bool(query(client, account, database, f"PRAGMA table_info({table})"))
+
+
 def copy_registry(client: Client, account: str, source: str, target: str) -> int:
     if source == target:
         raise ValueError("source and target databases must differ")
-    exists = query(
-        client,
-        account,
-        source,
-        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = '_tokens'",
-    )
-    if not exists:
+    if not table_exists(client, account, source, "_tokens"):
         return 0
     source_rows = query(
         client,

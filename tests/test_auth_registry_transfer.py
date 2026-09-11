@@ -36,3 +36,17 @@ def test_transfer_rejects_conflicting_hash_or_name():
     script = module()
     with pytest.raises(ValueError, match="conflicting"):
         script.pending_rows([row(scopes="tables:read")], [row()])
+
+
+def test_table_exists_uses_d1_compatible_pragma(monkeypatch):
+    script = module()
+    calls = []
+
+    def fake_query(_client, account, database, sql, params=()):
+        calls.append((account, database, sql, params))
+        return [{"name": "_tokens"}]
+
+    monkeypatch.setattr(script, "query", fake_query)
+
+    assert script.table_exists(object(), "account", "database", "_tokens") is True
+    assert calls == [("account", "database", "PRAGMA table_info(_tokens)", ())]
