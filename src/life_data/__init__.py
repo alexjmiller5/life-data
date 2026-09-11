@@ -567,9 +567,17 @@ class HttpHub:
         return self._post("/v1/schema/push", {"entries": entries})["applied"]
 
     def rows_pull(self, table: str, columns: list[str], since: str) -> list[dict]:
-        return self._post(
-            "/v1/rows/pull", {"table": table, "columns": columns, "since": since or ""}
-        )["rows"]
+        body = {"table": table, "columns": columns, "since": since or "", "limit": CHUNK}
+        rows = []
+        while True:
+            page = self._post("/v1/rows/pull", body)
+            rows.extend(page["rows"])
+            cursor = page.get("next_cursor")
+            if cursor is None:  # Older hubs return a complete response without a cursor.
+                return rows
+            if not isinstance(cursor, str) or cursor <= body.get("after", "") or not page["rows"]:
+                raise RuntimeError("invalid pull cursor")
+            body["after"] = cursor
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
         # the response also carries the hub_at the hub stamped; nothing reads it
