@@ -1,8 +1,8 @@
-# life-data — agent instructions
+# life-data - agent instructions
 
 Schema-agnostic personal data store: local-first SQLite + the `life` CLI,
 plus an optional sync hub (a Cloudflare Worker in `worker/`). The client is
-Python 3.12+, standard library only — **no runtime dependencies, keep it that
+Python 3.12+, standard library only - **no runtime dependencies, keep it that
 way**. Built with uv; packaged as a Nix flake app.
 
 ## The user/dev boundary (load-bearing)
@@ -23,20 +23,20 @@ CLI.
 - `src/life_data/background.py` - persistent CLI toggle, status and supervised loop.
 - `src/life_data/credentials.py` - native macOS Keychain storage; stdlib only.
 - `src/life_data/login.py` - browser enrollment and device-token lifecycle.
-- `src/life_data/catalog.py` — the catalog engine: typed properties, rules,
+- `src/life_data/catalog.py` - the catalog engine: typed properties, rules,
   derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
   connection.
 - `worker/src/index.js` - the hub service; `worker/src/auth.js` owns the
   separate auth registry and `worker/src/login.js` owns the Access-gated
   browser flow. `worker/wrangler.jsonc` declares the main data D1, auth D1,
   R2 bindings and backup cron (those declarations ARE the provisioning).
-- `worker/src/validate.js` — the hub-side mirror of the row validator;
+- `worker/src/validate.js` - the hub-side mirror of the row validator;
   `tests/fixtures/validation-cases.json` is the contract both run.
-- `scripts/cf-r2-lifecycle.py` — idempotent source of truth for backup
+- `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
-- `tests/test_core.py` — pytest: CLI, sync engine, hubs. `tests/test_catalog.py`
-  — pytest: the catalog engine, sharing `tests/fixtures/validation-cases.json`
-  with `worker/src/validate.js`. `worker/test/` — bun test over a
+- `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`
+  - pytest: the catalog engine, sharing `tests/fixtures/validation-cases.json`
+  with `worker/src/validate.js`. `worker/test/` - bun test over a
   `bun:sqlite` D1 shim. TDD: failing test first, then mutation-test (break
   the code, confirm the test fails).
 
@@ -55,7 +55,7 @@ CLI.
   per column from its typed `col:type[!][(a|b|c)]` syntax, so every table is
   documented from birth. DDL through `life sql` is recorded verbatim in
   `_schema_log`; ordered replay is how schema syncs. Underscore-prefixed
-  tables are plumbing — created by `init()`, never logged.
+  tables are plumbing - created by `init()`, never logged.
 - Timestamps: ISO 8601 UTC with milliseconds via SQLite
   `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. Sync ordering depends on
   lexicographic == chronological; keep every new timestamp in this format.
@@ -127,7 +127,7 @@ CLI.
   `^[A-Za-z_][A-Za-z0-9_]*$` and refuse anything else rather than escaping it).
   A column named `cast` or `order` is otherwise a syntax error that breaks sync
   for the whole table. User-authored SQL (rule `sql`, `options_sql`, `sql:`
-  defaults, `--where`) is left alone — that is the user's own SQL. The JSON
+  defaults, `--where`) is left alone - that is the user's own SQL. The JSON
   path inside the upsert (`json_extract(value, '$.<col>')`) takes the RAW name:
   it is a JSON key, not SQL.
 - `catalog_*` and `provenance` sync before every other table.
@@ -201,7 +201,10 @@ CLI.
   a background-only command, or an explicitly saved macOS Keychain token.
   Never inherit an interactive token command into the runner. Retry failures
   in-process from 60s up to 3600s; do not restart to fetch credentials again.
-  Only a rejection-free sync advances last_success. Status and logs contain
+  Background Keychain reads disable native UI for that call and restore the
+  previous process allowance, returning an OS code when interaction is required.
+  Status distinguishes authenticating from syncing. Only a rejection-free sync
+  advances last_success. Status and logs contain
   counts and sanitized errors, never token values or rejected row payloads.
 - **Device login is app-owned.** `life login` opens an Access-gated approval
   page and saves the resulting scoped device token in the macOS Keychain;
@@ -224,9 +227,18 @@ State-based, never op-log. `sync(path, hub)`: `ensure_hub_at`, replay missing
 "duplicate column"), snapshot push candidates BEFORE applying the pull (else
 pulled rows echo straight back), pull then push, then advance the
 per-direction cursors in `_sync_state`; any rejection keeps last_push unchanged.
+A per-database file lock inside the shared sync entry point excludes overlapping
+manual, watch and background rounds, including endpoint-binding races. Final
+cursor/binding state commits together. Preference updates use a separate short
+lock; native credential access and network work never run under that lock.
 
-**The two cursors measure different clocks.** `last_push` is local
-`updated_at`: which of our rows are new. `last_pull` is **`hub_at`, the
+**The two cursors measure different clocks.** `last_push` is the local clock
+captured under BEGIN IMMEDIATE with push candidates and original history. The
+candidate boundary is inclusive (`updated_at >= last_push`); remote row timestamps
+never choose this checkpoint. Release the SQLite writer reservation before any
+network work. Older checkpoint versions receive one full reconciliation, recorded
+only after success; a detected clock rollback forces a full push. Explicitly
+backdated imports and equal revisions of one row retain the documented LWW limits. `last_pull` is **`hub_at`, the
 arrival time the HUB stamps on its own clock** - a nullable TEXT column on
 every synced table, added by `create_table` and backfilled into existing
 tables by `ensure_hub_at`. That migration is logged DDL, so it replays to the
@@ -245,9 +257,12 @@ moved on; on a table that has no `hub_at` the hub degrades to the old
 boundary is INCLUSIVE (`hub_at >= since`): a push landing in the same
 millisecond as a cursor read must not be lost, and re-reading the boundary row
 costs nothing. A NULL `hub_at` is older than everything, so `since = ''` pulls
-the whole table. One hub clock means arrival order is total: a replica that
+the whole table. The database clock is evaluated in the committing batch, including generated and
+imported history arrivals; do not bind a pretransaction timestamp. Under a
+nondecreasing hub clock, committed arrival order follows this clock: a replica that
 pushes an edit stamped older than another replica's cursor still gets a fresh
-`hub_at` and reaches everyone. `updated_at` decides conflicts and nothing else.
+`hub_at` and reaches everyone. `updated_at` decides row conflicts and local push discovery; `hub_at` decides
+remote arrival discovery.
 
 **The pull cursor is `hub.cursor(tables)` (`max(hub_at)`) read BEFORE the pull
 loop, not after it**: the hub writes rows itself (derivations on push and on
@@ -263,13 +278,22 @@ land between our pull and our push.
 
 The upsert carries rows as ONE json parameter through `json_each` (D1 caps
 bind params at ~100/query) and is guarded by
-`WHERE excluded.updated_at > t.updated_at` — that clause IS the LWW rule.
+`WHERE excluded.updated_at > t.updated_at` - that clause IS the LWW rule.
 
 Hubs implement one interface (`ensure_ready`, `schema_pull/push`,
-`rows_pull/push`, `cursor`): `LocalHub` (SQLite, used by tests) and
+`rows_pull/push/insert`, `cursor`): `LocalHub` (SQLite, used by tests) and
 `HttpHub` (the service). Anything provider-specific lives behind it.
 
-**`HttpHub` must send a real `User-Agent`** — Cloudflare's edge bot
+`POST /v1/rows/insert` is the atomic creation path. Existing IDs, including
+tombstones, remain untouched regardless of initializer values. Only actual
+committed `RETURNING id` receipts count as inserted or trigger derivations.
+The response partitions submitted IDs into `inserted`, `existing` and
+`rejected`; duplicate request IDs and history attachments fail before writes.
+It shares table-write authorization and guarded catalog/invariant validation
+with push. Never silently fall back to push on an unsupported hub. A lost
+acknowledgment is safe to retry but does not preserve creation attribution.
+
+**`HttpHub` must send a real `User-Agent`** - Cloudflare's edge bot
 protection 403s the default `Python-urllib/x.y` agent (error 1010) before
 the request reaches the Worker.
 
@@ -280,38 +304,38 @@ as a task and is a client-side change only.
 
 ## Hub service
 
-`authenticate(request, env)` in `worker/src/index.js` is **the auth seam**:
-it returns a tenant handle or null, and nothing downstream knows how the
-caller was authenticated. Today it is a constant-time bearer-token compare
-against the `HUB_TOKEN` Worker secret (single tenant). Real accounts (Better
-Auth, per-user tokens) replace that function and nothing else; the natural
-multi-tenant model is one D1 database per tenant, not a tenant column.
+`authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
+operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
+returns a tenant handle used by the routes. The data D1 cannot alter the auth
+registry. Browser approval uses the platform-provided Access identity and the
+configured audience; it admits one owner to one dataset. API tokens and browser
+Access sessions are separate authorities: revoking one does not revoke the other.
 
 Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
-any `sqlite_master` walk — reading them raises `SQLITE_AUTH`.
+any `sqlite_master` walk - reading them raises `SQLITE_AUTH`.
 
 Two cron triggers, dispatched in `scheduled()` on `event.cron`: `10 9 * * *`
 is the backup, `*/15 * * * *` is the derivation sweep (`SWEEP_CRON` in
 `index.js` must match `wrangler.jsonc`).
 
 Derivations (`worker/src/derive.js`). `derived_by = "http:<name>"` resolves
-ONLY through the `DERIVATIONS` Worker secret — a JSON object
+ONLY through the `DERIVATIONS` Worker secret - a JSON object
 `{name: {url, headers}}`. **No external source may be named in `worker/src`.**
 The hub POSTs `{tbl, id, inputs:{col: value}}` and writes back the response
 keys that are derived columns of that derivation (plus `_source_ref`);
-anything else is ignored. Output runs through `validateRow` first — a value
+anything else is ignored. Output runs through `validateRow` first - a value
 failing its type/options/pattern is dropped and reported in `failed`, its
 siblings still land. A write is ONE guarded `db.batch`: provenance, value UPDATE, enforced
 invariants and actual cell history commit together. Reads captured before the
 external request prevent a concurrent edit from receiving stale output.
-Runs three ways: after `/v1/rows/push` via `ctx.waitUntil` (never delays the
+Runs three ways: after `/v1/rows/push` or actual `/v1/rows/insert` creations via `ctx.waitUntil` (never delays the
 response; a failure is retried by the sweep), on the 15-minute sweep
 (underived or `inputs_hash`-stale, 50 per property), and synchronously via
 `POST /v1/derive {table, ids, col?}` (>50 ids → 400). Routes take
 `(body, db, env, ctx)` and may return a `Response` of their own. `life derive
 <tbl>.<col> [--where <sql>]` is a client-side wrapper around that route: it
-selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals —
+selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals -
 it never computes a derived value itself. Requires a hub token with
 `tables:write` (or `full`/admin).
 
@@ -340,12 +364,12 @@ expiry, with no additional schedule or automatic retry loop.
 ## Streams
 
 Append-only events, hub-backed by design (tables are local-first; streams are
-not — the events are born remote). `POST /v1/streams/<name>/append` stores the
+not - the events are born remote). `POST /v1/streams/<name>/append` stores the
 request body VERBATIM as a time-prefixed landing object (raw is sacred, never
-deleted — everything downstream is rebuildable from landing) plus a
+deleted - everything downstream is rebuildable from landing) plus a
 `state/<stream>/latest.json` pointer for O(1) tail, then tees
 `{stream, ingested_at, record}` into the Pipelines stream binding (`EVENTS`).
-The tee must NEVER fail the append — landing is the source of truth.
+The tee must NEVER fail the append - landing is the source of truth.
 
 Managed platform (all open beta, Workers Paid): Pipelines stream
 `life_events` (explicit schema: stream string, ingested_at string, record
@@ -353,7 +377,7 @@ json) → pipeline `life_pipeline` (SQL passthrough) → Iceberg sink →
 table `life.events` in the R2 Data Catalog on `life-data-archive`, managed
 compaction enabled. `POST /v1/archive/query` proxies SQL to R2 SQL
 (`api.sql.cloudflarestorage.com/api/v1/accounts/<acct>/r2-sql/query/<bucket>`)
-with the Worker's `R2_SQL_TOKEN` secret — clients never hold a provider
+with the Worker's `R2_SQL_TOKEN` secret - clients never hold a provider
 token. Table columns: `stream`, `ingested_at`, `record` (JSON string),
 `__ingest_ts`. `WHERE`/`count(*)` work; `record` needs client-side JSON
 parsing or the `--raw` DuckDB path for field-level analytics.
@@ -361,7 +385,7 @@ parsing or the `--raw` DuckDB path for field-level analytics.
 Beta gotchas, all hit at build time (2026-09-02):
 - **Creation order is load-bearing**: stream WITH explicit schema first,
   THEN sink, THEN pipeline. The sink creates the Iceberg table at sink
-  creation with whatever shape it can see — created against a schema-less
+  creation with whatever shape it can see - created against a schema-less
   stream you get a useless `value` JSON-string column, and "writing to
   existing Catalog tables is not yet supported" blocks fixing it without
   dropping the table (Iceberg REST: get `prefix` from
@@ -370,50 +394,36 @@ Beta gotchas, all hit at build time (2026-09-02):
 - Schema-less streams declare ONE required `value` field: events sent as
   `{stream, ...}` fail validation SILENTLY (binding send still succeeds).
 - The wrangler `pipelines` binding wants the stream **ID**, not name; the
-  ID changes when the stream is recreated — update wrangler.jsonc + deploy.
+  ID changes when the stream is recreated - update wrangler.jsonc + deploy.
 - Sinks with auto-created R2 credentials derive them from the token used at
   creation: deleting that API token strands the sink ("authentication
   failed", pipeline → failed state). Recreate sink + pipeline.
-- The stream BUFFERS across sink failures/recreation — buffered events
+- The stream BUFFERS across sink failures/recreation - buffered events
   redeliver once a working sink exists. Landing remains the true raw record.
 - **Delivery into `life.events` is AT-LEAST-ONCE and eventually consistent**:
   a send can land in the table minutes later and can be duplicated by
   redelivery (a 23-record replay once materialized as 46 rows). Never
   "verify" a tee by querying the table right away, and never re-send/replay
-  because the count looks short — check the landing manifest instead (landing
+  because the count looks short - check the landing manifest instead (landing
   is exactly-once), wait out the sink roll, and treat residual projection
   duplicates as a query-time concern (dedupe on a record-level key).
-- `EVENTS.send` can stall past 30s while still succeeding — the client's
+- `EVENTS.send` can stall past 30s while still succeeding - the client's
   default timeout is 120s for this reason. A client-side timeout on
   append/batch does NOT mean the write failed: check the manifest before any
   retry (retrying a landed batch duplicates both landing and events).
-- The old AI Agent CF token predates these products: use the platform token
-  (below) for any pipelines/catalog/r2-sql wrangler ops.
 
-Credentials, two layers:
-- **Hub tokens** (the platform's own auth):
-  - `AI Agent Life Data Hub Token` (AI Agent vault,
-    `3qq7d6cltvwh3yzken2b46einm`): the ADMIN token (= the Worker's
-    `HUB_TOKEN` secret) AND the agent estate's daily credential - Alex's
-    Macs/agents are the sole CLI users, so per his 2026-09-02 decision they
-    use admin directly (a separate scoped machine token added no real
-    isolation: the SA on those machines can read this item regardless).
-  - Scoped client tokens (hub `_tokens` D1 table, SHA-256 at rest; managed
-    with `life token create/revoke/list` under the admin token): `phone` -
-    streams:append, in OwnTracks + Alex's Personal vault ("Life Data
-    OwnTracks Token"); `notion-automations` - tables:read, in that project's
-    ENV item → Modal secret. Scopes: `full` (everything but token mgmt),
-    `tables:read` (schema/rows/cursor pulls + stream/archive GETs),
-    `tables:write` (`/v1/rows/push` + `/v1/derive`, nothing else),
-    `streams:append`. Lost/retired client = revoke one name.
-- **Cloudflare API tokens** (the service's own infrastructure, `Life Data`
-  vault): `Life Data Platform Token` (`2vjluucdosnw5oxgc4iit4tfp4`;
-  Pipelines/Catalog/R2/Workers/D1 write - platform ops + compaction service
-  credential; do NOT rotate casually, the Pipelines sink derives its R2
-  credentials from it) and `Life Data SQL Read Token`
-  (`qxri5llxvud5dq7l3727pfchxe`; read-only, = the Worker's `R2_SQL_TOKEN`
-  secret). The claude-code SA cannot read project vaults - agents needing
-  these use the op-temp-sa flow or desktop auth (see 1password skill).
+Credentials have separate owners:
+- Consumer devices enroll through `life login` and store their app-issued
+  tokens in native Keychain. Never distribute operator/provider tokens to them.
+- Services receive dedicated, narrowly scoped Life tokens through the supported
+  token API. The auth registry stores only hashes in `AUTH_DB`. Revocation is
+  per credential; `full` allows data operations, not token administration.
+- `HUB_TOKEN` is an independently managed operator credential. It is never an
+  implicit fallback for a signed-out consumer session.
+- Cloudflare infrastructure credentials belong to the service and its CI/operator
+  tooling. Provider IDs and credentials never enter client configuration.
+- Pipeline sink storage credentials may derive from a provisioning token. Check
+  that dependency before rotating it; routine app sign-in needs no provider key.
 
 ## File service
 

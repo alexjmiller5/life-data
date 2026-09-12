@@ -30,6 +30,8 @@ class Native:
         self.items = {}
         self.statuses = {}
         self.calls = []
+        self.interactive = True
+        self.read_interaction = []
         self.next_ref = 2**40  # Catch pointer truncation assumptions.
         self.cf = SimpleNamespace(
             CFStringCreateWithBytes=Mock(side_effect=self.string),
@@ -48,6 +50,8 @@ class Native:
             SecItemUpdate=Mock(side_effect=self.update),
             SecItemAdd=Mock(side_effect=self.add),
             SecItemDelete=Mock(side_effect=self.delete),
+            SecKeychainGetUserInteractionAllowed=Mock(side_effect=self.get_interaction),
+            SecKeychainSetUserInteractionAllowed=Mock(side_effect=self.set_interaction),
         )
 
     def allocate(self, value, owned=True):
@@ -93,6 +97,7 @@ class Native:
         return self.statuses.get(operation, [0]).pop(0)
 
     def read(self, query_ref, result):
+        self.read_interaction.append(self.interactive)
         query, key = self.query(query_ref)
         assert query["kSecReturnData"] == "kCFBooleanTrue"
         assert query["kSecMatchLimit"] == "kSecMatchLimitOne"
@@ -103,6 +108,18 @@ class Native:
             return -25300
         ctypes.cast(result, ctypes.POINTER(ctypes.c_void_p))[0] = self.allocate(self.items[key])
         return 0
+
+    def get_interaction(self, result):
+        status = self.status("get_ui")
+        if not status:
+            ctypes.cast(result, ctypes.POINTER(ctypes.c_ubyte))[0] = self.interactive
+        return status
+
+    def set_interaction(self, state):
+        status = self.status("set_ui")
+        if not status:
+            self.interactive = bool(state)
+        return status
 
     def update(self, query_ref, attributes_ref):
         query, key = self.query(query_ref)
@@ -175,6 +192,65 @@ def test_update_preserves_other_accounts_and_services(credentials, native):
 def test_missing_read_returns_none(credentials, native):
     assert credentials.read_token("absent") is None
     assert not native.items
+
+
+@pytest.mark.parametrize("previous", [True, False])
+@pytest.mark.parametrize("outcome", ["success", "missing", "denied", "decode", "interrupt"])
+def test_noninteractive_read_restores_native_ui_on_every_exit(
+    credentials, native, previous, outcome
+):
+    native.interactive = previous
+    if outcome != "missing":
+        native.items[("life-data", "account")] = b"dummy-private-token"
+    if outcome == "denied":
+        native.statuses["read"] = [-25293]
+    elif outcome == "decode":
+        native.items[("life-data", "account")] = b"dummy-private\xff"
+    elif outcome == "interrupt":
+
+        def interrupt(*_):
+            assert native.interactive is False
+            raise KeyboardInterrupt
+
+        native.security.SecItemCopyMatching.side_effect = interrupt
+    if outcome in {"denied", "decode"}:
+        code = -25293 if outcome == "denied" else -26275
+        with pytest.raises(credentials.KeychainError, match=f"OS status {code}"):
+            credentials.read_token("account", interactive=False)
+    elif outcome == "interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            credentials.read_token("account", interactive=False)
+    else:
+        expected = "dummy-private-token" if outcome == "success" else None
+        assert credentials.read_token("account", interactive=False) == expected
+    assert native.interactive is previous
+    if outcome != "interrupt":
+        assert native.read_interaction == [False]
+
+
+@pytest.mark.parametrize("operation", ["get_ui", "set_ui"])
+def test_suppression_failure_never_attempts_the_native_read(credentials, native, operation):
+    native.statuses[operation] = [-25308, 0]
+    with pytest.raises(credentials.KeychainError, match="OS status -25308"):
+        credentials.read_token("account", interactive=False)
+    assert not native.read_interaction
+    assert native.interactive is True
+
+
+def test_restoration_failure_is_reported_and_releases_the_result(credentials, native):
+    native.items[("life-data", "account")] = b"dummy-private-token"
+    native.statuses["set_ui"] = [0, -25308]
+    with pytest.raises(credentials.KeychainError, match="OS status -25308"):
+        credentials.read_token("account", interactive=False)
+    assert native.read_interaction == [False]
+    assert not native.owned
+
+
+def test_interactive_default_leaves_the_native_policy_alone(credentials, native):
+    native.items[("life-data", "account")] = b"dummy"
+    assert credentials.read_token("account") == "dummy"
+    assert native.read_interaction == [True]
+    assert native.calls == ["read"]
 
 
 def test_delete_removes_only_the_requested_account_and_treats_missing_as_success(
@@ -379,10 +455,29 @@ def test_real_cf_abi_with_security_calls_replaced(monkeypatch):
         assert function.argtypes == expected_args
         monkeypatch.setattr(security, name, implementation)
 
+    interaction = [True]
+
+    def get_interaction(result):
+        ctypes.cast(result, ctypes.POINTER(ctypes.c_ubyte))[0] = interaction[0]
+        return 0
+
+    def set_interaction(state):
+        interaction[0] = bool(state)
+        return 0
+
+    for name, implementation, args in (
+        ("SecKeychainGetUserInteractionAllowed", get_interaction, [ctypes.POINTER(ctypes.c_ubyte)]),
+        ("SecKeychainSetUserInteractionAllowed", set_interaction, [ctypes.c_ubyte]),
+    ):
+        function = getattr(security, name)
+        assert function.restype is ctypes.c_int32 and function.argtypes == args
+        monkeypatch.setattr(security, name, implementation)
+
     account = "https://hub.example/é:dummy-digest"
     assert module.read_token(account) is None
     module.store_token(account, "dummy-密-value")
     assert module.read_token(account) == "dummy-密-value"
     module.store_token(account, "replacement")
-    assert module.read_token(account) == "replacement"
+    assert module.read_token(account, interactive=False) == "replacement"
+    assert interaction == [True]
     assert items == {("life-data", account): b"replacement"}

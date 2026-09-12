@@ -87,7 +87,7 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
     begin.push(db.prepare(`CREATE TRIGGER ${qident(trigger)} AFTER ${event} ON ${qident(table)} BEGIN ${checks} END`));
     end.unshift(db.prepare(`DROP TRIGGER ${qident(trigger)}`));
   }
-  const log = historyStatements(db, table, key, history, now);
+  const log = historyStatements(db, table, key, history);
   if (probe) {
     // Deliberate final failure rolls the entire successful probe back. The
     // named CHECK distinguishes it from a real guard/SQL failure; its table
@@ -95,7 +95,11 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
     end.push(db.prepare(`CREATE TABLE ${qident(key + '_probe')} (ok INTEGER CONSTRAINT life_probe_complete CHECK(ok=1))`));
     end.push(db.prepare(`INSERT INTO ${qident(key + '_probe')} VALUES (0)`));
   }
-  try { return await db.batch([...begin, ...log.begin, ...statements, ...log.end, ...end]); }
+  try {
+    const result = await db.batch([...begin, ...log.begin, ...statements, ...log.end, ...end]);
+    // Expose only mutation receipts, and only after the entire batch commits.
+    return result.slice(begin.length + log.begin.length, begin.length + log.begin.length + statements.length);
+  }
   catch (e) {
     if (probe && String(e).includes('life_probe_complete')) return;
     throw e;
@@ -121,10 +125,10 @@ export function queryBudget(db, maximum) {
 
 const rejectAll = (rows, rule, message) => ({accepted:[],rejected:rows.map(row=>({id:row.id,col:null,rule,message}))});
 
-export async function pushChecked(db, table, rows, upsertSql, hubAt, stamping, history = []) {
+export async function pushChecked(db, table, rows, upsertSql, stamping, history = [], insertOnly = false) {
   // Include rollback-only isolation probes in the same request budget.
   db = queryBudget(db,750);
-  const attempt = (rows, probe=false) => pushAttempt(db,table,rows,upsertSql,hubAt,stamping,history,probe);
+  const attempt = (rows, probe=false) => pushAttempt(db,table,rows,upsertSql,stamping,history,probe,insertOnly);
   try {
     return history.length ? await pushAtomicHistory(rows,attempt) : await pushGroup(rows,attempt);
   } catch (e) {
@@ -183,21 +187,22 @@ async function pushGroup(rows, attempt) {
       const mid=Math.floor(rows.length/2);
       const left=await pushGroup(rows.slice(0,mid),attempt);
       const right=await pushGroup(rows.slice(mid),attempt);
-      return {accepted:[...left.accepted,...right.accepted],rejected:[...left.rejected,...right.rejected]};
+      return {accepted:[...left.accepted,...right.accepted],rejected:[...left.rejected,...right.rejected],
+        existing:[...(left.existing ?? []),...(right.existing ?? [])]};
     }
-    return {accepted:[],rejected:[...e.rejected,{id:rows[0].id,...e.failure}]};
+    return {accepted:[],rejected:[...e.rejected,{id:rows[0].id,...e.failure}],existing:e.existing ?? []};
   }
 }
 
-async function pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history, probe) {
+async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe, insertOnly) {
   if (!rows.length) return {accepted:[],rejected:[]};
   const view=checkedReads(db);
   await view.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
-  const {accepted,rejected,expected,props,transitions}=await validatePush(view,table,rows,db);
-  if (!accepted.length) return {accepted,rejected};
+  const {accepted,rejected,expected,props,transitions,existing}=await validatePush(view,table,rows,db,insertOnly);
+  if (!accepted.length) return {accepted,rejected,existing};
   const rules=await enforcedRules(view,table);
   let log;
-  try { log=await historyPlan(view,db,table,accepted,history,transitions,upsertSql); }
+  try { log=insertOnly ? null : await historyPlan(view,db,table,accepted,history,transitions,upsertSql); }
   catch (e) {
     if (!String(e).includes('life_history')) throw e;
     throw Object.assign(e,{accepted,rejected,failure:{col:null,rule:'history',message:String(e)}});
@@ -209,9 +214,17 @@ async function pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history,
     else groups.push({cols,rows:[row]});
   }
   const statements=groups.map(({cols,rows})=>db.prepare(upsertSql(table,cols,stamping))
-    .bind(...(stamping?[hubAt,JSON.stringify(rows)]:[JSON.stringify(rows)])));
+    .bind(JSON.stringify(rows)));
   try {
-    await commitChecked(db,view.reads,table,rules,statements,hubAt || new Date().toISOString(),log,expected,props,transitions,probe);
+    const receipts = await commitChecked(db,view.reads,table,rules,statements,new Date().toISOString(),log,expected,props,transitions,probe);
+    if (insertOnly) {
+      const inserted = new Set(receipts.flatMap(r=>(r.results ?? []).map(row=>row.id)));
+      // A trigger can suppress an INSERT. Absence of a receipt is not proof
+      // that the ID exists, nor permission to acknowledge a creation.
+      for (const row of accepted) if (!inserted.has(row.id)) rejected.push({id:row.id,col:null,
+        rule:'write-conflict',retryable:true,message:'No insert receipt; retry against current state.'});
+      return {accepted:accepted.filter(row=>inserted.has(row.id)),rejected,existing};
+    }
     return {accepted,rejected};
   } catch (e) {
     if (!/life_invariant_|life_property_|life_write_conflict|integer overflow/.test(String(e))) throw e;
@@ -221,7 +234,8 @@ async function pushAttempt(db, table, rows, upsertSql, hubAt, stamping, history,
     const failure=property
       ? {col:props[Number(property[1])].col,rule:property[2],message:'Value is not allowed by the current dependency state.'}
       : {col:rule?.col ?? null,rule:rule?.id ?? 'write-conflict',message:rule?.text ?? 'Write could not be committed; retry against current state.'};
-    throw Object.assign(e,{accepted,rejected,failure});
+    if (insertOnly && failure.rule === 'write-conflict') failure.retryable = true;
+    throw Object.assign(e,{accepted,rejected,existing,failure});
   }
 }
 

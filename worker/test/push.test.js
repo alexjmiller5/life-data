@@ -81,9 +81,10 @@ test("an unsafe table name is rejected before any SQL is built", async () => {
   await expect(ROUTES["/v1/rows/push"]({ table: bad, columns: cols, rows: [row()] }, db)).rejects.toThrow("unsafe identifier");
 });
 
-test("tables:write reaches exactly push and derive", () => {
+test("tables:write reaches exactly push, insert and derive", () => {
   const w = ["tables:write"];
   expect(allowed("/v1/rows/push", "POST", w)).toBe(true);
+  expect(allowed("/v1/rows/insert", "POST", w)).toBe(true);
   expect(allowed("/v1/derive", "POST", w)).toBe(true);
   for (const p of ["/v1/schema/push", "/v1/schema/pull", "/v1/rows/pull", "/v1/cursor", "/v1/catalog", "/v1/backup", "/v1/tokens/create", "/v1/archive/query"]) {
     expect(allowed(p, "POST", w)).toBe(false);
@@ -91,6 +92,7 @@ test("tables:write reaches exactly push and derive", () => {
   // the other scopes are unchanged
   expect(allowed("/v1/derive", "POST", ["tables:read"])).toBe(false);
   expect(allowed("/v1/rows/push", "POST", ["tables:read"])).toBe(false);
+  expect(allowed("/v1/rows/insert", "POST", ["tables:read"])).toBe(false);
   expect(allowed("/v1/rows/pull", "POST", ["tables:read"])).toBe(true);
   expect(allowed("/v1/derive", "POST", ["full"])).toBe(true);
   expect(allowed("/v1/derive", "POST", ["admin"])).toBe(true);

@@ -123,7 +123,7 @@ function allowed(pathname, method, scopes) {
   if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
     return scopes.includes("full") || scopes.includes("streams:append");
   }
-  if (pathname === "/v1/rows/push" || pathname === "/v1/derive") {
+  if (pathname === "/v1/rows/push" || pathname === "/v1/rows/insert" || pathname === "/v1/derive") {
     return scopes.includes("full") || scopes.includes("tables:write");
   }
   const readOnly =
@@ -190,19 +190,20 @@ async function hasHubAt(db, table) {
 }
 
 // `stampHubAt` is the hub's role: hub_at is dropped from whatever the client
-// sent and re-added bound to the hub's own clock, so arrival order is one
-// clock's order and no replica can skip another's late push.
-function upsertSql(table, cols, stampHubAt = false) {
+// sent and re-added using the database clock in the committing batch, so
+// arrival order is one clock's order and no replica skips a delayed push.
+function upsertSql(table, cols, stampHubAt = false, insertOnly = false) {
   const t = qident(table);
   if (stampHubAt) cols = [...cols.filter((x) => x !== "hub_at"), "hub_at"];
   // the json path uses the RAW column name (it is a JSON key, not SQL)
   const extracts = cols
-    .map((x) => (stampHubAt && x === "hub_at" ? "?" : `json_extract(value, '$.${ident(x)}')`))
+    .map((x) => (stampHubAt && x === "hub_at" ? NOW : `json_extract(value, '$.${ident(x)}')`))
     .join(", ");
   const sets = cols.filter((x) => x !== "id").map((x) => `${qident(x)} = excluded.${qident(x)}`).join(", ");
   return (
     `INSERT INTO ${t} (${cols.map(qident).join(", ")}) SELECT ${extracts} FROM json_each(?) WHERE true ` +
-    `ON CONFLICT(id) DO UPDATE SET ${sets} WHERE excluded.updated_at > ${t}.updated_at`
+    (insertOnly ? 'ON CONFLICT(id) DO NOTHING RETURNING id' :
+      `ON CONFLICT(id) DO UPDATE SET ${sets} WHERE excluded.updated_at > ${t}.updated_at`)
   );
 }
 
@@ -284,9 +285,8 @@ const ROUTES = {
       columns.filter((col) => Object.hasOwn(row, col)).map((col) => [col, row[col]])
     ));
     const stamping = await hasHubAt(db, table);
-    const hubAt = stamping ? (await db.prepare(`SELECT ${NOW} AS t`).first()).t : "";
     const { accepted, rejected } = await pushChecked(db, table,
-      rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, hubAt, stamping, body.history ?? []);
+      rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, stamping, body.history ?? []);
     // Ambiguous history rolls back the entire request, including rows filtered
     // by the timestamp gate, and supplies no committed arrival cursor.
     const ambiguity = rejected.find(r=>r.rule === "history-ambiguity");
@@ -298,7 +298,29 @@ const ROUTES = {
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
     if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db, 200), env, table, accepted)));
+    // Report stored arrivals, never a timestamp captured before the write.
+    // This diagnostic is not a pull checkpoint (another write may follow).
+    const hubAt = stamping && accepted.length
+      ? (await db.prepare(`SELECT max(hub_at) AS t FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`)
+        .bind(JSON.stringify(accepted.map(row => row.id))).first()).t ?? "" : "";
     return { upserted: accepted.length, rejected, hub_at: hubAt };
+  },
+
+  "/v1/rows/insert": async (body, db, env, ctx) => {
+    if (!body || Object.hasOwn(body, "history")) return json({error:"history attachments are not supported by rows/insert"},400);
+    if (!Array.isArray(body.columns) || !body.columns.includes("id") || !Array.isArray(body.rows)) {
+      return json({error:"rows/insert requires columns including id and a rows list"},400);
+    }
+    const ids = body.rows.map(row=>row?.id);
+    if (ids.some(id=>typeof id !== 'string' || !id.trim()) || new Set(ids).size !== ids.length) {
+      return json({error:"rows/insert requires unique nonempty row IDs"},400);
+    }
+    const table = ident(body.table), columns = body.columns.map(ident);
+    const rows = body.rows.map(row=>Object.fromEntries(columns.filter(col=>Object.hasOwn(row,col)).map(col=>[col,row[col]])));
+    const stamping = await hasHubAt(db,table);
+    const out = await pushChecked(db,table,rows,(t,c,s)=>upsertSql(t,c,s,true),stamping,[],true);
+    if (out.accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db,200),env,table,out.accepted)));
+    return {inserted:out.accepted.map(row=>row.id),existing:out.existing ?? [],rejected:out.rejected};
   },
 
   // Synchronous derivation for a named set of rows: `life derive` and the

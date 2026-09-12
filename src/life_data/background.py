@@ -9,6 +9,8 @@ import sys
 import tempfile
 import time
 import urllib.error
+from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,8 +34,67 @@ def write_json(path: Path, value: dict) -> None:
         Path(name).unlink(missing_ok=True)
 
 
+def update_preferences(data: Path, update: Callable[[dict], None]) -> dict:
+    """Merge current prefs under a short lock; callers do network/Keychain work first."""
+    data.mkdir(parents=True, exist_ok=True)
+    with (data / "preferences.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        prefs = read_json(data / "background.json")
+        revision = prefs.get("revision", 0)
+        update(prefs)
+        prefs["revision"] = revision + 1 if isinstance(revision, int) else 1
+        write_json(data / "background.json", prefs)
+        return prefs
+
+
 def keychain_account(data: Path, hub_url: str) -> str:
     return hashlib.sha256(f"{data.resolve()}\n{hub_url.rstrip('/')}".encode()).hexdigest()
+
+
+class CredentialError(RuntimeError):
+    """A credential lifecycle failure safe to display without native diagnostics."""
+
+
+class CredentialLockError(CredentialError):
+    """Another native credential installation is in progress."""
+
+
+@contextmanager
+def credential_lock(data: Path):
+    """Serialize native credential changes through their preference commit."""
+    data.mkdir(parents=True, exist_ok=True)
+    with (data / "credentials.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise CredentialLockError(
+                "another device credential update is in progress; retry"
+            ) from None
+        yield
+
+
+def save_credential(data: Path, account: str, token: str, previous: str | None, update) -> None:
+    """Caller holds credential_lock; restore native state if preferences cannot commit."""
+    from .credentials import delete_token, read_token, store_token
+
+    if token != previous:
+        store_token(account, token)
+    try:
+        update_preferences(data, update)
+    except Exception:  # noqa: BLE001 - all failed preference commits need native rollback
+        if token != previous:
+            try:
+                if read_token(account) != token:
+                    raise CredentialError("device credential changed")
+                if previous is None:
+                    delete_token(account)
+                else:
+                    store_token(account, previous)
+            except Exception:  # noqa: BLE001 - never expose native rollback diagnostics
+                raise CredentialError(
+                    "could not install the device credential; local credential rollback failed"
+                ) from None
+        raise CredentialError("could not install the device credential") from None
 
 
 def status(data: Path) -> dict:
@@ -79,7 +140,8 @@ def command(args, data: Path) -> int:
     if action == "run":
         return run(data, args.poll)
     if action in {"enable", "disable"}:
-        prefs = read_json(data / "background.json")
+        changes = {"enabled": action == "enable"}
+        token = None
         if action == "enable":
             if args.hub_url:
                 previous = load_config(data, resolve_auth=False)["hub_url"]
@@ -91,18 +153,17 @@ def command(args, data: Path) -> int:
                     and (_get_state(db, "last_push") or _get_state(db, "last_pull"))
                 ):
                     raise ValueError("hub changed; use a fresh data directory for a different hub")
-                prefs["hub_url"] = args.hub_url.rstrip("/")
+                changes["hub_url"] = args.hub_url.rstrip("/")
             if args.token_command is not None:
                 if not args.token_command.strip():
                     raise ValueError("credential command must not be empty")
-                prefs["token_cmd"] = args.token_command
-                prefs.pop("keychain", None)
+                changes["token_cmd"] = args.token_command
             if args.token_stdin:
-                from .credentials import store_token
+                from .credentials import read_token
 
                 cfg = load_config(data, resolve_auth=False)
                 endpoint = os.environ.get(
-                    "LIFE_HUB_URL", prefs.get("hub_url", cfg["hub_url"])
+                    "LIFE_HUB_URL", changes.get("hub_url", cfg["hub_url"])
                 ).rstrip("/")
                 try:
                     if sys.stdin.isatty():
@@ -111,16 +172,31 @@ def command(args, data: Path) -> int:
                         token = getpass.getpass("Life device token: ")
                     else:
                         token = sys.stdin.read().strip()
-                    store_token(keychain_account(data, endpoint), token)
                 except RuntimeError as exc:
                     print(str(exc), file=sys.stderr)
                     return 1
-                prefs["hub_url"] = endpoint
-                prefs["keychain"] = True
+                changes["hub_url"] = endpoint
+                changes["keychain"] = True
+
+        def update(prefs):
+            prefs.update(changes)
+            if "keychain" in changes:
                 prefs.pop("token_cmd", None)
-        prefs["enabled"] = action == "enable"
-        prefs["revision"] = prefs.get("revision", 0) + 1
-        write_json(data / "background.json", prefs)
+                prefs.pop("signed_out", None)
+            if "token_cmd" in changes:
+                prefs.pop("keychain", None)
+                prefs.pop("signed_out", None)
+
+        if token is None:
+            update_preferences(data, update)
+        else:
+            try:
+                with credential_lock(data):
+                    account = keychain_account(data, endpoint)
+                    save_credential(data, account, token, read_token(account), update)
+            except RuntimeError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
     print(json.dumps(status(data)))
     return 0
 
@@ -133,10 +209,12 @@ def _credential(data: Path, cfg: dict, prefs: dict) -> str:
     # Background auth is independent from the interactive token command.
     if token := os.environ.get("LIFE_HUB_TOKEN"):
         return token
+    if prefs.get("signed_out"):
+        return ""
     if prefs.get("keychain"):
         from .credentials import read_token
 
-        return read_token(keychain_account(data, cfg["hub_url"])) or ""
+        return read_token(keychain_account(data, cfg["hub_url"]), interactive=False) or ""
     cmd = prefs.get("token_cmd", cfg.get("background_token_cmd"))
     if cmd:
         result = subprocess.run(
@@ -154,6 +232,7 @@ def _credential(data: Path, cfg: dict, prefs: dict) -> str:
 def run(data: Path, poll_seconds: int) -> int:
     """Stay supervised while disabled; never authenticate until opted in."""
     from . import db_changed, db_version, hub_from_config, init, load_config, sync
+    from .credentials import KeychainError
 
     data.mkdir(parents=True, exist_ok=True)
     with (data / "background.lock").open("a+") as lock:
@@ -194,13 +273,20 @@ def run(data: Path, poll_seconds: int) -> int:
                         previous_config = signature
                     due = time.monotonic() >= next_sync
                     if due or (changed and hub and current.get("state") == "idle"):
-                        current.update(state="syncing", last_attempt=_stamp())
+                        current.update(
+                            state="authenticating" if hub is None else "syncing",
+                            last_attempt=_stamp(),
+                            stats=None,
+                            last_error=None,
+                        )
                         write_json(data / "background-status.json", current)
                         if hub is None:
                             token = _credential(data, cfg, prefs)
                             if not token:
                                 raise RuntimeError("no background credential configured")
                             hub = hub_from_config({**cfg, "token": token})
+                            current["state"] = "syncing"
+                            write_json(data / "background-status.json", current)
                         init(path)
                         stats = sync(path, hub)
                         current["stats"] = {k: v for k, v in stats.items() if k != "rejected"}
@@ -218,6 +304,8 @@ def run(data: Path, poll_seconds: int) -> int:
                     error = f"HTTP {http_error.code}"
                     if http_error.code in {401, 403}:
                         hub = None
+                elif isinstance(exc, KeychainError):
+                    error = str(exc)  # Native status only; no credential or remote body.
                 elif (
                     isinstance(exc, RuntimeError)
                     and str(exc)

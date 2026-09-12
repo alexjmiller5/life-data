@@ -164,10 +164,36 @@ export function qident(name) {
 }
 
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
-export async function validatePush(db, table, rows, storageDb = null) {
+export async function validatePush(db, table, rows, storageDb = null, insertOnly = false) {
+  const exists = await tableExists(db, table);
+  // One read for the whole push (D1 caps bind params at ~100), not one per row:
+  // a push of 500 rows must not cost 500 round trips.
+  const stored = new Map();
+  if (exists) {
+    const ids = [...new Set(rows.map((r) => r.id))];
+    for (let i = 0; i < ids.length; i += 90) {
+      const chunk = ids.slice(i, i + 90);
+      const { results } = await db
+        .prepare(`SELECT * FROM ${qident(table)} WHERE id IN (${chunk.map(() => "?").join(", ")})`)
+        .bind(...chunk).all();
+      for (const r of results ?? []) stored.set(r.id, r);
+    }
+  }
+
+  const existing = [], rejected = [];
+  if (insertOnly) {
+    rows = rows.filter(row => {
+      if (stored.has(row.id)) { existing.push(row.id); return false; }
+      if (validEditTimestamp(row.updated_at)) return true;
+      rejected.push({id:row.id,col:'updated_at',rule:row.updated_at == null ? 'required' : 'type',
+        message:'updated_at must be a valid UTC millisecond timestamp.'});
+      return false;
+    });
+    // Ignored content must not reach catalog lookups, validation or defaults.
+    if (!rows.length) return {accepted:[],rejected,existing,expected:[],transitions:[],props:[]};
+  }
   const props = await propertiesFor(db, table);
   const typeOf = Object.fromEntries(props.map((p) => [p.col, p.type]));
-  const exists = await tableExists(db, table);
   const derivedCols = new Set(props.filter((p) => p.derived_by).map((p) => p.col));
 
   const refSet = new Set();
@@ -188,20 +214,6 @@ export async function validatePush(db, table, rows, storageDb = null) {
     p.optionColumn = results?.length ? Object.keys(results[0])[0] : null;
   }
 
-  // One read for the whole push (D1 caps bind params at ~100), not one per row:
-  // a push of 500 rows must not cost 500 round trips.
-  const stored = new Map();
-  if (exists) {
-    const ids = [...new Set(rows.map((r) => r.id))];
-    for (let i = 0; i < ids.length; i += 90) {
-      const chunk = ids.slice(i, i + 90);
-      const { results } = await db
-        .prepare(`SELECT * FROM ${qident(table)} WHERE id IN (${chunk.map(() => "?").join(", ")})`)
-        .bind(...chunk).all();
-      for (const r of results ?? []) stored.set(r.id, r);
-    }
-  }
-
   // Resolve INSERT defaults once, then explicitly store the approved values.
   // Re-evaluating a clock/random default in a read guard would self-conflict.
   let schema = [];
@@ -216,7 +228,7 @@ export async function validatePush(db, table, rows, storageDb = null) {
       for (const r of results) defaults.set(r.id, Object.fromEntries(schema.map(c=>[c.name,r[c.name] ?? null])));
     }
   }
-  const accepted = [], rejected = [], expected = [], transitions = [];
+  const accepted = [], expected = [], transitions = [];
   for (let row of rows) {
     // A push carries only the columns it writes. Required (and the derived
     // provenance check below) judge the row as it will BE - stored columns
@@ -258,7 +270,7 @@ export async function validatePush(db, table, rows, storageDb = null) {
     if (viol.length) rejected.push(...viol.map((v) => ({ id: row.id, ...v })));
     else approve();
   }
-  return { accepted, rejected, expected, transitions, props };
+  return { accepted, rejected, expected, transitions, props, existing };
 }
 
 export const literal = (v) => v == null ? "NULL" : "'" + String(v).replaceAll("'", "''") + "'";

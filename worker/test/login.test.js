@@ -74,6 +74,7 @@ test("approval page is non-mutating and escapes the label", async () => {
   const html = await response.text();
   expect(response.status).toBe(200);
   expect(html).toContain("Mac &lt;Air&gt;");
+  expect(html).toContain("This approval link does not expire");
   expect(response.headers.get("Content-Security-Policy")).toContain(
     "default-src 'none'",
   );
@@ -236,9 +237,15 @@ test("session logout revokes only the calling device and admin cannot self-revok
     { waitUntil() {} },
   );
   expect(logout.status).toBe(200);
+  expect(await logout.json()).toEqual({ logged_out: true });
   expect(
-    (await worker.fetch(request("/v1/session"), env, { waitUntil() {} }))
-      .status,
+    (
+      await worker.fetch(
+        request("/v1/session", "GET", undefined, { Authorization: `Bearer ${token}` }),
+        env,
+        { waitUntil() {} },
+      )
+    ).status,
   ).toBe(401);
   const adminLogout = await worker.fetch(
     request("/v1/session", "POST", "", { Authorization: "Bearer root" }),
@@ -297,4 +304,65 @@ test("user schema writes cannot alter the separate auth registry", async () => {
     { waitUntil() {} },
   );
   expect(session.status).toBe(200);
+});
+
+test("revocation distinguishes a missing device from an already revoked device", async () => {
+  const env = environment();
+  const name = `device:${"d".repeat(64)}`;
+  const formHeaders = {
+    Origin: "https://hub.test",
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  const revoke = () => worker.fetch(
+    request("/login/devices", "POST", new URLSearchParams({ name }).toString(), formHeaders),
+    env,
+    ctx,
+  );
+  expect((await revoke()).status).toBe(404);
+  await worker.fetch(
+    request("/login", "POST",
+      new URLSearchParams({ key: "d".repeat(64), name: "Review device" }).toString(),
+      formHeaders,
+    ),
+    env,
+    ctx,
+  );
+  expect((await revoke()).status).toBe(200);
+  const first = await env.AUTH_DB.prepare("SELECT revoked_at FROM _tokens WHERE name = ?")
+    .bind(name)
+    .first();
+  expect((await revoke()).status).toBe(200);
+  expect(
+    await env.AUTH_DB.prepare("SELECT revoked_at FROM _tokens WHERE name = ?")
+      .bind(name)
+      .first(),
+  ).toEqual(first);
+});
+
+test("device management describes API-token revocation and separate browser authority", async () => {
+  const env = environment();
+  const name = `device:${"e".repeat(64)}`;
+  const formHeaders = {
+    Origin: "https://hub.test",
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  await worker.fetch(
+    request("/login", "POST",
+      new URLSearchParams({ key: "e".repeat(64), name: "Review device" }).toString(),
+      formHeaders,
+    ),
+    env,
+    ctx,
+  );
+  const devices = await worker.fetch(request("/login/devices"), env, ctx);
+  const html = await devices.text();
+  expect(html).toContain("Revoke API token");
+  expect(html).toContain("Browser sessions are separate");
+  expect(html).toContain("Approval code: <code>eeeeeeee</code>");
+  const revoked = await worker.fetch(
+    request("/login/devices", "POST", new URLSearchParams({ name }).toString(), formHeaders),
+    env,
+    ctx,
+  );
+  expect(await revoked.text()).toContain("Life API token revoked");
 });

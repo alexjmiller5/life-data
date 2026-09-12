@@ -127,8 +127,8 @@ async function approvedLogin(request, env, url) {
     .first();
   if (existing?.revoked_at) {
     return page(
-      "Device already revoked",
-      "<p>This device key was revoked and cannot be reused.</p>",
+      "Life API token already revoked",
+      "<p>This Life API token was revoked and cannot be reused.</p>",
       409,
     );
   }
@@ -145,7 +145,7 @@ async function approvedLogin(request, env, url) {
   }
   return page(
     "Life device approved",
-    "<p>You can close this tab. The device will finish signing in automatically.</p>",
+    '<p>If the device is still waiting, it will finish signing in automatically. If you abandoned this request, revoke its API token in <a href="/login/devices">Life devices</a>.</p>',
   );
 }
 
@@ -162,12 +162,12 @@ async function devicesPage(env) {
   const rows = devices
     .map(
       (device) =>
-        `<tr><td>${escapeHtml(device.label || device.name)}</td><td>${escapeHtml(device.created_at || "")}</td><td>${device.revoked_at ? "Revoked" : "Active"}</td><td>${device.revoked_at ? "" : `<form method="post" action="/login/devices"><input type="hidden" name="name" value="${escapeHtml(device.name)}"><button type="submit">Revoke</button></form>`}</td></tr>`,
+        `<tr><td>${escapeHtml(device.label || device.name)}<br>Approval code: <code>${escapeHtml(device.name.slice(7, 15))}</code></td><td>${escapeHtml(device.created_at || "")}</td><td>${device.revoked_at ? "Revoked" : "Active"}</td><td>${device.revoked_at ? "" : `<form method="post" action="/login/devices"><input type="hidden" name="name" value="${escapeHtml(device.name)}"><button type="submit">Revoke API token</button></form>`}</td></tr>`,
     )
     .join("");
   return page(
     "Life devices",
-    `<table><thead><tr><th>Device</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${rows || "<tr><td colspan=4>No devices</td></tr>"}</tbody></table>`,
+    `<p>Revoke a Life API token to stop that token accessing Life. Browser sessions are separate: a signed-in owner browser can approve devices.</p><table><thead><tr><th>Device</th><th>Created</th><th>Token status</th><th></th></tr></thead><tbody>${rows || "<tr><td colspan=4>No devices</td></tr>"}</tbody></table>`,
   );
 }
 
@@ -180,12 +180,15 @@ async function revokeDevice(request, env, url) {
     return json({ error: "invalid device" }, 400);
   await ensureAuthReady(env.AUTH_DB);
   const result = await env.AUTH_DB.prepare(
-    "UPDATE _tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ? AND name LIKE 'device:%' AND revoked_at IS NULL",
+    "UPDATE _tokens SET revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE name = ? AND name LIKE 'device:%' RETURNING name",
   )
     .bind(form.name)
-    .run();
+    .first();
   if (!result) return json({ error: "device not found" }, 404);
-  return page("Device revoked", "<p>The device token has been revoked.</p>");
+  return page(
+    "Life API token revoked",
+    "<p>This token can no longer access Life. Browser sign-in is unchanged.</p>",
+  );
 }
 
 export async function handleLogin(request, env, ctx, url) {
@@ -199,7 +202,7 @@ export async function handleLogin(request, env, ctx, url) {
     }
     return page(
       "Approve Life device",
-      `<p><strong>${escapeHtml(identity.email)}</strong>, approve this device:</p><p><code>${escapeHtml(values.name)}</code></p><p>Approval code: <code>${escapeHtml(values.key.slice(0, 8))}</code></p><form method="post" action="/login"><input type="hidden" name="key" value="${escapeHtml(values.key)}"><input type="hidden" name="name" value="${escapeHtml(values.name)}"><button type="submit">Approve device</button></form>`,
+      `<p><strong>${escapeHtml(identity.email)}</strong>, approve this device:</p><p><code>${escapeHtml(values.name)}</code></p><p>Approval code: <code>${escapeHtml(values.key.slice(0, 8))}</code></p><p>This approval link does not expire. Approve it only while your device is waiting to sign in.</p><form method="post" action="/login"><input type="hidden" name="key" value="${escapeHtml(values.key)}"><input type="hidden" name="name" value="${escapeHtml(values.name)}"><button type="submit">Approve device</button></form>`,
     );
   }
   if (url.pathname === "/login" && request.method === "POST")

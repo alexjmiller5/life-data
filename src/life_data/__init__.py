@@ -1,6 +1,7 @@
 """life-data: schema-agnostic personal data store — local-first SQLite, agent-friendly CLI."""
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -267,7 +268,7 @@ def db_changed(path: Path, previous) -> tuple[bool, tuple]:
 
 
 def load_config(data_dir: Path | None = None, *, resolve_auth: bool = True) -> dict:
-    """Config precedence: env > config.json > defaults. A config file is optional."""
+    """Env overrides saved endpoint preferences; auth honors explicit login/logout state."""
     data_dir = data_dir or resolve_data_dir()
     cfg_path = data_dir / "config.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
@@ -278,19 +279,27 @@ def load_config(data_dir: Path | None = None, *, resolve_auth: bool = True) -> d
         cfg["hub_url"] = prefs["hub_url"]
     cfg.setdefault("hub_url", DEFAULT_HUB_URL)
     cfg.setdefault("commands", {})
-    cfg["hub_url"] = os.environ.get("LIFE_HUB_URL", cfg["hub_url"]).rstrip("/")
+    cfg["hub_url"] = validate_hub_url(os.environ.get("LIFE_HUB_URL", cfg["hub_url"]))
+    if prefs.get("signed_out") or prefs.get("keychain"):
+        cfg["headers"] = {
+            key: value
+            for key, value in (cfg.get("headers") or {}).items()
+            if key.lower() != "authorization"
+        }
     if not resolve_auth:
         return cfg
-    token = os.environ.get("LIFE_HUB_TOKEN") or cfg.get("token")
-    if not token and cfg.get("token_cmd"):
-        token = subprocess.run(
-            cfg["token_cmd"], shell=True, capture_output=True, text=True, check=True
-        ).stdout.strip()
-    if not token and prefs.get("keychain"):
+    token = os.environ.get("LIFE_HUB_TOKEN") or None
+    if not token and not prefs.get("signed_out") and prefs.get("keychain"):
         from .background import keychain_account
         from .credentials import read_token
 
         token = read_token(keychain_account(data_dir, cfg["hub_url"]))
+    elif not token and not prefs.get("signed_out"):
+        token = cfg.get("token")
+        if not token and cfg.get("token_cmd"):
+            token = subprocess.run(
+                cfg["token_cmd"], shell=True, capture_output=True, text=True, check=True
+            ).stdout.strip()
     cfg["token"] = token
     return cfg
 
@@ -300,14 +309,30 @@ def auth_headers(config: dict) -> dict:
     (e.g. CF-Access-Client-Id/Secret when the hub sits behind Cloudflare Access)."""
     headers = dict(config.get("headers") or {})
     if config.get("token"):
+        if not isinstance(config["token"], str):
+            raise ValueError("invalid hub request headers")
         headers["Authorization"] = f"Bearer {config['token']}"
+    return _validate_headers(headers)
+
+
+def _validate_headers(headers: dict) -> dict:
+    for name, value in headers.items():
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name)
+            or not isinstance(value, str)
+            or any(ord(c) < 32 or ord(c) == 127 or ord(c) > 255 for c in value)
+        ):
+            raise ValueError("invalid hub request headers") from None
     return headers
 
 
 # --- hubs (sync targets) -----------------------------------------------------
 
 
-def _upsert_sql(table: str, cols: list[str], stamp_hub_at: bool = False) -> str:
+def _upsert_sql(
+    table: str, cols: list[str], stamp_hub_at: bool = False, *, insert_only: bool = False
+) -> str:
     # rows travel as ONE json parameter (D1 caps bind params at ~100/query);
     # `WHERE true` disambiguates a SELECT-source upsert for SQLite's parser.
     # `stamp_hub_at` is the HUB's role, decided by the HUB's schema: hub_at is
@@ -323,12 +348,32 @@ def _upsert_sql(table: str, cols: list[str], stamp_hub_at: bool = False) -> str:
     else:
         exts = ", ".join(f"json_extract(value, '$.{c}')" for c in cols)
     sets = ", ".join(f"{qi(c)} = excluded.{qi(c)}" for c in cols if c != "id")
+    conflict = (
+        "ON CONFLICT(id) DO NOTHING RETURNING id"
+        if insert_only
+        else f"ON CONFLICT(id) DO UPDATE SET {sets} WHERE excluded.updated_at > {t}.updated_at"
+    )
     return (
         f"INSERT INTO {t} ({', '.join(qi(c) for c in cols)}) "
         f"SELECT {exts} FROM json_each(?) WHERE true "
-        f"ON CONFLICT(id) DO UPDATE SET {sets} "
-        f"WHERE excluded.updated_at > {t}.updated_at"
+        f"{conflict}"
     )
+
+
+def _insert_payload(table: str, columns: list[str], rows: list[dict], history=None) -> list[dict]:
+    qi(table)
+    if history is not None:
+        raise ValueError("history attachments are not supported by rows/insert")
+    if not isinstance(columns, list) or "id" not in columns or not isinstance(rows, list):
+        raise ValueError("rows/insert requires columns including id and a rows list")
+    for col in columns:
+        qi(col)
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError("rows/insert requires object rows")
+    ids = [row.get("id") for row in rows]
+    if any(not isinstance(id, str) or not id.strip() for id in ids) or len(ids) != len(set(ids)):
+        raise ValueError("rows/insert requires unique nonempty row IDs")
+    return [{col: row[col] for col in columns if col in row} for row in rows]
 
 
 class LocalHub:
@@ -383,11 +428,22 @@ class LocalHub:
         )
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
+        return self._rows_write(table, columns, rows, history=history)
+
+    def rows_insert(
+        self, table: str, columns: list[str], rows: list[dict], *, history=None
+    ) -> dict:
+        rows = _insert_payload(table, columns, rows, history)
+        return self._rows_write(table, columns, rows, insert_only=True)
+
+    def _rows_write(
+        self, table: str, columns: list[str], rows: list[dict], *, history=None, insert_only=False
+    ) -> dict:
         qi(table)
         for col in columns:
             qi(col)
         rows = [{col: row[col] for col in columns if col in row} for row in rows]
-        rejected, accepted = [], []
+        rejected, accepted, existing = [], [], []
         with connect(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             stamping = any(
@@ -406,6 +462,16 @@ class LocalHub:
             ]
             history_batch = {"events": remaining, "matched": {}}
             for row in rows:
+                # Existing IDs, including tombstones, are not claims about the
+                # initializer's content. Do not validate it or fire any SQL write.
+                if (
+                    insert_only
+                    and conn.execute(
+                        f"SELECT 1 FROM {qi(table)} WHERE id = ?", (row["id"],)
+                    ).fetchone()
+                ):
+                    existing.append(row["id"])
+                    continue
                 if not catalog.valid_edit_timestamp(row.get("updated_at")):
                     rejected.append(
                         {
@@ -423,17 +489,37 @@ class LocalHub:
                 conn.execute("SAVEPOINT pushed_row")
                 try:
                     events = [e for e in (history or []) if e.get("row_id") == row.get("id")]
-                    _, violations = ([], []) if stale else catalog.validate_push(conn, table, [row])
+                    # For insertion, validate SQLite's actual defaults/types
+                    # after writing inside the savepoint, not a guessed row.
+                    _, violations = (
+                        ([], [])
+                        if stale or insert_only
+                        else catalog.validate_push(conn, table, [row])
+                    )
                     if not violations and not stale:
                         conn.execute(
                             f"CREATE TEMP TABLE temp.{qi('_before_' + table)} AS SELECT * FROM main.{qi(table)} WHERE id = ?",
                             (row.get("id"),),
                         )
                         blob = json.dumps([row])
-                        conn.execute(
-                            _upsert_sql(table, list(row), stamp_hub_at=stamping),
+                        cur = conn.execute(
+                            _upsert_sql(
+                                table, list(row), stamp_hub_at=stamping, insert_only=insert_only
+                            ),
                             [hub_at, blob] if stamping else [blob],
                         )
+                        if insert_only and not cur.fetchall():
+                            conn.execute("ROLLBACK TO pushed_row")
+                            rejected.append(
+                                {
+                                    "id": row["id"],
+                                    "col": None,
+                                    "rule": "write-conflict",
+                                    "retryable": True,
+                                    "message": "No insert receipt; retry against current state.",
+                                }
+                            )
+                            continue
                         actual = dict(
                             conn.execute(
                                 f"SELECT * FROM {qi(table)} WHERE id=?", (row["id"],)
@@ -472,7 +558,7 @@ class LocalHub:
                                         }
                                     )
                         conn.execute(f"DROP TABLE temp.{qi('_before_' + table)}")
-                    if not violations:
+                    if not violations and not insert_only:
                         try:
                             catalog.push_history(
                                 conn,
@@ -518,6 +604,12 @@ class LocalHub:
                 finally:
                     if conn.in_transaction:
                         conn.execute("RELEASE pushed_row")
+        if insert_only:
+            return {
+                "inserted": [r["id"] for r in accepted],
+                "existing": existing,
+                "rejected": rejected,
+            }
         return {"upserted": len(accepted), "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:
@@ -532,27 +624,86 @@ class LocalHub:
         return {"derived": 0, "failed": []}  # derivations run on the hub only
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, *_args, **_kwargs):
+        return None
+
+
+def _open_hub_request(url, headers, *, opener, timeout, data=None, method=None):
+    """Validate headers and suppress credential-bearing serialization exceptions."""
+    try:
+        request = urllib.request.Request(
+            url, headers=_validate_headers(headers), data=data, method=method
+        )
+        return opener.open(request, timeout=timeout)
+    except (ValueError, UnicodeError):
+        raise ValueError("invalid hub request headers") from None
+
+
+def validate_hub_url(value: str) -> str:
+    """Authenticated hub requests require TLS, except on literal loopback hosts."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    error = (
+        "hub URL must use HTTPS (HTTP is allowed only on loopback), "
+        "without credentials, query or fragment"
+    )
+    try:
+        if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 for c in value):
+            raise ValueError(error)
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        _ = parsed.port  # Reject malformed or out-of-range ports before reading credentials.
+        loopback = host == "localhost"
+        if host and not loopback:
+            try:
+                loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                pass
+        if (
+            not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or "?" in value
+            or "#" in value
+            or "\\" in value
+            or not (parsed.scheme == "https" or parsed.scheme == "http" and loopback)
+        ):
+            raise ValueError(error)
+    except ValueError:
+        raise ValueError(error) from None
+    return value.rstrip("/")
+
+
 class HttpHub:
     """Hub reached over HTTP — the deployed service. Knows nothing about any provider."""
 
     def __init__(self, base_url: str, headers: dict | None = None, timeout: int = 120):
-        self.base = base_url.rstrip("/")
+        self.base = validate_hub_url(base_url)
         # A real User-Agent is REQUIRED, not cosmetic: Cloudflare's edge bot
         # protection 403s (error 1010) the default "Python-urllib/x.y" agent
         # before the request ever reaches the Worker.
-        self.headers = {"User-Agent": f"life-data/{VERSION}", **dict(headers or {})}
+        self.headers = _validate_headers(
+            {"User-Agent": f"life-data/{VERSION}", **dict(headers or {})}
+        )
         self.timeout = timeout
+        self.opener = urllib.request.build_opener(_NoRedirect())
 
     def _post(self, route: str, body: dict) -> dict:
-        req = urllib.request.Request(
-            f"{self.base}{route}",
-            data=json.dumps(body).encode(),
-            headers={**self.headers, "Content-Type": "application/json"},
-        )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _open_hub_request(
+                f"{self.base}{route}",
+                {**self.headers, "Content-Type": "application/json"},
+                data=json.dumps(body).encode(),
+                opener=self.opener,
+                timeout=self.timeout,
+            ) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                e.close()
+                raise RuntimeError(f"hub redirected the request (HTTP {e.code})") from e
             raise RuntimeError(f"hub HTTP {e.code}: {e.read().decode()[:300]}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"hub unreachable: {e.reason}") from e
@@ -594,6 +745,32 @@ class HttpHub:
             rejected += out.get("rejected", [])
         return {"upserted": total, "rejected": rejected}
 
+    def rows_insert(
+        self, table: str, columns: list[str], rows: list[dict], *, history=None
+    ) -> dict:
+        # Validate the whole request before chunking: a duplicate in a later
+        # chunk must not allow earlier chunks to commit.
+        rows = _insert_payload(table, columns, rows, history)
+        result = {"inserted": [], "existing": [], "rejected": []}
+        for i in range(0, len(rows), CHUNK):
+            chunk = rows[i : i + CHUNK]
+            out = self._post("/v1/rows/insert", {"table": table, "columns": columns, "rows": chunk})
+            if not isinstance(out, dict) or any(not isinstance(out.get(k), list) for k in result):
+                raise RuntimeError("invalid insert response")
+            done = out["inserted"] + out["existing"]
+            bad = [r.get("id") if isinstance(r, dict) else None for r in out["rejected"]]
+            ids = {r["id"] for r in chunk}
+            if (
+                any(not isinstance(id, str) or id not in ids for id in done + bad)
+                or len(done) != len(set(done))
+                or set(done) & set(bad)
+                or set(done) | set(bad) != ids
+            ):
+                raise RuntimeError("invalid insert response")
+            for key, values in result.items():
+                values.extend(out[key])
+        return result
+
     def cursor(self, tables: list[str]) -> str:
         return self._post("/v1/cursor", {"tables": tables}).get("max_hub_at") or ""
 
@@ -604,11 +781,15 @@ class HttpHub:
         return self._post("/v1/derive", body)
 
     def _get(self, route: str) -> dict | list | None:
-        req = urllib.request.Request(f"{self.base}{route}", headers=self.headers)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with _open_hub_request(
+                f"{self.base}{route}", self.headers, opener=self.opener, timeout=self.timeout
+            ) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
+            if 300 <= e.code < 400:
+                e.close()
+                raise RuntimeError(f"hub redirected the request (HTTP {e.code})") from e
             raise RuntimeError(f"hub HTTP {e.code}: {e.read().decode()[:300]}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"hub unreachable: {e.reason}") from e
@@ -728,10 +909,11 @@ def _already_applied(exc: Exception, ddl: str = "") -> bool:
     return "no such table" in msg and bool(RENAME_TABLE.match(ddl))
 
 
-def _user_tables(path: Path) -> list[str]:
+def _user_tables(path: Path, conn: sqlite3.Connection | None = None) -> list[str]:
     """catalog_* and provenance first, so a replica always has the contract
     (and the provenance backing derived columns) before the data it governs."""
-    rows = execute_sql(path, "SELECT name FROM sqlite_master WHERE type = 'table'")
+    sql = "SELECT name FROM sqlite_master WHERE type = 'table'"
+    rows = conn.execute(sql).fetchall() if conn is not None else execute_sql(path, sql)
     names = [r["name"] for r in rows if not r["name"].startswith(("_", "sqlite_"))]
     first = [n for n in names if n.startswith("catalog_") or n == "provenance"]
     return sorted(first) + sorted(n for n in names if n not in first)
@@ -779,6 +961,19 @@ def ensure_hub_at(path: Path) -> bool:
 
 def sync(path: Path, hub) -> dict:
     """State-based replica sync: schema replay, then pull, then push. LWW on updated_at."""
+    path = Path(path).resolve()
+    # Separate from the runner's lifetime lock and SQLite's writer lock. All
+    # sync callers share this inode, including symlink aliases of the database.
+    # Never unlink it: a waiter could otherwise lock a different inode.
+    with Path(f"{path}.sync.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("sync already in progress for this database") from None
+        return _sync_locked(path, hub)
+
+
+def _sync_locked(path: Path, hub) -> dict:
     unbound_hub = False
     if isinstance(hub, HttpHub):
         previous_hub = _get_state(path, "hub_url")
@@ -801,25 +996,55 @@ def sync(path: Path, hub) -> dict:
             ddl_applied += 1
 
     tables = _user_tables(path)
-    # The PULL cursor is hub-clock (`hub_at`, assigned on arrival); the PUSH
-    # cursor stays local `updated_at` (which rows of ours are new).
+    # Old checkpoints could miss equal revisions, inherit a remote future
+    # timestamp, or consume a precommit hub arrival. Repair both directions
+    # once, even when that poisoned timestamp is no longer in the future.
+    repair = _get_state(path, "checkpoint_version") != "2"
+    last_pull = _get_state(path, "last_pull")
+    last_push = _get_state(path, "last_push")
+    announce_repair = repair and bool(last_pull or last_push)
+    if announce_repair:
+        print(
+            "sync checkpoint recovery: full pull and push to recover potentially missed rows; "
+            "this runs once, with retries until successful.",
+            file=sys.stderr,
+            flush=True,
+        )
     # A table that just gained hub_at has NULL for every existing row, so the
     # stored cursor would skip all of them: one full pull sets that right.
     # Cursors without an endpoint cannot be trusted. A first HTTP sync
     # verifies the full replica; subsequent rounds use the bound cursors.
-    last_pull = "" if upgraded or unbound_hub else _get_state(path, "last_pull")
-    last_push = "" if unbound_hub else _get_state(path, "last_push")
+    if upgraded or unbound_hub or repair:
+        last_pull = ""
+    if unbound_hub or repair:
+        last_push = ""
     # capture the pull cursor BEFORE pulling: the hub writes rows itself
     # (derivations on push and on cron), and anything it writes after this read
     # gets hub_at > pull_cursor, so the next sync still sees it.
     pull_cursor = hub.cursor(tables)
 
-    # One local read transaction captures rows, original events and the push
-    # cursor together. A local edit during network work belongs to next sync.
+    # Serialize with local writers before reading our clock and snapshot.
+    # Never derive this checkpoint from rows: pulled revisions may be dated
+    # ahead. Release the writer reservation before any network work.
     with connect(path) as snapshot:
-        snapshot.execute("BEGIN")
+        snapshot.execute("BEGIN IMMEDIATE")
+        # DDL is a writer too. A table created since schema replay must be
+        # included (or fail the round for schema retry), never checkpointed past.
+        tables = _user_tables(path, snapshot)
         candidates, columns = {}, {}
-        push_cursor = ""
+        push_cursor = snapshot.execute(f"SELECT {NOW}").fetchone()[0]
+        if last_push > push_cursor:
+            last_push = ""  # observed local clock rollback or a future checkpoint
+            # Keep recovery due if a later network call fails or rows reject,
+            # even if the clock catches up before the next attempt.
+            snapshot.execute("UPDATE _sync_state SET value = '' WHERE key = 'checkpoint_version'")
+            announce_repair = True
+            print(
+                "sync checkpoint recovery: local clock is behind the checkpoint; "
+                "scanning all local rows.",
+                file=sys.stderr,
+                flush=True,
+            )
         for table in tables:
             columns[table] = [
                 r["name"] for r in snapshot.execute(f"PRAGMA table_info({qi(table)})")
@@ -827,11 +1052,9 @@ def sync(path: Path, hub) -> dict:
             candidates[table] = [
                 dict(r)
                 for r in snapshot.execute(
-                    f"SELECT * FROM {qi(table)} WHERE updated_at > ?", (last_push,)
+                    f"SELECT * FROM {qi(table)} WHERE updated_at >= ?", (last_push,)
                 )
             ]
-            top = snapshot.execute(f"SELECT max(updated_at) FROM {qi(table)}").fetchone()[0]
-            push_cursor = max(push_cursor, top or "")
         pending_history = (
             [
                 dict(r)
@@ -870,20 +1093,20 @@ def sync(path: Path, hub) -> dict:
             rejected += [{"table": table, **r} for r in out["rejected"]]
             pushed += out["upserted"]
 
-    _set_state(path, "last_pull", pull_cursor)
+    state = {"last_pull": pull_cursor}
     if not rejected:
-        _set_state(path, "last_push", push_cursor)
+        state.update(last_push=push_cursor, checkpoint_version="2")
         if isinstance(hub, HttpHub):
-            _set_state(path, "hub_url", hub.base)
+            state["hub_url"] = hub.base
+    with connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO _sync_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            state.items(),
+        )
+    if announce_repair and not rejected:
+        print("sync checkpoint recovery complete; incremental sync restored.", file=sys.stderr)
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
-
-
-def _local_cursor(path: Path, tables: list[str]) -> str:
-    top = ""
-    for t in tables:
-        rows = execute_sql(path, f"SELECT max(updated_at) AS m FROM {qi(t)}")
-        top = max(top, rows[0]["m"] or "")
-    return top
 
 
 def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False) -> None:

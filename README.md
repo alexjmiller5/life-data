@@ -1,13 +1,13 @@
 # life-data
 
 A schema-agnostic personal data store: local-first SQLite with an
-agent-friendly CLI, and an optional sync service. Think "headless Notion" —
+agent-friendly CLI, and an optional sync service. Think "headless Notion" -
 you define your own tables at runtime, your data lives in a SQLite file on
 your own machine, AI agents query and edit it with plain SQL, and every
 device stays a complete replica whether or not the network is up.
 
 The software is generic: it ships zero personal schema. Your tables, columns,
-and rows are *state*, created entirely through the installed CLI — never by
+and rows are *state*, created entirely through the installed CLI - never by
 editing this repo.
 
 ## Install
@@ -56,41 +56,47 @@ life background disable      # finish the current round, then stop syncing
 life background status       # enabled, running, last success/error and counts
 ```
 
-On macOS, supply a **Life-issued device token** once through stdin:
+On a new Mac, sign in through the browser and then enable sync:
 
 ```bash
-life background enable --token-stdin
+life login --name "My laptop"
+life background enable
 ```
 
-Pipe the token from your credential provider. Life stores it in the macOS
-Keychain, never in a file, process arguments, or logs. Keychain access may
-require macOS approval. The token is scoped to this data directory and hub
-URL. `--hub-url https://your-hub.example.com` selects a self-hosted instance.
+Life opens the hub's Cloudflare Access email approval page. After approval,
+it saves an independently revocable device token in macOS Keychain. No other
+Life device, password-manager vault, service account, or provider token is
+needed. Recovering after losing every Mac means installing Life again and
+repeating these steps using the owner's email account. Login and sync opt-in
+are separate choices.
+
+The browser receives a public fingerprint, never the bearer token. An
+unapproved fingerprint link does not expire on the server; the CLI waits up to
+five minutes. Only approve a link from a login you are currently performing.
+A fingerprint alone grants no access. Device management at `<hub>/login/devices`
+revokes Life API credentials. It does not sign an owner out of Cloudflare Access:
+for a lost device with a usable browser session, the service operator must also
+revoke that identity's Access sessions and secure the email account. The hosted
+service currently admits one owner and one dataset; it is not multi-user signup.
+
+Keychain may require foreground macOS approval. Background reads never prompt:
+if access requires interaction, the runner reports a sanitized OS error and
+retries. Unlocking the screen and allowing the executable to read the Keychain
+item are separate requirements. Disabling sync retains the credential.
+
+`life logout` revokes the saved device token at its hub before removing the
+Keychain item. Failed revocation retains the local token so logout can be
+retried. For an existing externally provisioned device token, use
+`life login --token-stdin`; admin tokens are rejected. Pipe credentials from
+a trusted provider, never put them in arguments or shell history.
+
+`--hub-url https://your-hub.example.com` selects a self-hosted instance.
 Once a data directory has synced over HTTP, it is bound to that endpoint.
 Use a fresh `LIFE_DATA_DIR` for a different hub; existing cursors and data
 are never silently reused against another service. A replica without a recorded
 endpoint performs one full sync to establish trustworthy cursors. This first
-round can take longer for a large existing database.
-The CLI requests rows in pages of 200 so large tables fit within the hub's
-response limits. A failed page leaves the sync cursors unchanged for retry.
-Keychain storage is also used by ordinary hub commands when no interactive
-credential override is configured. Disabling sync retains the credential.
-A locked or unavailable Keychain causes a retry with a visible error state.
-
-For a new Mac, enroll without copying a token from another machine:
-
-```bash
-life login --name "MacBook Air"
-```
-
-Life prints an approval URL and opens it in the browser. Sign in through the
-hub's Cloudflare Access email flow, approve the device, and the CLI stores the
-scoped app-issued token in Keychain. The browser sees only a short-lived
-fingerprint, never the bearer token. Login does not turn background sync on;
-run `life background enable` when you want that device to sync. `life logout`
-revokes the device at the saved hub before removing its Keychain item. The
-compatibility form `life login --token-stdin` validates an existing device
-token, but admin tokens are rejected.
+round can take longer for a large existing database. Pulls request pages of 200;
+a failed page leaves the sync cursors unchanged for retry.
 
 Alternatively, pass `--token-command 'credential-tool read hub-token'`.
 It runs in the daemon's environment; it must work without a terminal.
@@ -115,6 +121,24 @@ soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate. A
 hard `DELETE` does not. Schema changes replay from `_schema_log`, so a new
 device pulls tables and rows with `life init` followed by `life sync`.
 
+Only one sync round runs per database, including manual and background calls.
+The push checkpoint uses the local clock captured with a consistent snapshot;
+it never advances from a remote row's future revision. The hub stamps arrivals
+inside the committing transaction. Inclusive boundaries replay equal timestamps
+without duplicating IDs or original history events.
+
+Upgrading an older checkpoint triggers one complete reconciliation in both
+directions. Successful completion records the upgrade so normal rounds remain
+incremental; an interrupted or rejected recovery retries. This can take longer
+than an ordinary sync on a large replica. It does not delete history or rebuild
+rows from guesses. A detected local clock rollback also forces a full push.
+
+`updated_at` remains the conflict revision and the local change-discovery field.
+When importing historical records, keep the historical date in `created_at` or
+a domain field and let `updated_at` use the current write time. Arbitrarily
+backdated revisions can fall behind the checkpoint; equal revisions of the
+same row do not overwrite one another.
+
 `config.json` in the data directory provides optional installation defaults:
 
 ```json
@@ -127,7 +151,10 @@ device pulls tables and rows with `life init` followed by `life sync`.
 
 The interactive client also accepts `token` in config and extra proxy
 `headers`; `LIFE_HUB_TOKEN` and `LIFE_HUB_URL` override file configuration.
-Background credentials are separate from interactive `token`/`token_cmd`.
+Browser login selects the saved device session ahead of installation credential
+commands. Logout suppresses implicit fallback until an explicit authentication
+choice. An explicitly set `LIFE_HUB_TOKEN` remains an operator override.
+Background credential commands are separate from interactive `token`/`token_cmd`.
 User choices made through the CLI live in `background.json`; execution
 status lives in `background-status.json`. Neither contains saved tokens.
 
@@ -140,7 +167,7 @@ The bindings are declared in `worker/wrangler.jsonc`.
 
 ```bash
 cd worker && bunx wrangler@4 deploy
-bunx wrangler@4 secret put HUB_TOKEN     # the bearer token clients present
+bunx wrangler@4 secret put HUB_TOKEN     # operator/admin secret, never a consumer device credential
 ../scripts/cf-r2-lifecycle.py            # apply tiered backup retention
 ```
 
@@ -167,12 +194,13 @@ the prefix matching how long that copy should live:
 
 Retention is enforced by R2 lifecycle rules; `scripts/cf-r2-lifecycle.py` is
 their source of truth. Restore any of them with
-`gunzip -c life-….sql.gz | sqlite3 restored.db`. D1's own Time Travel
-separately covers point-in-time restore for the last 7 days.
+`gunzip -c life-….sql.gz | sqlite3 restored.db`. D1 Time Travel separately covers each database under its configured plan.
+These R2 SQL backups contain the data database, not the separate auth registry;
+recovery of auth state uses that database's own recovery or device reenrollment.
 
 ## Streams (append-only data)
 
-Tables hold rows you edit; **streams** hold append-only, timestamped events —
+Tables hold rows you edit; **streams** hold append-only, timestamped events -
 location pings, sensor readings, anything written once and read analytically.
 Streams are hub-backed by nature (the events are born remote):
 
@@ -182,7 +210,7 @@ life stream tail location        # the freshest record
 life archive query "SELECT * FROM life.events WHERE stream = 'location' LIMIT 10"
 ```
 
-Any client that can POST JSON can feed a stream — e.g. OwnTracks in HTTP mode
+Any client that can POST JSON can feed a stream - e.g. OwnTracks in HTTP mode
 pointed at `<hub>/v1/streams/location/append` with the token as its Basic-auth
 password. The hub stores every event verbatim as a landing object (raw is
 sacred, never deleted) and tees it into a managed pipeline that builds an
@@ -197,7 +225,7 @@ regardless, and everything is rebuildable from landing.
 ## Where data lives
 
 `$LIFE_DATA_DIR` if set, else `$XDG_DATA_HOME/life-data`, else
-`~/.local/share/life-data`. The database is a single `life.db` file — copying
+`~/.local/share/life-data`. The database is a single `life.db` file - copying
 it is a complete backup. Never put the data dir inside a file-sync folder
 (iCloud Drive, Dropbox): file-level sync corrupts SQLite WAL databases.
 
@@ -218,16 +246,31 @@ it is a complete backup. Never put the data dir inside a file-sync folder
   `life sql` is refused because it would leave those references dangling.
 - **`_schema_log`** records every DDL statement in order; replicas replay it.
 - **`_sync_state`** holds the sync cursors.
-- The client is pure Python standard library — no runtime dependencies.
+- The client is pure Python standard library - no runtime dependencies.
 
 ## Importing data
 
 There is no importer command by design: an agent (or you) maps any source
-into the generic primitives — `life table create`, then transform records to
+into the generic primitives - `life table create`, then transform records to
 JSON and pipe them into `life insert <table>`. Use source record ids as row
 `id`s so re-imports stay idempotent and cross-source relations survive.
 
 ### Hub write contract
+
+Use `POST /v1/rows/insert` for creation that must never overwrite an existing
+ID. It accepts `{table, columns, rows}` and returns `{inserted, existing,
+rejected}`. Existing IDs, including tombstones, keep every stored field and
+timestamp; their ignored initializer values are not validated. New rows must
+pass the normal catalog contract and supply a millisecond UTC `updated_at`.
+IDs must be unique nonempty strings within the request. History attachments
+are not supported. Both `LocalHub.rows_insert` and `HttpHub.rows_insert`
+expose this operation, using the existing `tables:write` permission.
+
+Only committed insertion receipts count as new rows. Retrying after a lost
+response can return `existing`, so callers cannot infer who created that row.
+Separate chunks can commit before a later request fails. An older hub without
+this route fails closed; creation callers must never fall back to upsert.
+Deploy the route before releasing clients that require it.
 
 `/v1/rows/push` retains sparse `columns`/`rows` patches and per-row rejection.
 Every row must supply valid `updated_at` in exact `YYYY-MM-DDTHH:MM:SS.sssZ`
@@ -261,8 +304,8 @@ Valid bulk requests still use one transaction.
 
 Sync keeps ordinary history-table replication as a fallback for servers that
 ignore the optional array. Rejections keep the push cursor in place and withhold
-those mutations' attached events from the fallback. Upgrade clients before the
-Worker where possible. Deduplication is guaranteed for upgraded replicas
+those mutations' attached events from the fallback. Deploy the transaction-time
+arrival fix before clients perform checkpoint recovery. Deduplication is guaranteed for upgraded replicas
 supplying original events; legacy compatibility is explicitly best effort.
 An older or uninventoryed replica sends history separately, so a new Worker
 cannot reliably recognize an original random-ID event before logging the direct

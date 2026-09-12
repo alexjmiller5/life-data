@@ -122,3 +122,166 @@ test("cursor keeps the legacy max_updated_at key equal to max_hub_at for pre-hub
   expect(c.max_updated_at).toBe(c.max_hub_at);
   expect(c.max_hub_at).toBe(push.hub_at);
 });
+
+// Drive the SQL clock at statement execution, including SQL prepared before
+// an awaited batch. No elapsed-time sleeps determine these interleavings.
+class ClockDB extends D1Shim {
+  now = '2026-01-01T00:00:00.000Z';
+  prepare(sql) {
+    let args = [];
+    const stmt = () => super.prepare(sql.replaceAll(NOW, `'${this.now}'`)).bind(...args);
+    return {
+      sql,
+      bind(...a) { args = a; return this; },
+      all: () => stmt().all(), first: () => stmt().first(),
+      run: () => stmt().run(), raw: options => stmt().raw(options),
+    };
+  }
+}
+
+for (const attached of [false, true]) {
+  test(`delayed committing batch cannot land below a consumed cursor (attached=${attached})`, async () => {
+    const db = new ClockDB();
+    db.db.exec(`CREATE TABLE items(id TEXT PRIMARY KEY, name TEXT, qty INTEGER, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+      CREATE TABLE history(id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, old TEXT, new TEXT, origin TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+      INSERT INTO items VALUES ('a','old',1,'2025-01-01T00:00:00.000Z',NULL,'2025-01-01T00:00:00.000Z');`);
+    const columns = ['id','name','qty','updated_at','hub_at'];
+    const event = {id:'original',tbl:'items',row_id:'a',col:'name',old:'old',new:'new',origin:'replica',
+      created_at:'2025-01-02T00:00:00.000Z',updated_at:'2025-01-02T00:00:00.000Z'};
+    const batch = db.batch.bind(db);
+    let resume, queued;
+    const gate = new Promise(resolve => { resume = resolve; });
+    const waiting = new Promise(resolve => { queued = resolve; });
+    let suspended = false;
+    db.batch = async statements => {
+      if (!suspended && statements.some(s => s.sql.startsWith('INSERT INTO "items"'))) {
+        suspended = true;
+        queued();
+        await gate;
+      }
+      return batch(statements);
+    };
+    const delayed = ROUTES['/v1/rows/push']({table:'items',columns,
+      rows:[{id:'a',name:'new',qty:2,updated_at:event.updated_at}], history:attached?[event]:[]}, db);
+    await waiting;
+    db.now = '2026-01-01T00:00:01.000Z';
+    const fast = await ROUTES['/v1/rows/push']({table:'items',columns,
+      rows:[{id:'b',name:'fast',qty:1,updated_at:event.updated_at}]}, db);
+    expect(fast.rejected).toEqual([]);
+    const since = (await ROUTES['/v1/cursor']({tables:['items','history']}, db)).max_hub_at;
+    expect((await ROUTES['/v1/rows/pull']({table:'items',columns,since}, db)).rows.map(r=>r.id)).toEqual(['b']);
+    db.now = '2026-01-01T00:00:02.000Z';
+    resume();
+    const committed = await delayed;
+    expect(committed.rejected).toEqual([]);
+    expect(committed.hub_at).toBe(db.now);
+    expect((await ROUTES['/v1/rows/pull']({table:'items',columns,since}, db)).rows.map(r=>r.id).sort()).toEqual(['a','b']);
+    const history = (await ROUTES['/v1/rows/pull']({table:'history',columns:['id','col','created_at','updated_at','hub_at'],since}, db)).rows;
+    expect(history.map(r=>r.col).sort()).toEqual(['name','qty']);
+    expect(history.every(r=>r.hub_at === db.now)).toBe(true);
+    if (attached) {
+      const original = history.find(r=>r.id === event.id);
+      expect(original.created_at).toBe(event.created_at);
+      expect(original.updated_at).toBe(event.updated_at);
+    }
+  });
+}
+
+for (const attached of [false, true]) {
+  test(`failure isolation stamps actual retry arrival (attached=${attached})`, async () => {
+    const db = new ClockDB();
+    db.db.exec(`CREATE TABLE items(id TEXT PRIMARY KEY, name TEXT, qty INTEGER, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+      CREATE TABLE history(id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, old TEXT, new TEXT, origin TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+      CREATE TABLE catalog_rules(id TEXT PRIMARY KEY, tbl TEXT, kind TEXT, enforce INTEGER, sql TEXT, text TEXT, col TEXT, deleted_at TEXT);
+      INSERT INTO catalog_rules VALUES ('positive','items','invariant',1,'SELECT id FROM changed WHERE qty < 0','quantity must be positive',NULL,NULL);
+      INSERT INTO items VALUES ('a','old',1,'2025-01-01T00:00:00.000Z',NULL,'2025-01-01T00:00:00.000Z');`);
+    const columns = ['id','name','qty','updated_at','hub_at'];
+    const event = {id:'original',tbl:'items',row_id:'a',col:'name',old:'old',new:'new',origin:'replica',
+      created_at:'2025-01-02T00:00:00.000Z',updated_at:'2025-01-02T00:00:00.000Z'};
+    const batch = db.batch.bind(db);
+    let since;
+    db.batch = async statements => {
+      try { return await batch(statements); }
+      catch (e) {
+        if (!since && String(e).includes('life_invariant_0')) {
+          db.now = '2026-01-01T00:00:01.000Z';
+          const other = await ROUTES['/v1/rows/push']({table:'items',columns,
+            rows:[{id:'c',name:'fast',qty:1,updated_at:event.updated_at}]}, db);
+          expect(other.rejected).toEqual([]);
+          since = (await ROUTES['/v1/cursor']({tables:['items','history']}, db)).max_hub_at;
+          expect((await ROUTES['/v1/rows/pull']({table:'items',columns,since}, db)).rows.map(r=>r.id)).toEqual(['c']);
+          db.now = '2026-01-01T00:00:02.000Z';
+        }
+        throw e;
+      }
+    };
+    const out = await ROUTES['/v1/rows/push']({table:'items',columns,rows:[
+      {id:'a',name:'new',qty:1,updated_at:event.updated_at},
+      {id:'bad',name:'bad',qty:-1,updated_at:event.updated_at},
+    ],history:attached?[event]:[]}, db);
+    expect(out.rejected.map(r=>r.id)).toEqual(['bad']);
+    expect(out.upserted).toBe(1);
+    expect(since).toBe('2026-01-01T00:00:01.000Z');
+    expect((await ROUTES['/v1/rows/pull']({table:'items',columns,since}, db)).rows.map(r=>r.id).sort()).toEqual(['a','c']);
+    const history = (await ROUTES['/v1/rows/pull']({table:'history',columns:['id','col','hub_at'],since}, db)).rows;
+    expect(history.length).toBe(1);
+    expect(history[0].hub_at).toBe(db.now);
+    if (attached) expect(history[0].id).toBe(event.id);
+    expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+  });
+}
+
+test('delayed derivation history uses the committing database clock', async () => {
+  const db = await seed(new ClockDB());
+  await ROUTES['/v1/rows/push']({table:'people',columns:cols,rows:[row()]}, db);
+  const batch = db.batch.bind(db);
+  let since;
+  db.batch = async statements => {
+    if (!since && statements.some(s=>s.sql.startsWith('UPDATE "people"'))) {
+      db.now = '2026-01-01T00:00:01.000Z';
+      const fast = await ROUTES['/v1/rows/push']({table:'people',columns:cols,rows:[row({id:'b'})]}, db);
+      expect(fast.rejected).toEqual([]);
+      since = (await ROUTES['/v1/cursor']({tables:['people','history']}, db)).max_hub_at;
+      await ROUTES['/v1/rows/pull']({table:'history',columns:['id'],since}, db);
+      db.now = '2026-01-01T00:00:02.000Z';
+    }
+    return batch(statements);
+  };
+  const out = await deriveRows(db, ENV, 'people', ['a'], {
+    fetchImpl: async () => new Response(JSON.stringify({blurb:'derived value'})),
+  });
+  expect(out.failed).toEqual([]);
+  expect(out.derived).toBe(1);
+  const history = (await ROUTES['/v1/rows/pull']({table:'history',columns:['col','updated_at','hub_at'],since}, db)).rows;
+  expect(history).toEqual([{col:'blurb',updated_at:db.now,hub_at:db.now}]);
+});
+
+test('stale row attachment gets a fresh arrival even when the row itself is unchanged', async () => {
+  const db = new ClockDB();
+  db.db.exec(`CREATE TABLE items(id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+    CREATE TABLE history(id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, old TEXT, new TEXT, origin TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT);
+    INSERT INTO items VALUES ('a','new','2025-01-03T00:00:00.000Z',NULL,'2025-01-03T00:00:00.000Z');`);
+  const event = {id:'original',tbl:'items',row_id:'a',col:'name',old:'old',new:'new',origin:'replica',
+    created_at:'2025-01-02T00:00:00.000Z',updated_at:'2025-01-02T00:00:00.000Z'};
+  const batch = db.batch.bind(db);
+  const columns = ['id','name','updated_at','hub_at'];
+  let since, interleaved = false;
+  db.batch = async statements => {
+    if (!interleaved && statements.some(s=>s.sql.startsWith('INSERT INTO "items"'))) {
+      interleaved = true;
+      db.now = '2026-01-01T00:00:01.000Z';
+      await ROUTES['/v1/rows/push']({table:'items',columns,
+        rows:[{id:'b',name:'fast',updated_at:event.updated_at}]}, db);
+      since = (await ROUTES['/v1/cursor']({tables:['items','history']}, db)).max_hub_at;
+      expect((await ROUTES['/v1/rows/pull']({table:'history',columns:['id'],since}, db)).rows).toEqual([]);
+      db.now = '2026-01-01T00:00:02.000Z';
+    }
+    return batch(statements);
+  };
+  const out = await ROUTES['/v1/rows/push']({table:'items',columns,
+    rows:[{id:'a',name:'new',updated_at:event.updated_at}],history:[event]}, db);
+  expect(out.rejected).toEqual([]);
+  expect(db.db.query("SELECT hub_at FROM items WHERE id='a'").get().hub_at).toBe('2025-01-03T00:00:00.000Z');
+  const imported = (await ROUTES['/v1/rows/pull']({table:'history',columns:['id','updated_at','hub_at'],since}, db)).rows;
+  expect(imported).toEqual([{id:event.id,updated_at:event.updated_at,hub_at:db.now}]);
+});

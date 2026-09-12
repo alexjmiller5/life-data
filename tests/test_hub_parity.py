@@ -365,18 +365,26 @@ def test_I5_sync_snapshots_rows_and_events_together(hub, tmp_path, monkeypatch):
 
 
 def test_I5_local_write_between_snapshot_reads_is_deferred(hub, tmp_path, monkeypatch):
+    import sqlite3
+
     import life_data
 
     replica = init(tmp_path / "replica.db")
     push(hub, [{"id": "a", "name": "A", "updated_at": T0}])
     sync(replica, hub)
     edited = False
+    blocked = []
 
     def interleave(sql):
         nonlocal edited
         if not edited and sql.startswith('SELECT * FROM "items" WHERE updated_at >'):
             edited = True
-            execute_sql(replica, "UPDATE items SET name='B' WHERE id='a'")
+            with connect(replica) as writer:
+                writer.execute("PRAGMA busy_timeout=0")
+                try:
+                    writer.execute("UPDATE items SET name='B' WHERE id='a'")
+                except sqlite3.OperationalError as exc:
+                    blocked.append(str(exc))
 
     def traced_connect(path, manual_tx=False):
         conn = connect(path, manual_tx)
@@ -384,10 +392,22 @@ def test_I5_local_write_between_snapshot_reads_is_deferred(hub, tmp_path, monkey
             conn.set_trace_callback(interleave)
         return conn
 
+    original_pull = hub.rows_pull
+    retried = False
+
+    def pull(table, columns, since):
+        nonlocal retried
+        if not retried:
+            retried = True
+            execute_sql(replica, "UPDATE items SET name='B' WHERE id='a'")
+        return original_pull(table, columns, since)
+
     with monkeypatch.context() as m:
         m.setattr(life_data, "connect", traced_connect)
+        m.setattr(hub, "rows_pull", pull)
         assert not sync(replica, hub)["rejected"]
     assert edited
+    assert blocked == ["database is locked"]
     assert execute_sql(hub.path, "SELECT name FROM items") == [{"name": "A"}]
     assert execute_sql(hub.path, "SELECT * FROM history") == []
     assert not sync(replica, hub)["rejected"]

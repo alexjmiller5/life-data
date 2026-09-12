@@ -40,6 +40,8 @@ def _frameworks():
             ("SecItemAdd", [ptr, refs]),
             ("SecItemUpdate", [ptr, ptr]),
             ("SecItemDelete", [ptr]),
+            ("SecKeychainGetUserInteractionAllowed", [ctypes.POINTER(ctypes.c_ubyte)]),
+            ("SecKeychainSetUserInteractionAllowed", [ctypes.c_ubyte]),
         ):
             function = getattr(security, name)
             function.argtypes = args
@@ -72,7 +74,7 @@ def _constant(library, name):
         _check(_UNAVAILABLE)
 
 
-def _access(account: str, token: bytes | None = None) -> bytes | None:
+def _access(account: str, token: bytes | None = None, *, interactive: bool = True) -> bytes | None:
     security, cf, key_callbacks, value_callbacks = _frameworks()
     with ExitStack() as cleanup:
 
@@ -125,10 +127,21 @@ def _access(account: str, token: bytes | None = None) -> bytes | None:
 
         query[_constant(security, "kSecReturnData")] = _constant(cf, "kCFBooleanTrue")
         query[_constant(security, "kSecMatchLimit")] = _constant(security, "kSecMatchLimitOne")
+        query_ref = dictionary(query)
         result = ctypes.c_void_p()
-        status = security.SecItemCopyMatching(dictionary(query), ctypes.byref(result))
-        if result.value:
-            own(result.value)
+        previous = ctypes.c_ubyte()
+        if not interactive:
+            # File-based SecItem uses the legacy UI policy, shared within this process.
+            _check(security.SecKeychainGetUserInteractionAllowed(ctypes.byref(previous)))
+        try:
+            if not interactive:
+                _check(security.SecKeychainSetUserInteractionAllowed(False))
+            status = security.SecItemCopyMatching(query_ref, ctypes.byref(result))
+        finally:
+            if result.value:
+                own(result.value)
+            if not interactive:
+                _check(security.SecKeychainSetUserInteractionAllowed(previous.value))
         if status == _NOT_FOUND:
             return None
         _check(status)
@@ -153,10 +166,10 @@ def store_token(account: str, token: str) -> None:
     _access(account, data)
 
 
-def read_token(account: str) -> str | None:
-    """Read a token, returning None only when the account has no Keychain item."""
+def read_token(account: str, *, interactive: bool = True) -> str | None:
+    """Read a token; noninteractive reads fail if native consent or unlocking is needed."""
     _require_macos()
-    data = _access(account)
+    data = _access(account, interactive=interactive)
     if data is None:
         return None
     try:

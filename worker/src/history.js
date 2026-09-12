@@ -131,7 +131,7 @@ async function storedTransitions(db, table, schema, rows, upsertSql) {
   return (await db.batch(statements))[result].results;
 }
 
-export function historyStatements(db, table, key, plan, now) {
+export function historyStatements(db, table, key, plan) {
   if (!plan) return {begin:[],end:[]};
   const begin = [], end = [];
   if (!plan.exists) {
@@ -149,7 +149,7 @@ export function historyStatements(db, table, key, plan, now) {
     return `INSERT INTO history (id,tbl,row_id,col,old,new,origin,created_at,updated_at${plan.stamp?',hub_at':''})
       SELECT lower(hex(randomblob(16))),${literal(table)},NEW.id,${literal(c)},${old},${value},
         CASE WHEN EXISTS (${cell(c)}) THEN 'hub:reconcile' ELSE 'hub' END,
-        NEW.updated_at,${literal(now)}${plan.stamp?','+literal(now):''}
+        NEW.updated_at,${NOW}${plan.stamp?','+NOW:''}
       WHERE OLD.${qident(c)} IS NOT NEW.${qident(c)} AND NOT EXISTS (
         ${cell(c)} AND json_extract(value,'$.valid')=1
         AND json_extract(value,'$.old') IS ${old} AND json_extract(value,'$.new') IS ${value});`;
@@ -160,9 +160,9 @@ export function historyStatements(db, table, key, plan, now) {
   }
   if (plan.unseen.length) {
     const cols = [...FIELDS, ...(plan.stamp?['hub_at']:[])];
-    const values = cols.map(c=>c==='hub_at'?'?':`json_extract(value,'$.${c}')`);
+    const values = cols.map(c=>c==='hub_at'?NOW:`json_extract(value,'$.${c}')`);
     end.push(db.prepare(`INSERT INTO history (${cols.map(qident).join(',')}) SELECT ${values.join(',')} FROM json_each(?)`)
-      .bind(...(plan.stamp?[now]:[]),JSON.stringify(plan.unseen)));
+      .bind(JSON.stringify(plan.unseen)));
   }
   end.push(db.prepare(`DROP TABLE ${qident(receipts)}`));
   return {begin,end};
