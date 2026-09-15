@@ -46,6 +46,8 @@ CLI.
   `since` stays fixed for the entire walk. The hub returns `next_cursor`
   only for paginated requests. Legacy requests retain complete responses.
   A failed or nonadvancing page aborts before the sync cursors advance.
+  An optional `where` object (column → string or number) adds equality
+  filters, so a consumer can pull one slice of a large table.
 
 - Data dir: `$LIFE_DATA_DIR` > `$XDG_DATA_HOME/life-data` >
   `~/.local/share/life-data`; the database is `life.db`. Nothing else may

@@ -253,6 +253,13 @@ const ROUTES = {
     const cols = (includeId ? [...columns, "id"] : columns).map(qident).join(", ");
     const t = qident(body.table);
     const since = body.since ?? "";
+    // Optional equality filter so a client can pull one slice of a large table
+    // instead of every row (Music Sync needs the songs slice of provenance).
+    const where = body.where ?? {};
+    if (typeof where !== "object" || where === null || Array.isArray(where)
+        || !Object.values(where).every((v) => typeof v === "string" || typeof v === "number")) {
+      return json({ error: "where must map column names to string or number values" }, 400);
+    }
     // arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond as
     // a cursor read must not be lost. A NULL hub_at is older than everything,
     // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
@@ -260,6 +267,10 @@ const ROUTES = {
     let [sql, args] = (await hasHubAt(db, body.table))
       ? [`SELECT ${cols} FROM ${t} WHERE (? = '' OR hub_at >= ?)`, [since, since]]
       : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
+    for (const [col, value] of Object.entries(where)) {
+      sql += ` AND ${qident(col)} = ?`;
+      args.push(value);
+    }
     if (paginated) {
       if (body.after !== undefined) {
         sql += " AND id > ?";

@@ -141,3 +141,13 @@ for (const after of [null, 1, true, [], {}]) {
     expect((await response.json()).error).toEqual(expect.any(String));
   });
 }
+
+test("where narrows a pull to matching rows and rejects non-scalar filters", async () => {
+  const db = await seed();
+  const rows = await (await pull(db, { columns: ["id", "label"], where: { label: "record-b" } })).json();
+  expect(rows).toEqual({ rows: [{ id: "b", label: "record-b" }] });
+  const paged = await (await pull(db, { limit: 5, where: { deleted_at: STAMP } })).json();
+  expect(paged).toEqual({ rows: [{ id: "d" }], next_cursor: null });
+  expect((await pull(db, { where: { label: ["record-b"] } })).status).toBe(400);
+  expect((await pull(db, { where: { "label; drop": "x" } })).status).not.toBe(200);
+});
