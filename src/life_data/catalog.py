@@ -92,6 +92,31 @@ CATALOG_TABLES = {
 }
 ENGINE_TABLES = set(CATALOG_TABLES) - {"provenance"}
 
+# Indexes the engine's own query patterns need (provenance lookups by target
+# row, by source observation; history by edited row). Ensured on every catalog
+# op with CREATE INDEX IF NOT EXISTS and never logged to `_schema_log`: each
+# replica and the hub own their indexes, exactly like the engine tables.
+ENGINE_INDEXES = {
+    "provenance": {
+        "provenance_to": ("to_kind", "to_ref", "field"),
+        "provenance_from": ("from_kind", "from_ref"),
+    },
+    "history": {"history_row": ("tbl", "row_id", "col")},
+}
+
+
+def ensure_indexes(conn: sqlite3.Connection) -> None:
+    """Create every engine index whose table exists; idempotent, unlogged."""
+    for tbl, indexes in ENGINE_INDEXES.items():
+        if not _table_exists(conn, tbl):
+            continue
+        for name, cols in indexes.items():
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {qi(name)} ON {qi(tbl)} "
+                f"({', '.join(qi(c) for c in cols)})"
+            )
+
+
 # Sync columns that move on every write and say nothing a reader wants to replay.
 HISTORY_SKIP = {"updated_at", "hub_at"}
 
@@ -249,6 +274,8 @@ def _ensure_catalog(path: Path) -> None:
         for col, description in HISTORY_PROPERTIES.items():
             set_property(path, "history", col, description=description)
         set_table(path, "history", **HISTORY_TABLE)
+    with pkg.connect(path) as conn:
+        ensure_indexes(conn)
 
 
 def _parse(row: dict) -> dict:

@@ -53,6 +53,23 @@ def test_ensure_catalog_creates_logged_tables(db):
     assert len([d for d in ddls if 'CREATE TABLE "catalog_properties"' in d]) == 1
 
 
+def test_ensure_catalog_creates_engine_indexes_unlogged(db):
+    ensure_catalog(db)
+    indexes = {
+        r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    assert {"provenance_to", "provenance_from"} <= indexes
+    assert not any(
+        "INDEX" in r["ddl"].upper() for r in execute_sql(db, "SELECT ddl FROM _schema_log")
+    )
+    ensure_catalog(db)  # idempotent
+    plan = execute_sql(
+        db,
+        "EXPLAIN QUERY PLAN SELECT 1 FROM provenance WHERE to_kind = 'x' AND to_ref = 'y'",
+    )
+    assert any("provenance_to" in r["detail"] for r in plan)
+
+
 def test_has_catalog_false_on_fresh_db(db):
     with connect(db) as conn:
         assert has_catalog(conn) is False
