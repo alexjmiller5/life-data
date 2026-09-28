@@ -9,6 +9,39 @@ _NOT_FOUND = -25300
 _DUPLICATE = -25299
 _DECODE = -26275
 _UNAVAILABLE = -25291
+_REQUIRE_PASSPHRASE = 0x0001  # kSecKeychainPromptRequirePassphase
+
+
+def _any_application_access(security, cf, own, string):
+    """An access object whose entries trust ANY application (what
+    `security add-generic-password -A` does). The default access trusts only
+    the binary that stored the item, and a Nix rebuild moves that binary, so
+    every later reader (the sync daemon included) would face a consent prompt
+    it cannot answer. The entry that protects changing the access itself still
+    requires the keychain passphrase, so it is left alone.
+    """
+    access = ctypes.c_void_p()
+    _check(security.SecAccessCreate(string(_SERVICE), None, ctypes.byref(access)))
+    own(access.value)
+    acls = ctypes.c_void_p()
+    _check(security.SecAccessCopyACLList(access.value, ctypes.byref(acls)))
+    own(acls.value)
+    for i in range(cf.CFArrayGetCount(acls.value)):
+        acl = cf.CFArrayGetValueAtIndex(acls.value, i)
+        apps, description, prompt = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_uint16()
+        _check(
+            security.SecACLCopyContents(
+                acl, ctypes.byref(apps), ctypes.byref(description), ctypes.byref(prompt)
+            )
+        )
+        if apps.value:
+            own(apps.value)
+        if description.value:
+            own(description.value)
+        if prompt.value & _REQUIRE_PASSPHRASE:
+            continue
+        _check(security.SecACLSetContents(acl, None, description.value, prompt.value))
+    return access.value
 
 
 class KeychainError(RuntimeError):
@@ -42,6 +75,10 @@ def _frameworks():
             ("SecItemDelete", [ptr]),
             ("SecKeychainGetUserInteractionAllowed", [ctypes.POINTER(ctypes.c_ubyte)]),
             ("SecKeychainSetUserInteractionAllowed", [ctypes.c_ubyte]),
+            ("SecAccessCreate", [ptr, ptr, refs]),
+            ("SecAccessCopyACLList", [ptr, refs]),
+            ("SecACLCopyContents", [ptr, refs, refs, ctypes.POINTER(ctypes.c_uint16)]),
+            ("SecACLSetContents", [ptr, ptr, ptr, ctypes.c_uint16]),
         ):
             function = getattr(security, name)
             function.argtypes = args
@@ -52,6 +89,8 @@ def _frameworks():
             ("CFDictionaryCreate", [ptr, refs, refs, index, ptr, ptr], ptr),
             ("CFDataGetLength", [ptr], index),
             ("CFDataGetBytePtr", [ptr], ptr),
+            ("CFArrayGetCount", [ptr], index),
+            ("CFArrayGetValueAtIndex", [ptr, index], ptr),
             ("CFDataGetTypeID", [], ctypes.c_ulong),
             ("CFGetTypeID", [ptr], ctypes.c_ulong),
             ("CFRelease", [ptr], None),
@@ -112,16 +151,23 @@ def _access(account: str, token: bytes | None = None, *, interactive: bool = Tru
             _constant(security, "kSecAttrAccount"): string(account),
         }
         if token is not None:
+            # Replace rather than update: an item stored by an earlier binary
+            # carries that binary's access list, and only a fresh item gets the
+            # any-application access below.
             attributes = {
-                _constant(security, "kSecValueData"): own(cf.CFDataCreate(None, token, len(token)))
+                _constant(security, "kSecValueData"): own(cf.CFDataCreate(None, token, len(token))),
+                _constant(security, "kSecAttrAccess"): _any_application_access(
+                    security, cf, own, string
+                ),
             }
-            query_ref, attributes_ref = dictionary(query), dictionary(attributes)
-            status = security.SecItemUpdate(query_ref, attributes_ref)
-            if status == _NOT_FOUND:
-                status = security.SecItemAdd(dictionary(query | attributes), None)
-                if status == _DUPLICATE:
-                    # A concurrent writer created it after our missing-item result.
-                    status = security.SecItemUpdate(query_ref, attributes_ref)
+            query_ref, add_ref = dictionary(query), dictionary(query | attributes)
+            for attempt in range(2):
+                status = security.SecItemDelete(query_ref)
+                if status != _NOT_FOUND:
+                    _check(status)
+                status = security.SecItemAdd(add_ref, None)
+                if status != _DUPLICATE or attempt:
+                    break  # a concurrent writer recreated it: delete and add once more
             _check(status)
             return None
 

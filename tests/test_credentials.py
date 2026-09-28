@@ -52,7 +52,47 @@ class Native:
             SecItemDelete=Mock(side_effect=self.delete),
             SecKeychainGetUserInteractionAllowed=Mock(side_effect=self.get_interaction),
             SecKeychainSetUserInteractionAllowed=Mock(side_effect=self.set_interaction),
+            SecAccessCreate=Mock(side_effect=self.access_create),
+            SecAccessCopyACLList=Mock(side_effect=self.access_acls),
+            SecACLCopyContents=Mock(side_effect=self.acl_copy),
+            SecACLSetContents=Mock(side_effect=self.acl_set),
         )
+        self.cf.CFArrayGetCount = Mock(side_effect=lambda ref: len(self.objects[ref]))
+        self.cf.CFArrayGetValueAtIndex = Mock(side_effect=lambda ref, i: self.objects[ref][i])
+
+    # Access objects: {"acls": [{"apps": ["self"] | None, "prompt": flags}, ...]}.
+    # A fresh access trusts only the calling app; the change-ACL entry
+    # requires the passphrase (0x0001), exactly like the real default.
+    def access_create(self, label, trusted, result):
+        assert self.objects[label] == "life-data" and trusted is None
+        status = self.status("access_create")
+        if status:
+            return status
+        acls = [{"apps": ["self"], "prompt": 0}, {"apps": ["self"], "prompt": 0x0001}]
+        access = self.allocate({"acls": acls})
+        ctypes.cast(result, ctypes.POINTER(ctypes.c_void_p))[0] = access
+        return 0
+
+    def access_acls(self, access, result):
+        acls = [self.allocate(acl, owned=False) for acl in self.objects[access]["acls"]]
+        ctypes.cast(result, ctypes.POINTER(ctypes.c_void_p))[0] = self.allocate(acls)
+        return 0
+
+    def acl_copy(self, acl, apps, description, prompt):
+        entry = self.objects[acl]
+        ctypes.cast(apps, ctypes.POINTER(ctypes.c_void_p))[0] = self.allocate(
+            list(entry["apps"] or [])
+        )
+        ctypes.cast(description, ctypes.POINTER(ctypes.c_void_p))[0] = self.allocate("life-data")
+        ctypes.cast(prompt, ctypes.POINTER(ctypes.c_uint16))[0] = entry["prompt"]
+        return 0
+
+    def acl_set(self, acl, apps, description, prompt):
+        assert apps is None and self.objects[description] == "life-data"
+        entry = self.objects[acl]
+        assert prompt == entry["prompt"]
+        entry["apps"] = None  # any application
+        return 0
 
     def allocate(self, value, owned=True):
         self.next_ref += 1
@@ -137,6 +177,9 @@ class Native:
     def add(self, attributes_ref, result):
         attributes, key = self.query(attributes_ref)
         assert result is None
+        access = attributes["kSecAttrAccess"]
+        assert access["acls"][0]["apps"] is None, "decrypt entry must trust any application"
+        assert access["acls"][1]["apps"] == ["self"], "change-ACL entry must stay protected"
         status = self.status("add")
         if status:
             return status
@@ -186,7 +229,8 @@ def test_update_preserves_other_accounts_and_services(credentials, native):
         ("life-data", "account-b"): b"untouched",
         ("another-service", "account-a"): b"also-untouched",
     }
-    assert native.calls == ["update"]
+    # Replaced, never updated in place: only a fresh item carries the open access.
+    assert native.calls == ["access_create", "delete", "add"]
 
 
 def test_missing_read_returns_none(credentials, native):
@@ -288,7 +332,7 @@ def test_invalid_unicode_token_error_does_not_disclose_input(credentials):
     assert "dummy-private" not in "".join(traceback.format_exception(error.value))
 
 
-@pytest.mark.parametrize("operation", ["read", "update", "add"])
+@pytest.mark.parametrize("operation", ["read", "add"])
 @pytest.mark.parametrize("status", [-25293, -25308, -128])
 def test_native_errors_are_status_only_and_release_refs(
     credentials, native, operation, status, capsys
@@ -305,21 +349,27 @@ def test_native_errors_are_status_only_and_release_refs(
     assert not native.items
 
 
-def test_concurrent_creation_retries_update_once(credentials, native):
-    native.items[("life-data", "account")] = b"concurrent"
-    native.statuses["update"] = [-25300, 0]
+def test_concurrent_creation_replaces_once_more(credentials, native):
+    native.statuses["add"] = [-25299, 0]  # a racing writer recreated the item
     credentials.store_token("account", "requested")
     assert native.items[("life-data", "account")] == b"requested"
-    assert native.calls == ["update", "add", "update"]
+    assert native.calls == ["access_create", "delete", "add", "delete", "add"]
 
 
-def test_racing_update_error_is_not_swallowed(credentials, native):
-    native.items[("life-data", "account")] = b"concurrent"
-    native.statuses["update"] = [-25300, -25308]
+def test_racing_add_error_is_not_swallowed(credentials, native):
+    native.statuses["add"] = [-25299, -25308]
     with pytest.raises(RuntimeError, match="-25308"):
         credentials.store_token("account", "requested")
-    assert native.items[("life-data", "account")] == b"concurrent"
-    assert native.calls == ["update", "add", "update"]
+    assert ("life-data", "account") not in native.items
+    assert native.calls == ["access_create", "delete", "add", "delete", "add"]
+
+
+def test_stored_item_trusts_any_application_but_keeps_the_acl_change_protected(credentials, native):
+    credentials.store_token("account", "token")
+    access = native.security.SecItemAdd.call_args.args[0]
+    acls = native.objects[access]["kSecAttrAccess"]["acls"]
+    assert acls[0]["apps"] is None and acls[1]["apps"] == ["self"]
+    assert native.security.SecACLSetContents.call_count == 1
 
 
 @pytest.mark.parametrize("value", [b"dummy-private\xff", "unexpected CFString"])
