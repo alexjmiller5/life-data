@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import worker from "../src/index.js";
+import worker, { ROUTES } from "../src/index.js";
 import { D1Shim } from "./d1shim.js";
 
 const STAMP = "2026-01-02T00:00:00.000Z";
@@ -150,4 +150,62 @@ test("where narrows a pull to matching rows and rejects non-scalar filters", asy
   expect(paged).toEqual({ rows: [{ id: "d" }], next_cursor: null });
   expect((await pull(db, { where: { label: ["record-b"] } })).status).toBe(400);
   expect((await pull(db, { where: { "label; drop": "x" } })).status).not.toBe(200);
+});
+
+// Every sync round runs a cursor read and a pull per table. Without an index
+// on hub_at both scan every row of every table on every poll, and D1 bills
+// rows read - so the hub owns a hub_at index per table (unlogged, like the
+// engine indexes) and the incremental pull must actually use it.
+function capturing(db) {
+  const seen = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    const stmt = prepare(sql);
+    const bind = stmt.bind.bind(stmt);
+    stmt.bind = (...args) => { seen.push({ sql, args }); return bind(...args); };
+    return stmt;
+  };
+  return seen;
+}
+
+async function plan(db, { sql, args }) {
+  const { results } = await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...args).all();
+  return results.map((r) => r.detail).join("; ");
+}
+
+test("cursor creates a hub_at index on every user table with the column", async () => {
+  const db = await seed();
+  await db.prepare("CREATE TABLE legacy (id TEXT PRIMARY KEY, updated_at TEXT)").run();
+  const indexes = async () => (await db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+  ).all()).results.map((r) => r.name);
+  expect(await indexes()).toEqual([]);
+  await ROUTES["/v1/cursor"]({ tables: ["records", "legacy"] }, db);
+  expect(await indexes()).toEqual(["records_hub_at"]);
+  expect(await plan(db, { sql: "SELECT max(hub_at) FROM records", args: [] })).toContain("COVERING INDEX records_hub_at");
+  // a table that arrives later through schema replay is indexed on the next round
+  const replay = await worker.fetch(new Request("https://hub.test/v1/schema/push", {
+    method: "POST",
+    headers: { Authorization: "Bearer test", "Content-Type": "application/json" },
+    body: JSON.stringify({ entries: [{ applied_at: STAMP, ddl: "CREATE TABLE later (id TEXT PRIMARY KEY, hub_at TEXT)" }] }),
+  }), { DB: db, HUB_TOKEN: "test" }, { waitUntil() {} });
+  expect(await replay.json()).toEqual({ applied: 1 });
+  await ROUTES["/v1/cursor"]({ tables: ["later"] }, db);
+  expect(await indexes()).toEqual(["later_hub_at", "records_hub_at"]);
+});
+
+test("incremental paginated pull reads through the hub_at index, full pull pages by id", async () => {
+  const db = await seed();
+  await ROUTES["/v1/cursor"]({ tables: ["records"] }, db);
+  const seen = capturing(db);
+  expect(await (await pull(db, { since: STAMP, limit: 2, after: "b" })).json()).toEqual({
+    rows: [{ id: "c" }, { id: "d" }], next_cursor: "d",
+  });
+  const incremental = await plan(db, seen.at(-1));
+  expect(incremental).toContain("USING INDEX records_hub_at");
+  expect(incremental).not.toContain("sqlite_autoindex");
+  expect(await (await pull(db, { limit: 2, after: "a" })).json()).toEqual({
+    rows: [{ id: "b" }, { id: "c" }], next_cursor: "c",
+  });
+  expect(await plan(db, seen.at(-1))).toContain("sqlite_autoindex_records_1 (id>?)");
 });

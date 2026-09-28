@@ -189,6 +189,24 @@ async function hasHubAt(db, table) {
   return (results ?? []).some((c) => c.name === "hub_at");
 }
 
+// Every sync round reads max(hub_at) and pulls `hub_at >= since` on EVERY
+// table; unindexed, each is a full scan of the table and D1 bills every row
+// read (a 400k-row provenance table polled every 30s cost real money). The hub
+// owns one hub_at index per user table - unlogged, like the engine indexes -
+// ensured once per isolate and again after schema replay adds tables.
+const indexed = new WeakSet();
+async function ensureHubAtIndexes(db) {
+  if (indexed.has(db)) return;
+  const { results } = await db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\'")
+    .all();
+  for (const { name } of results ?? []) {
+    if (!(await hasHubAt(db, name))) continue;
+    await db.prepare(`CREATE INDEX IF NOT EXISTS ${qident(`${name}_hub_at`)} ON ${qident(name)} (hub_at)`).run();
+  }
+  indexed.add(db);
+}
+
 // `stampHubAt` is the hub's role: hub_at is dropped from whatever the client
 // sent and re-added using the database clock in the committing batch, so
 // arrival order is one clock's order and no replica skips a delayed push.
@@ -237,6 +255,7 @@ const ROUTES = {
         .run();
       applied++;
     }
+    if (applied) indexed.delete(db); // a replayed CREATE TABLE needs its index
     return { applied };
   },
 
@@ -264,19 +283,29 @@ const ROUTES = {
     // a cursor read must not be lost. A NULL hub_at is older than everything,
     // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
     // A table predating the migration falls back to the old client stamp.
-    let [sql, args] = (await hasHubAt(db, body.table))
-      ? [`SELECT ${cols} FROM ${t} WHERE (? = '' OR hub_at >= ?)`, [since, since]]
-      : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
+    await ensureHubAtIndexes(db);
+    const incremental = since !== "" && (await hasHubAt(db, body.table));
+    let [sql, args] = incremental
+      ? [`SELECT ${cols} FROM ${t} WHERE hub_at >= ?`, [since]]
+      : (await hasHubAt(db, body.table))
+        ? [`SELECT ${cols} FROM ${t} WHERE true`, []]
+        : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
     for (const [col, value] of Object.entries(where)) {
       sql += ` AND ${qident(col)} = ?`;
       args.push(value);
     }
     if (paginated) {
+      // A full pull walks the primary key page by page. An incremental pull
+      // must range-scan the hub_at index instead: the unary `+` hides `id` from
+      // the planner, which otherwise walks the whole PK and filters hub_at row
+      // by row - a full table scan per page (SQLite's EXPLAIN QUERY PLAN proves
+      // it; the pull test asserts the plan).
+      const id = incremental ? "+id" : "id";
       if (body.after !== undefined) {
-        sql += " AND id > ?";
+        sql += ` AND ${id} > ?`;
         args.push(body.after);
       }
-      sql += " ORDER BY id ASC LIMIT ?";
+      sql += ` ORDER BY ${id} ASC LIMIT ?`;
       args.push(body.limit);
     }
     const { results } = await db.prepare(sql).bind(...args).all();
@@ -348,6 +377,7 @@ const ROUTES = {
   "/v1/backup": null,
 
   "/v1/cursor": async (body, db) => {
+    await ensureHubAtIndexes(db);
     let top = "";
     for (const table of body.tables ?? []) {
       const col = (await hasHubAt(db, table)) ? "hub_at" : "updated_at";

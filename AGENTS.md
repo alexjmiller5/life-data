@@ -266,6 +266,17 @@ pushes an edit stamped older than another replica's cursor still gets a fresh
 `hub_at` and reaches everyone. `updated_at` decides row conflicts and local push discovery; `hub_at` decides
 remote arrival discovery.
 
+**The hub owns a `hub_at` index per user table** (`<table>_hub_at`, unlogged
+like the engine indexes, ensured once per isolate on cursor/pull and again
+after schema replay). D1 bills rows READ, and every sync round runs
+`max(hub_at)` plus a pull on every table: unindexed, that is two full scans of
+the whole database per poll (a 416k-row provenance table every 30s cost ~$20 in
+overage in one billing period). The incremental paginated pull must range-scan
+that index: it writes `+id > ?` / `ORDER BY +id` so the planner cannot pick the
+primary key and filter `hub_at` row by row; a full pull (`since = ''`) keeps
+paging by `id`. `worker/test/pull.test.js` asserts both query plans - keep it
+green when touching the pull SQL.
+
 **The pull cursor is `hub.cursor(tables)` (`max(hub_at)`) read BEFORE the pull
 loop, not after it**: the hub writes rows itself (derivations on push and on
 the sweep cron), and a row it writes between a table's pull query and a cursor
