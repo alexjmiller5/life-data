@@ -324,3 +324,27 @@ test("cursor asks the database in batches, not once per table", async () => {
   expect(batches - warm.batches).toBe(2);
   expect(singles - warm.singles).toBe(0);
 });
+
+test("a fresh isolate ensures every hub_at index in batches", async () => {
+  const db = await seed(new D1Shim());
+  let batches = 0, singles = 0, batching = false;
+  const batch = db.batch.bind(db), prepare = db.prepare.bind(db);
+  db.batch = async (stmts) => {
+    batches += 1;
+    batching = true;
+    try { return await batch(stmts); } finally { batching = false; }
+  };
+  db.prepare = (sql) => {
+    const stmt = prepare(sql);
+    for (const verb of ["all", "first", "run"]) {
+      const inner = stmt[verb]?.bind(stmt);
+      if (inner) stmt[verb] = (...a) => { if (!batching) singles += 1; return inner(...a); };
+    }
+    return stmt;
+  };
+  await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
+  expect(singles).toBe(1); // the table list; everything per-table is batched
+  expect(batches).toBe(4); // table_info + create index, then the cursor's two
+  const made = await prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_hub_at'").all();
+  expect(made.results.map((r) => r.name).sort()).toEqual(["catalog_properties_hub_at", "people_hub_at", "provenance_hub_at"]);
+});

@@ -200,9 +200,19 @@ async function ensureHubAtIndexes(db) {
   const { results } = await db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\'")
     .all();
-  for (const { name } of results ?? []) {
-    if (!(await hasHubAt(db, name))) continue;
-    await db.prepare(`CREATE INDEX IF NOT EXISTS ${qident(`${name}_hub_at`)} ON ${qident(name)} (hub_at)`).run();
+  const names = (results ?? []).map((r) => r.name);
+  // Batched: a fresh isolate runs this before its first cursor or pull, and
+  // one round trip per table made that first request take ten seconds.
+  if (names.length) {
+    const infos = await db.batch(names.map((n) => db.prepare(`PRAGMA table_info(${qident(n)})`)));
+    const stamped = names.filter((_, i) => (infos[i].results ?? []).some((c) => c.name === "hub_at"));
+    if (stamped.length) {
+      await db.batch(
+        stamped.map((n) =>
+          db.prepare(`CREATE INDEX IF NOT EXISTS ${qident(`${n}_hub_at`)} ON ${qident(n)} (hub_at)`),
+        ),
+      );
+    }
   }
   indexed.add(db);
 }
