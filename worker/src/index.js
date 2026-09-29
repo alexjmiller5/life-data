@@ -378,15 +378,29 @@ const ROUTES = {
 
   "/v1/cursor": async (body, db) => {
     await ensureHubAtIndexes(db);
+    const tables = body.tables ?? [];
+    if (!tables.length) return { max_hub_at: "", max_updated_at: "", tables: {} };
+    // Two batches, whatever the table count: a replica reads this every round,
+    // and one round trip per table made the read cost seconds on a large estate.
+    const infos = await db.batch(tables.map((t) => db.prepare(`PRAGMA table_info(${qident(t)})`)));
+    const maxes = await db.batch(
+      tables.map((t, i) => {
+        const col = (infos[i].results ?? []).some((c) => c.name === "hub_at") ? "hub_at" : "updated_at";
+        return db.prepare(`SELECT max(${col}) AS m FROM ${qident(t)}`);
+      }),
+    );
     let top = "";
-    for (const table of body.tables ?? []) {
-      const col = (await hasHubAt(db, table)) ? "hub_at" : "updated_at";
-      const row = await db.prepare(`SELECT max(${col}) AS m FROM ${qident(table)}`).first();
-      if (row?.m && row.m > top) top = row.m;
-    }
+    const marks = {};
+    tables.forEach((t, i) => {
+      const m = maxes[i].results?.[0]?.m ?? "";
+      marks[t] = m;
+      if (m > top) top = m;
+    });
+    // `tables` is each table's own newest arrival: a replica pulls only the
+    // tables whose mark reached its cursor instead of asking every table.
     // max_updated_at kept for clients from before the hub_at cursor: same value, so an
     // old client keeps syncing (full-pull semantics) until it is upgraded.
-    return { max_hub_at: top, max_updated_at: top };
+    return { max_hub_at: top, max_updated_at: top, tables: marks };
   },
 };
 

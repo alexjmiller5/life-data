@@ -613,12 +613,15 @@ class LocalHub:
         return {"upserted": len(accepted), "rejected": rejected, "hub_at": hub_at}
 
     def cursor(self, tables: list[str]) -> str:
-        top = ""
+        return self.marks(tables)[0]
+
+    def marks(self, tables: list[str]) -> tuple[str, dict[str, str]]:
+        marks = {}
         for t in tables:
             col = "hub_at" if self._has_hub_at(t) else "updated_at"
             rows = self._query(f"SELECT max({col}) AS m FROM {qi(t)}")
-            top = max(top, rows[0]["m"] or "")
-        return top
+            marks[t] = rows[0]["m"] or ""
+        return max(marks.values(), default=""), marks
 
     def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
         return {"derived": 0, "failed": []}  # derivations run on the hub only
@@ -772,7 +775,12 @@ class HttpHub:
         return result
 
     def cursor(self, tables: list[str]) -> str:
-        return self._post("/v1/cursor", {"tables": tables}).get("max_hub_at") or ""
+        return self.marks(tables)[0]
+
+    def marks(self, tables: list[str]) -> tuple[str, dict[str, str] | None]:
+        """The pull cursor plus each table's newest arrival (None from a hub too old to say)."""
+        out = self._post("/v1/cursor", {"tables": tables})
+        return out.get("max_hub_at") or "", out.get("tables")
 
     def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
         body = {"table": table, "ids": ids}
@@ -989,7 +997,8 @@ def _sync_locked(path: Path, hub) -> dict:
     hub_ddls = {e["ddl"] for e in hub_log}
     local_ddls = {e["ddl"] for e in local_log}
 
-    ddl_applied = hub.schema_push([e for e in local_log if e["ddl"] not in hub_ddls])
+    unsent = [e for e in local_log if e["ddl"] not in hub_ddls]
+    ddl_applied = hub.schema_push(unsent) if unsent else 0
     for entry in hub_log:
         if entry["ddl"] not in local_ddls:
             _apply_local_ddl(path, entry)
@@ -1021,7 +1030,14 @@ def _sync_locked(path: Path, hub) -> dict:
     # capture the pull cursor BEFORE pulling: the hub writes rows itself
     # (derivations on push and on cron), and anything it writes after this read
     # gets hub_at > pull_cursor, so the next sync still sees it.
-    pull_cursor = hub.cursor(tables)
+    # `marks` is each table's newest arrival on the hub: a table whose mark
+    # never reached our cursor has nothing for us, so it is not asked at all -
+    # a quiet round costs a handful of requests instead of one per table.
+    marks = None
+    if hasattr(hub, "marks"):
+        pull_cursor, marks = hub.marks(tables)
+    else:
+        pull_cursor = hub.cursor(tables)
 
     # Serialize with local writers before reading our clock and snapshot.
     # Never derive this checkpoint from rows: pulled revisions may be dated
@@ -1071,7 +1087,9 @@ def _sync_locked(path: Path, hub) -> dict:
     rejected = []
     for table in tables:
         cols, mine = columns[table], candidates[table]
-        remote = hub.rows_pull(table, cols, last_pull)
+        # the pull is inclusive (hub_at >= cursor), so the comparison is too
+        quiet = marks is not None and last_pull and marks.get(table, last_pull) < last_pull
+        remote = [] if quiet else hub.rows_pull(table, cols, last_pull)
         if remote:
             # `pulled` counts rows the LWW upsert actually APPLIED, not rows
             # received: the sync after a push re-reads its own rows (stamped

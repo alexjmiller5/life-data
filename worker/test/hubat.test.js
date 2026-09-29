@@ -285,3 +285,42 @@ test('stale row attachment gets a fresh arrival even when the row itself is unch
   const imported = (await ROUTES['/v1/rows/pull']({table:'history',columns:['id','updated_at','hub_at'],since}, db)).rows;
   expect(imported).toEqual([{id:event.id,updated_at:event.updated_at,hub_at:db.now}]);
 });
+
+test("cursor reports each table's own newest arrival so a replica pulls only what changed", async () => {
+  const db = await seed(new D1Shim());
+  const before = await ROUTES["/v1/cursor"]({ tables: ["people", "provenance"] }, db);
+  expect(before.tables).toEqual({ people: "", provenance: "" });
+  const push = await ROUTES["/v1/rows/push"]({ table: "people", columns: cols, rows: [row()] }, db);
+  const after = await ROUTES["/v1/cursor"]({ tables: ["people", "provenance"] }, db);
+  expect(after.tables.people).toBe(push.hub_at);
+  expect(after.tables.provenance).toBe("");
+  expect(after.max_hub_at).toBe(push.hub_at);
+});
+
+test("cursor asks the database in batches, not once per table", async () => {
+  const db = await seed(new D1Shim());
+  let batches = 0, singles = 0, batching = false;
+  const batch = db.batch.bind(db), prepare = db.prepare.bind(db);
+  db.batch = async (stmts) => {
+    batches += 1;
+    batching = true;
+    try { return await batch(stmts); } finally { batching = false; }
+  };
+  db.prepare = (sql) => {
+    const stmt = prepare(sql);
+    for (const verb of ["all", "first", "run"]) {
+      const inner = stmt[verb]?.bind(stmt);
+      // a statement the shim runs INSIDE a batch is not a round trip of its own
+      if (inner) stmt[verb] = (...a) => { if (!batching) singles += 1; return inner(...a); };
+    }
+    return stmt;
+  };
+  await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
+  await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
+  // after the one-time index pass, a cursor read is two batches and no per-table round trips
+  expect(batches).toBeGreaterThanOrEqual(2);
+  const warm = { batches, singles };
+  await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
+  expect(batches - warm.batches).toBe(2);
+  expect(singles - warm.singles).toBe(0);
+});

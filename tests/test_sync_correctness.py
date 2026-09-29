@@ -314,7 +314,7 @@ def test_cursor_and_binding_commit_roll_back_together(tmp_path):
 
 def test_table_created_before_snapshot_cannot_be_skipped_by_checkpoint(estate, clock, monkeypatch):
     path, hub = estate
-    cursor = hub.cursor
+    cursor = hub.marks
 
     def create_after_cursor(tables):
         result = cursor(tables)
@@ -328,7 +328,7 @@ def test_table_created_before_snapshot_cannot_be_skipped_by_checkpoint(estate, c
 
     before = state(path)
     with monkeypatch.context() as m:
-        m.setattr(hub, "cursor", create_after_cursor)
+        m.setattr(hub, "marks", create_after_cursor)
         try:
             life.sync(path, hub)
         except sqlite3.OperationalError as exc:
@@ -388,3 +388,54 @@ def test_observed_clock_rollback_recovers_even_if_clock_catches_up_before_retry(
         assert not life.sync(path, hub)["rejected"]
     assert "rollback" in ids(hub)
     assert state(path)["checkpoint_version"] == "2"
+
+
+class Counting(life.LocalHub):
+    """A hub that records which tables a replica actually pulled."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.pulled = []
+
+    def rows_pull(self, table, columns, since):
+        self.pulled.append(table)
+        return super().rows_pull(table, columns, since)
+
+
+def test_quiet_round_pulls_only_tables_the_hub_reports_changed(tmp_path, clock):
+    path = life.init(tmp_path / "replica.db")
+    other = life.init(tmp_path / "other.db")
+    for name in ("items", "notes", "places"):
+        life.create_table(path, name, ["name:text"])
+    hub = Counting(tmp_path / "hub.db")
+    life.sync(path, hub)
+    life.sync(path, hub)  # the first round's cursor predates its own push; the second binds it
+    life.sync(other, hub)  # a second replica joins with the same schema
+    clock[0] = T1
+    life.insert_rows(other, "notes", [{"id": "n1", "name": "from the other replica"}])
+    life.sync(other, hub)
+
+    hub.pulled.clear()
+    clock[0] = T2
+    out = life.sync(path, hub)
+    assert out["pulled"] == 1
+    assert "notes" in hub.pulled  # the changed table is pulled
+    assert "items" not in hub.pulled and "places" not in hub.pulled  # quiet tables are not
+    assert life.execute_sql(path, "SELECT name FROM notes") == [{"name": "from the other replica"}]
+
+
+def test_first_sync_and_hubs_without_marks_still_pull_everything(tmp_path, clock, monkeypatch):
+    path = life.init(tmp_path / "replica.db")
+    for name in ("items", "notes"):
+        life.create_table(path, name, ["name:text"])
+    hub = Counting(tmp_path / "hub.db")
+    life.sync(path, hub)  # first sync: no cursor yet
+    assert {"items", "notes"} <= set(hub.pulled)
+
+    life.sync(path, hub)
+    hub.pulled.clear()
+    marks = hub.marks
+    # an older hub answers with the maximum only
+    monkeypatch.setattr(hub, "marks", lambda tables: (marks(tables)[0], None))
+    life.sync(path, hub)
+    assert {"items", "notes"} <= set(hub.pulled)
