@@ -656,97 +656,47 @@ async function handleArchiveGet(request, env, url) {
   return new Response(obj.body, { headers });
 }
 
+// --- CORS: browser clients on the origins the owner lists in CORS_ORIGINS -----
+//
+// The API authenticates with a bearer token, never cookies, so CORS only has to
+// let a listed app origin read responses. Unlisted origins get nothing; the
+// Access-protected /login pages are same-origin forms and never get CORS.
+function corsOrigin(request, env) {
+  const origin = request.headers.get("Origin");
+  if (!origin) return null;
+  const listed = (env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return listed.includes(origin) ? origin : null;
+}
+
+function withCors(response, origin) {
+  const out = new Response(response.body, response);
+  out.headers.set("Access-Control-Allow-Origin", origin);
+  out.headers.append("Vary", "Origin");
+  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range");
+  return out;
+}
+
+function preflight(request, env) {
+  const origin = corsOrigin(request, env);
+  if (!origin) return json({ error: "origin not allowed" }, 403);
+  return withCors(new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, If-None-Match, Range",
+      "Access-Control-Max-Age": "86400",
+    },
+  }), origin);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/health") return json({ ok: true });
-
-    if (loginPath(url.pathname)) {
-      try {
-        return await handleLogin(request, env, ctx, url);
-      } catch {
-        return json({ error: "login unavailable" }, 500);
-      }
-    }
-
-    const tenant = await authenticate(request, env, ctx);
-    if (!tenant) {
-      const session = url.pathname.startsWith("/v1/session");
-      return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
-    }
-    if (url.pathname === "/v1/session") return handleSession(request, tenant);
-    if (!allowed(url.pathname, request.method, tenant.scopes)) {
-      return json({ error: "insufficient scope" }, 403);
-    }
-
-    try {
-      if (url.pathname.startsWith("/v1/files/")) {
-        if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
-        if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
-        let key;
-        try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
-        const object = await tenant.archive.put(key, request.body, {
-          httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" },
-        });
-        return json({ key, etag: object.httpEtag }, 201);
-      }
-      if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
-        const route = TOKEN_ROUTES[url.pathname];
-        if (!route) return json({ error: "not found" }, 404);
-        return json(await route(await request.json(), tenant));
-      }
-      if (url.pathname === "/v1/archive/query" && request.method === "POST") {
-        // proxy to R2 SQL with the hub's own service credential, so clients
-        // never hold a provider token. Table: life.events (stream, ingested_at, record.*)
-        const { sql } = await request.json();
-        const resp = await fetch(
-          `https://api.sql.cloudflarestorage.com/api/v1/accounts/${env.ACCOUNT_ID}/r2-sql/query/${env.ARCHIVE_BUCKET}`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${env.R2_SQL_TOKEN}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ query: sql }),
-          }
-        );
-        return new Response(resp.body, {
-          status: resp.status,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (url.pathname === "/v1/catalog" && request.method === "GET") {
-        await ensureReady(tenant.db);
-        const out = {};
-        for (const t of ["catalog_tables", "catalog_properties", "catalog_rules"]) {
-          const exists = await tenant.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(t).first();
-          const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${qident(t)} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
-          out[t.replace("catalog_", "")] = results ?? [];
-        }
-        const text = JSON.stringify(out);
-        const etag = `"${(await sha256hex(text)).slice(0, 32)}"`;
-        if (request.headers.get("If-None-Match") === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
-        return new Response(text, { headers: { "Content-Type": "application/json", ETag: etag } });
-      }
-      if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
-      if (
-        url.pathname.startsWith("/v1/archive/") &&
-        (request.method === "GET" || request.method === "HEAD")
-      ) {
-        return await handleArchiveGet(request, env, url);
-      }
-      if (!(url.pathname in ROUTES) || request.method !== "POST") {
-        return json({ error: "not found" }, 404);
-      }
-      if (url.pathname === "/v1/backup") {
-        return json({ keys: await runBackup(env, new Date()) });
-      }
-      await ensureReady(tenant.db);
-      const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
-      return out instanceof Response ? out : json(out);
-    } catch (e) {
-      return json({ error: String(e) }, 500);
-    }
+    if (loginPath(url.pathname)) return handle(request, env, ctx, url);
+    if (request.method === "OPTIONS") return preflight(request, env);
+    const response = await handle(request, env, ctx, url);
+    const origin = corsOrigin(request, env);
+    return origin ? withCors(response, origin) : response;
   },
 
   async scheduled(event, env, ctx) {
@@ -755,5 +705,96 @@ export default {
     else ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
   },
 };
+
+async function handle(request, env, ctx, url) {
+  if (url.pathname === "/health") return json({ ok: true });
+
+  if (loginPath(url.pathname)) {
+    try {
+      return await handleLogin(request, env, ctx, url);
+    } catch {
+      return json({ error: "login unavailable" }, 500);
+    }
+  }
+
+  const tenant = await authenticate(request, env, ctx);
+  if (!tenant) {
+    const session = url.pathname.startsWith("/v1/session");
+    return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
+  }
+  if (url.pathname === "/v1/session") return handleSession(request, tenant);
+  if (!allowed(url.pathname, request.method, tenant.scopes)) {
+    return json({ error: "insufficient scope" }, 403);
+  }
+
+  try {
+    if (url.pathname.startsWith("/v1/files/")) {
+      if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
+      if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
+      let key;
+      try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
+      const object = await tenant.archive.put(key, request.body, {
+        httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" },
+      });
+      return json({ key, etag: object.httpEtag }, 201);
+    }
+    if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
+      const route = TOKEN_ROUTES[url.pathname];
+      if (!route) return json({ error: "not found" }, 404);
+      return json(await route(await request.json(), tenant));
+    }
+    if (url.pathname === "/v1/archive/query" && request.method === "POST") {
+      // proxy to R2 SQL with the hub's own service credential, so clients
+      // never hold a provider token. Table: life.events (stream, ingested_at, record.*)
+      const { sql } = await request.json();
+      const resp = await fetch(
+        `https://api.sql.cloudflarestorage.com/api/v1/accounts/${env.ACCOUNT_ID}/r2-sql/query/${env.ARCHIVE_BUCKET}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.R2_SQL_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ query: sql }),
+        }
+      );
+      return new Response(resp.body, {
+        status: resp.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.pathname === "/v1/catalog" && request.method === "GET") {
+      await ensureReady(tenant.db);
+      const out = {};
+      for (const t of ["catalog_tables", "catalog_properties", "catalog_rules"]) {
+        const exists = await tenant.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(t).first();
+        const { results } = exists ? await tenant.db.prepare(`SELECT * FROM ${qident(t)} WHERE deleted_at IS NULL ORDER BY id`).all() : { results: [] };
+        out[t.replace("catalog_", "")] = results ?? [];
+      }
+      const text = JSON.stringify(out);
+      const etag = `"${(await sha256hex(text)).slice(0, 32)}"`;
+      if (request.headers.get("If-None-Match") === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
+      return new Response(text, { headers: { "Content-Type": "application/json", ETag: etag } });
+    }
+    if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
+    if (
+      url.pathname.startsWith("/v1/archive/") &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      return await handleArchiveGet(request, env, url);
+    }
+    if (!(url.pathname in ROUTES) || request.method !== "POST") {
+      return json({ error: "not found" }, 404);
+    }
+    if (url.pathname === "/v1/backup") {
+      return json({ keys: await runBackup(env, new Date()) });
+    }
+    await ensureReady(tenant.db);
+    const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
+    return out instanceof Response ? out : json(out);
+  } catch (e) {
+    return json({ error: String(e) }, 500);
+  }
+}
 
 export { ROUTES, allowed, validatePush, TOKENS_TABLE };
