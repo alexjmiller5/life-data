@@ -1,0 +1,18 @@
+{
+  "name": "life-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The shared core every life-data client runs: catalog validation, sync, the write path and the view model, with platform adapters injected.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.2",
+    "typescript": "5"
+  }
+}

@@ -1,109 +1,9 @@
-// Mirror of life_data.catalog.validate_row / validate_push. The shared
-// fixture in tests/fixtures/validation-cases.json is the contract for
-// validateRow; keep the two implementations in step.
+// Hub-side validation: the pure row validator lives in life-core (shared with
+// every UI client); this module adds what needs D1 - resolving stored rows,
+// refs and options before calling it, and the provenance hashes.
+import { allowed, asList, ident, qident, same, validEditTimestamp, validateRow } from "../../core/src/validate.ts";
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-export function validEditTimestamp(value) {
-  if (typeof value !== "string" || !DATETIME_RE.test(value) || value.startsWith("0000")) return false;
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
-}
-
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-const PHONE_RE = /^\+?[0-9 ()\-.]{5,}$/;
-
-const empty = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
-
-function asList(v) {
-  if (typeof v === "string") {
-    try { v = JSON.parse(v); } catch { return null; }
-  }
-  return Array.isArray(v) ? v : null;
-}
-
-function same(a, b) {
-  const la = asList(a), lb = asList(b);
-  if (la && lb) return JSON.stringify(la) === JSON.stringify(lb);
-  return a === b || (a == null && b == null);
-}
-
-export function allowed(p, extraOptions) {
-  const vals = (p.options ?? []).map((o) => o.v);
-  if (p.options_sql && extraOptions) for (const x of extraOptions(p)) if (!vals.includes(x)) vals.push(x);
-  return vals;
-}
-
-// Spec order: deprecated, derived, immutable, required, type (incl.
-// cardinality), pattern, ref/multi_ref existence. First failure per column
-// wins.
-//
-// `touched` (a Set, or null for "every column") names the columns a partial
-// write actually carries; `after` is then the MERGED row. Whole-row rules
-// (required) still see every column - that is the point of merging - but the
-// per-value checks (type/options/pattern/ref, and the deprecated/derived/
-// immutable protections) only judge what the writer wrote: a stored value is
-// not this write's claim, and re-checking it would reject a partial update
-// over any legacy or hub-written cell.
-export function validateRow(props, before, after, { inDerive = new Set(), refOk = null, extraOptions = null, touched = null } = {}) {
-  const out = [];
-  for (const p of props) {
-    const col = p.col;
-    const v = after[col];
-    const was = before ? before[col] : null;
-    const changed = before == null ? !empty(v) : !same(v, was);
-    const label = p.label ?? col;
-    const fail = (rule, message) => out.push({ col, rule, message });
-
-    if (touched && !touched.has(col)) {
-      if (p.required && empty(v)) fail("required", `${label} is required.`);
-      continue;
-    }
-    if (p.deprecated && !empty(v)) { fail("deprecated", `${col} is deprecated. Never write it.`); continue; }
-    if (p.derived_by && changed && !inDerive.has(col)) { fail("derived", `${col} is derived by ${p.derived_by} on the hub. Never write it.`); continue; }
-    if (p.immutable && before != null && changed) { fail("immutable", `${col} is set once and never changed.`); continue; }
-    if (p.required && empty(v)) { fail("required", `${label} is required.`); continue; }
-    if (empty(v)) continue;
-
-    const t = p.type ?? "text";
-    if (t === "number" || t === "int") {
-      const n = Number(v);
-      if (typeof v === "boolean" || v === "" || !Number.isFinite(n)) { fail("type", `${label} must be a number.`); continue; }
-      if (t === "int" && !Number.isInteger(n)) { fail("type", `${label} must be an integer.`); continue; }
-    } else if (t === "bool" && ![0, 1, true, false].includes(v)) { fail("type", `${label} must be 0 or 1.`); continue; }
-    else if (t === "date" && !(typeof v === "string" && DATE_RE.test(v))) { fail("type", `${label} must be YYYY-MM-DD.`); continue; }
-    else if (t === "datetime" && !(typeof v === "string" && DATETIME_RE.test(v))) { fail("type", `${label} must be ISO-8601 UTC with milliseconds.`); continue; }
-    else if (t === "json") {
-      try { typeof v === "string" ? JSON.parse(v) : JSON.stringify(v); } catch { fail("type", `${label} must be JSON.`); continue; }
-    } else if (t === "url" && !(typeof v === "string" && /^https?:\/\//.test(v))) { fail("type", `${label} must be an http(s) URL.`); continue; }
-    else if (t === "email" && !(typeof v === "string" && EMAIL_RE.test(v))) { fail("type", `${label} must be an email address.`); continue; }
-    else if (t === "phone" && !(typeof v === "string" && PHONE_RE.test(v))) { fail("type", `${label} must be a phone number.`); continue; }
-    else if (t === "select") {
-      const a = allowed(p, extraOptions);
-      if (a.length && !a.includes(v)) { fail("options", `${v} is not an option for ${col}. Allowed: ${a.join(", ")}`); continue; }
-    } else if (t === "multi_select" || t === "multi_ref") {
-      const items = asList(v);
-      if (!items) { fail("type", `${label} must be a JSON array.`); continue; }
-      if (t === "multi_select") {
-        const a = allowed(p, extraOptions);
-        const bad = items.filter((x) => a.length && !a.includes(x));
-        if (bad.length) { fail("options", `Not options for ${col}: ${bad.join(", ")}. Allowed: ${a.join(", ")}`); continue; }
-      }
-      if (p.min_items && items.length < p.min_items) { fail("min_items", `${label} needs at least ${p.min_items}.`); continue; }
-      if (p.max_items && items.length > p.max_items) { fail("max_items", `${label} allows at most ${p.max_items}.`); continue; }
-    }
-
-    // Pattern runs before ref/multi_ref existence checks (matches Python).
-    if (p.pattern && typeof v === "string" && !new RegExp(`^(?:${p.pattern})$`).test(v)) { fail("pattern", `${label} is not in the expected form.`); continue; }
-
-    if (t === "ref" && refOk && p.ref_table && !refOk(p.ref_table, v)) { fail("ref", `No ${p.ref_table} row with id ${v}.`); continue; }
-    if (t === "multi_ref" && refOk && p.ref_table) {
-      const missing = (asList(v) ?? []).filter((x) => !refOk(p.ref_table, x));
-      if (missing.length) { fail("ref", `No ${p.ref_table} row: ${missing.join(", ")}`); continue; }
-    }
-  }
-  return out;
-}
+export { allowed, ident, qident, validEditTimestamp, validateRow };
 
 // provenance is engine-created but validated like a user table: clients write edges into it.
 const ENGINE_TABLES = new Set(["catalog_tables", "catalog_properties", "catalog_rules", "catalog_log", "history"]);
@@ -149,19 +49,6 @@ export async function valueHash(db, typeOf, col, value) {
   return sha256hex(Object.values(await stmt.first())[0]);
 }
 
-// Every identifier interpolated into SQL passes through here first. `ident`
-// validates and returns the bare name (it is also used as a bound VALUE, e.g.
-// in provenance ids); `qident` is what goes into SQL — quoted, so a column
-// named `cast` or `order` is legal.
-const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
-export function ident(name) {
-  if (!SAFE_IDENT.test(name)) throw new Error(`unsafe identifier: ${name}`);
-  return name;
-}
-
-export function qident(name) {
-  return `"${ident(name)}"`;
-}
 
 // Pre-resolve every lookup the pure validator needs (D1 is async), then validate.
 export async function validatePush(db, table, rows, storageDb = null, insertOnly = false) {
