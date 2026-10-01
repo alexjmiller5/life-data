@@ -24,6 +24,8 @@ CATALOG_TABLES = {
         "owner:text",
         "consumers:text",
         "description:text",
+        # the column whose value titles a row in a UI (pickers, search, links)
+        "display:text",
     ],
     "catalog_properties": [
         "tbl:text",
@@ -255,6 +257,16 @@ def _ensure_catalog(path: Path) -> None:
         missing = [t for t in CATALOG_TABLES if not _table_exists(conn, t)]
     for t in missing:
         pkg.create_table(path, t, CATALOG_TABLES[t])
+    # Columns added to an engine table after estates existed: logged DDL, so the
+    # first replica to upgrade carries them to the hub and every other replica
+    # (a second replica's duplicate ALTER is skipped on replay).
+    for t, specs in CATALOG_TABLES.items():
+        have = {r["name"] for r in pkg.execute_sql(path, f"PRAGMA table_info({qi(t)})")}
+        for spec in specs:
+            col, typ = spec.split(":", 1)
+            if col not in have:
+                storage = STORAGE.get(typ.rstrip("!").split("(", 1)[0], typ.upper())
+                pkg.execute_sql(path, f"ALTER TABLE {qi(t)} ADD COLUMN {qi(col)} {storage}")
     if "provenance" in missing:
         for col, fields in PROVENANCE_PROPERTIES.items():
             set_property(path, "provenance", col, **fields)
@@ -408,6 +420,11 @@ def rm_rule(path: Path, rule_id: str) -> None:
 
 
 def set_table(path: Path, table_id: str, **fields) -> dict:
+    if fields.get("display"):
+        with _pkg().connect(path) as conn:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({qi(table_id)})")}
+        if fields["display"] not in cols:
+            raise ValueError(f"{table_id} has no column {fields['display']!r} to title its rows")
     return _upsert(path, "catalog_tables", table_id, fields)
 
 
@@ -1522,6 +1539,8 @@ def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
                 lines.append(f"- **{label}:** {meta[k]}")
         if meta.get("consumers"):
             lines.append(f"- **Read by:** {', '.join(json.loads(meta['consumers']))}")
+        if meta.get("display"):
+            lines.append(f"- **Row title:** `{meta['display']}`")
         if meta.get("description"):
             lines += ["", meta["description"]]
         props = properties(conn, t)

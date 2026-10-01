@@ -1122,3 +1122,31 @@ def test_markdown_property_type_is_accepted_by_property_set(db):
     set_property(db, "notes", "body", type="markdown")
     (prop,) = [p for p in properties(connect(db), "notes") if p["col"] == "body"]
     assert prop["type"] == "markdown"
+
+
+def test_set_table_display_names_the_column_that_titles_a_row(db):
+    create_table(db, "places", ["name:text!", "city:text"])
+    set_table(db, "places", display="name")
+    t = execute_sql(db, "SELECT display FROM catalog_tables WHERE id='places'")[0]
+    assert t["display"] == "name"
+    with connect(db) as conn:
+        assert "- **Row title:** `name`" in doc(conn, "places")
+
+
+def test_set_table_display_rejects_a_column_the_table_does_not_have(db):
+    create_table(db, "places", ["name:text!"])
+    with pytest.raises(ValueError, match="no column"):
+        set_table(db, "places", display="title")
+
+
+def test_an_estate_without_the_display_column_gains_it_through_logged_ddl(db):
+    create_table(db, "places", ["name:text!"])
+    ensure_catalog(db)
+    with connect(db) as conn:
+        conn.execute("ALTER TABLE catalog_tables DROP COLUMN display")
+        conn.execute("DELETE FROM _schema_log WHERE ddl LIKE '%display%'")
+    set_table(db, "places", display="name")
+    cols = [r["name"] for r in execute_sql(db, "PRAGMA table_info(catalog_tables)")]
+    assert "display" in cols
+    ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
+    assert any("ADD COLUMN" in d and "display" in d for d in ddls)
