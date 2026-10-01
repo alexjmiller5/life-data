@@ -171,6 +171,7 @@ PROVENANCE_PROPERTIES = {
 
 TYPES = {
     "text",
+    "markdown",
     "number",
     "int",
     "bool",
@@ -187,6 +188,7 @@ TYPES = {
 }
 STORAGE = {
     "text": "TEXT",
+    "markdown": "TEXT",
     "number": "REAL",
     "int": "INTEGER",
     "bool": "INTEGER",

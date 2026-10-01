@@ -169,14 +169,18 @@ enforced structurally rather than by an asserted writer identity.
 
 ## Type system
 
-`text` `number` `int` `bool` `date` `datetime` `json` `select`
+`text` `markdown` `number` `int` `bool` `date` `datetime` `json` `select`
 `multi_select` `ref` `multi_ref` `url` `email` `phone`
+
+`markdown` is stored as TEXT and validated like `text`; it marks a column as a
+page body, so a UI renders it in a document editor instead of a cell.
 
 Notion property mapping, used when migrating a database:
 
 | Notion | life-data |
 |---|---|
-| title, rich_text | `text` (long-form body stays in Notion) |
+| title, rich_text | `text` |
+| page body | `markdown` |
 | number | `number` / `int` |
 | select, status | `select` |
 | multi_select | `multi_select`, JSON array column |

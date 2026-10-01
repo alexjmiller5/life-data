@@ -94,5 +94,9 @@
   {"name": "partial update: an untouched immutable column is not a change", "properties": [{"tbl": "t", "col": "born", "type": "date", "immutable": 1}, {"tbl": "t", "col": "note", "type": "text"}],
    "before": {"id": "a", "born": "2026-01-01", "note": null}, "after": {"id": "a", "born": "2026-01-01", "note": "hi"}, "touched": ["id", "note"], "expect": []},
   {"name": "partial update: a touched immutable column is still rejected", "properties": [{"tbl": "t", "col": "born", "type": "date", "immutable": 1}],
-   "before": {"id": "a", "born": "2026-01-01"}, "after": {"id": "a", "born": "2026-02-02"}, "touched": ["id", "born"], "expect": [{"col": "born", "rule": "immutable"}]}
+   "before": {"id": "a", "born": "2026-01-01"}, "after": {"id": "a", "born": "2026-02-02"}, "touched": ["id", "born"], "expect": [{"col": "born", "rule": "immutable"}]},
+  {"name": "markdown accepts a multi-line body", "properties": [{"tbl": "t", "col": "body", "type": "markdown"}],
+   "before": null, "after": {"id": "a", "body": "# Title\n\n- one\n- two\n"}, "expect": []},
+  {"name": "required markdown rejects an empty body", "properties": [{"tbl": "t", "col": "body", "type": "markdown", "required": 1}],
+   "before": null, "after": {"id": "a", "body": ""}, "expect": [{"col": "body", "rule": "required"}]}
 ]

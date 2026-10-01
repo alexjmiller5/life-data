@@ -1104,3 +1104,21 @@ def test_history_table_appears_lazily_on_an_estate_that_predates_it(db):
     assert [(r["old"], r["new"]) for r in _hist(db)] == [("a", "b")]
     ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
     assert len([d for d in ddls if 'CREATE TABLE "history"' in d]) == 2, "re-created via logged DDL"
+
+
+def test_markdown_type_stores_text_and_keeps_numeric_looking_bodies_as_text(db):
+    create_table(db, "notes", ["title:text!", "body:markdown"])
+    cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(notes)")}
+    assert cols["body"] == "TEXT"
+    insert_rows(db, "notes", [{"id": "n1", "title": "t", "body": "123"}])
+    row = execute_sql(db, "SELECT typeof(body) AS t FROM notes WHERE id = 'n1'")[0]
+    assert row["t"] == "text"
+    (prop,) = [p for p in properties(connect(db), "notes") if p["col"] == "body"]
+    assert prop["type"] == "markdown"
+
+
+def test_markdown_property_type_is_accepted_by_property_set(db):
+    create_table(db, "notes", ["title:text!", "body:text"])
+    set_property(db, "notes", "body", type="markdown")
+    (prop,) = [p for p in properties(connect(db), "notes") if p["col"] == "body"]
+    assert prop["type"] == "markdown"
