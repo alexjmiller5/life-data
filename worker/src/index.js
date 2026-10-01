@@ -131,6 +131,7 @@ function allowed(pathname, method, scopes) {
     pathname === "/v1/rows/pull" ||
     pathname === "/v1/cursor" ||
     pathname === "/v1/catalog" ||
+    pathname === "/v1/stats" ||
     ((method === "GET" || method === "HEAD") &&
       (pathname.startsWith("/v1/streams/") || pathname.startsWith("/v1/archive/")));
   if (readOnly) return scopes.includes("full") || scopes.includes("tables:read");
@@ -386,6 +387,38 @@ const ROUTES = {
   // therefore testable. Handled specially in fetch() (needs env, not just db).
   "/v1/backup": null,
 
+  // Row counts per table, so a client can apply a size rule (skip syncing the
+  // biggest tables) without counting anything itself. count(*) reads every row
+  // on D1, so the answer is cached in plumbing and recounted at most daily.
+  "/v1/stats": async (_body, db) => {
+    await db.prepare(
+      "CREATE TABLE IF NOT EXISTS _table_stats (tbl TEXT PRIMARY KEY, rows INTEGER NOT NULL, computed_at TEXT NOT NULL)",
+    ).run();
+    const fresh = await db.prepare(
+      `SELECT max(computed_at) AS at FROM _table_stats WHERE computed_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')`,
+    ).first();
+    if (!fresh?.at) {
+      const { results } = await db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\'")
+        .all();
+      const names = (results ?? []).map((r) => r.name);
+      const counts = names.length
+        ? await db.batch(names.map((n) => db.prepare(`SELECT count(*) AS n FROM ${qident(n)}`)))
+        : [];
+      await db.batch([
+        db.prepare("DELETE FROM _table_stats"),
+        ...names.map((n, i) =>
+          db.prepare(`INSERT INTO _table_stats (tbl, rows, computed_at) VALUES (?, ?, ${NOW})`).bind(n, counts[i].results?.[0]?.n ?? 0),
+        ),
+      ]);
+    }
+    const { results } = await db.prepare("SELECT tbl, rows, computed_at FROM _table_stats ORDER BY tbl").all();
+    const rows = results ?? [];
+    return {
+      computed_at: rows.reduce((m, r) => (r.computed_at > m ? r.computed_at : m), ""),
+      tables: Object.fromEntries(rows.map((r) => [r.tbl, r.rows])),
+    };
+  },
   "/v1/cursor": async (body, db) => {
     await ensureHubAtIndexes(db);
     const tables = body.tables ?? [];
