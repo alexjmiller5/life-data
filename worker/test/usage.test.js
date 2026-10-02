@@ -384,3 +384,33 @@ test("a capped deployment never answers a preflight with the cap error", async (
   expect(capped.status).toBe(429);
   expect(capped.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN); // the browser can read why
 });
+
+// --- robustness to routes and handlers added later --------------------------------
+
+test("the cap covers every /v1 route except the ones that never read the data D1", async () => {
+  const env = environment({ USAGE_LIMITS: JSON.stringify({ d1_rows_read: { cap: 1 } }) });
+  await seedUsage(env, { rows_read: 5 });
+  // a route added after this wrapper (e.g. a per-table rows API) is capped by default
+  expect((await call(env, "/v1/tables/products/rows", { method: "POST", body: {} })).status).toBe(429);
+  for (const [path, init] of [
+    ["/v1/session", {}],
+    ["/v1/tokens/list", { method: "POST", body: {} }],
+    ["/v1/files/a/b.txt", {}],
+    ["/v1/streams/x/latest", {}],
+  ]) {
+    expect([path, (await call(env, path, init)).status === 429]).toEqual([path, false]);
+  }
+});
+
+test("a capped deployment refuses even a token whose scope the route would reject", async () => {
+  const env = environment({ USAGE_LIMITS: JSON.stringify({ d1_rows_read: { cap: 1 } }) });
+  const reader = await addToken(env, "svc:narrow", "streams:append");
+  await seedUsage(env, { rows_read: 5 });
+  expect((await call(env, "/v1/rows/pull", { method: "POST", body: { table: "t" }, token: reader })).status).toBe(429);
+});
+
+test("handlers the hub adds later pass through instead of being dropped", () => {
+  const queue = async () => {};
+  const wrapped = withUsage({ fetch: async () => new Response(), scheduled: async () => {}, queue }, { authenticate: async () => null });
+  expect(wrapped.queue).toBe(queue);
+});

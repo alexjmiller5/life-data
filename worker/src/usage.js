@@ -29,9 +29,11 @@ const DEFAULT_LIMITS = {
 };
 const CUMULATIVE = ["d1_rows_read", "d1_rows_written", "requests"];
 
-// D1 work a capped deployment refuses; everything else (usage, the feed,
-// login, session, tokens, files and streams on R2) keeps working.
-const CAPPED_ROUTE = /^\/v1\/(rows|schema|cursor|catalog|derive|stats|backup)(\/|$)/;
+// A capped deployment refuses every authenticated /v1 request except these,
+// which never read the data D1 (usage and the feed, session, token admin, and
+// files/streams/archive on R2). Deny by default, so a route added later is
+// capped unless it is listed here.
+const UNCAPPED_ROUTE = /^\/v1\/(usage|notifications|session|tokens|files|streams|archive)(\/|$)/;
 
 export function limits(env) {
   let over = {};
@@ -459,8 +461,11 @@ async function ownRoute(request, url, env, tenant) {
   return json({ error: "not found" }, 404);
 }
 
-export function withUsage(hub, { authenticate, allowed = () => true, sweepCron }) {
+export function withUsage(hub, { authenticate, sweepCron }) {
   return {
+    // Handlers added to the hub later (queue, email, ...) pass through
+    // unmetered until they are wrapped here, instead of being dropped.
+    ...hub,
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
       return measure(env, ctx, async (menv, mctx, meter) => {
@@ -476,7 +481,9 @@ export function withUsage(hub, { authenticate, allowed = () => true, sweepCron }
           if (url.pathname === "/v1/usage" || url.pathname.startsWith("/v1/notifications")) {
             return cors(request, env, await ownRoute(request, url, menv, tenant));
           }
-          if (tenant && CAPPED_ROUTE.test(url.pathname) && allowed(url.pathname, request.method, tenant.scopes)) {
+          // Not gated on the route's scope check: a finer-grained check added
+          // later (e.g. one that reads the request body) must not bypass the cap.
+          if (tenant && !UNCAPPED_ROUTE.test(url.pathname)) {
             const cap = await capState(env, new Date());
             if (cap) return cors(request, env, capResponse(cap));
           }

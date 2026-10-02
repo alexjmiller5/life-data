@@ -401,11 +401,16 @@ reports this deployment's own consumption only, never the provider account's.
   (`usage:<period-start-date>:<metric>:<pct|cap>`) is the dedupe key, so
   concurrent isolates insert once and a future push reuses the same id.
   Read state is deployment-wide.
-- **Cap.** At a D1 metric's cap the sync routes (`/v1/rows|schema|cursor|
-  catalog|derive|stats|backup`) answer 429 `usage_cap` with `Retry-After`
-  until the period resets; usage, the feed, login, session, tokens, files and
-  streams stay up. The sweep cron is skipped; the backup still runs. Each
-  isolate rereads period totals every 30 s and after its own flushes.
+- **Cap.** At a D1 metric's cap every authenticated `/v1` route answers 429
+  `usage_cap` with `Retry-After` until the period resets, except the ones that
+  never read the data D1 (`UNCAPPED_ROUTE`: usage, notifications, session,
+  tokens, files, streams, archive). Deny by default: a new D1 route is capped
+  unless listed, and the cap is not gated on the route's scope check, so a
+  finer-grained grant cannot bypass it. The sweep cron is skipped; the backup
+  still runs. Each isolate rereads period totals every 30 s and after its own
+  flushes. `withUsage` wraps `fetch` and `scheduled` and passes any other
+  handler through unmetered; wrap a new handler (queue, ...) there, and name
+  a new cron's principal there (any non-sweep cron is `system:backup` today).
 - **Endpoints.** `GET /v1/usage` and `GET /v1/notifications?after=<seq>&limit=<1-200>`
   need `full`, `tables:read` or admin; `POST /v1/notifications/read`
   `{ids:[...]}` or `{through: seq}` needs `full`/admin and returns the unread
