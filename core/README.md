@@ -28,6 +28,28 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
 - `readCatalog` decodes properties. `compileView` produces parameterized,
   catalog-scoped SQL with filtering, sorting and bounded pages. `contains`
   remains a literal substring filter (or exact JSON array membership).
+- `listViews(driver, { table, trash? })` reads shared saved definitions and
+  returns `{ views, unavailable }`. Each record carries `id`, `name`, `tbl`,
+  `updated_at`, `deleted_at`, `definition`, `view` and `unavailable`. Malformed
+  definitions, unknown versions, missing tables and removed columns disable
+  that record without failing the whole list or modifying stored data.
+- `saveView(driver, { table, name, definition, id?, expectedUpdatedAt? })`
+  creates or edits through `writeRow`; an existing ID requires its selected
+  revision. `deleteView(driver, { id, expectedUpdatedAt })` tombstones without
+  requiring a readable definition. Both retain normal write restrictions,
+  validation, history, pending markers and stale-edit rollback. Deletes still
+  require matching storage and a valid revision. Missing/colliding storage is
+  a setup error; core never provisions, adopts or repairs it automatically.
+- Saved definitions are `{ version: 1, columns?, filters?, sort?, search?,
+  trash?, widths? }`. Columns must be distinct; widths map known columns to
+  positive finite numbers. Filters/sorting/search use the existing core view
+  compiler. No table name, pagination, default selection or private device
+  preferences are stored in the JSON. The default remains a transient
+  All records view using catalog columns.
+- **`definition.columns` becomes SQL projection in the returned `view`.** It
+  can omit `id`, `updated_at` and hidden fields. For visual layout only, omit
+  `columns` when calling `rows`; otherwise fetch a full row by ID before
+  editing. Never populate a full-record editor from a partial grid row.
 - `search(driver, { text, table?, limit?, offset? })` searches the local replica
   with FTS5 and returns `{ table, id, label, excerpt }[]`. `View.search` uses
   the same index before filtering, sorting and paging. Search ANDs literal
@@ -86,6 +108,8 @@ record OLD/NEW IDs in the same transaction as writes, including pulls and
 independent Python writes. They invoke no FTS functions in those writers.
 Before searching, core reconciles catalog/schema fingerprints, drains dirty
 rows in batches, and reads results under one BEGIN IMMEDIATE transaction.
+Queued IDs and actual returned IDs are both replaced in the binary-keyed
+cache, so source collations such as NOCASE cannot collide across batches.
 Failed drains roll back and retain their queue; missing cache components or
 triggers cause a rebuild. Dropped/renamed tables and catalog changes purge or
 rebuild affected entries. None of this local DDL is logged or synced, and cache
@@ -105,8 +129,43 @@ the CLI's canonical timestamp triggers and exact core search queue triggers are
 supported. Missing local references require their
 table to be included and synced. Skipped tables have no remote browsing API in
 this package yet. Sync snapshots pending rows in memory; very large full
-replicas will need snapshots staged in temporary tables. Saved-view storage is
-not implemented in this package; enrollment remains a host integration.
+replicas will need snapshots staged in temporary tables. Enrollment remains a
+host integration.
+
+Shared saved-view storage is an ordinary synced `views` table, with
+`name:text!`, `tbl:ref!` (to `catalog_tables`) and `definition:json!`, plus the
+standard ID/timestamp/tombstone/hub columns and canonical timestamp trigger.
+The catalog table entry has `kind=table`, `display=name`. Property
+`views.definition` carries `source=life-core`, `source_ref=saved-views/v1`:
+this marker identifies the schema, never actual view definitions. All
+definitions live exclusively in `views` rows. Names need not be unique.
+
+An operator uses an existing replica and the supported logged-DDL workflow.
+First sync with full schema scope and inspect the physical `sqlite_master`
+entry through `life sql`, plus `life doc views` if the name already exists. Stop on a collision or any failed
+step; an existing unrelated `views` table must never be silently adopted,
+dropped or renamed. For absent storage only:
+
+```sh
+life sync
+life table create views 'name:text!' 'tbl:ref!' 'definition:json!'
+life property set views.tbl --ref-table catalog_tables
+life table set views --kind table --display name --purpose 'Shared named table views'
+life property set views.definition --source life-core --source-ref saved-views/v1
+life doc views
+life sync
+```
+
+Set the marker last, after reviewing the schema and property metadata.
+Ordinary clients receive this existing logged DDL and catalog through sync;
+they need no schema provisioning rights. Include `tables: { views: true }`
+when enabling saved views so the size threshold does not hide definitions.
+This does not imply that every referenced target table is fully replicated.
+`life table rename` updates `views.tbl` only for the exact recognized schema
+and marker, with ordinary validation/history in the rename transaction.
+Column renames/removals leave affected definitions unavailable for explicit
+repair; unknown JSON versions are never rewritten. The shared fixture
+`tests/fixtures/saved-views.json` is checked against Python's canonical DDL.
 
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases

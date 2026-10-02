@@ -302,6 +302,27 @@ test('nonbinary primary keys do not retain a REPLACE victim under a different sp
   expect(await ids(db, 'newspelling')).toEqual(['LOWER']);
 });
 
+test('NOCASE ID aliases across drain batches replace the actual row identity exactly once', async () => {
+  const { db } = await local();
+  await db.run('CREATE TABLE folded (id TEXT PRIMARY KEY COLLATE NOCASE, body TEXT, deleted_at TEXT)');
+  await db.run("INSERT INTO catalog_tables(id) VALUES ('folded')");
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('folded.body','folded','body','markdown')");
+  const original = Array.from({ length: 101 }, (_, i) => `key${String(i).padStart(3, '0')}`);
+  for (const id of original) await db.run('INSERT INTO folded(id,body) VALUES (?,?)', [id, 'needle']);
+  expect((await search(db, { text: 'needle', limit: 200 })).map(r => r.id)).toEqual(original);
+  await db.run('UPDATE folded SET id=upper(id)');
+  expect((await db.all('SELECT count(*) AS n FROM _core_search_dirty'))[0].n).toBe(202);
+  const expected = original.map(id => id.toUpperCase());
+  for (let attempt = 0; attempt < 2; attempt++) {
+    expect((await search(db, { text: 'needle', limit: 200 })).map(r => r.id)).toEqual(expected);
+    expect((await db.all('SELECT count(*) AS n FROM _core_search_dirty'))[0].n).toBe(0);
+    expect((await db.all("SELECT count(*) AS n FROM _core_search_docs WHERE tbl='folded'"))[0].n).toBe(101);
+    expect((await db.all("SELECT count(*) AS n FROM _core_search_fts WHERE _core_search_fts MATCH 'needle'"))[0].n).toBe(101);
+  }
+  await db.run('UPDATE folded SET id=lower(id)');
+  expect((await core.readRows(db, { table: 'folded', search: 'needle', limit: 200 })).map(r => r.record.id)).toEqual(original);
+});
+
 test('Python can edit the shared file while the UI is closed; the next open indexes its committed text', async () => {
   const { db, path } = await local(true);
   await ids(db, 'offline');

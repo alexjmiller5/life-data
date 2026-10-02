@@ -16,6 +16,11 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.typescript).toContain('search: { args: SearchArgs; result: SearchHit[] }');
   expect(first.swift).toContain('public init(text: String, table: String? = nil, limit: CoreCount? = nil, offset: CoreCount? = nil)');
   expect(first.swift).toContain('public typealias Response = [CoreSearchHit]');
+  expect(first.typescript).toContain('listViews: { args: ListViewsArgs; result: SavedViewList }');
+  expect(first.typescript).toContain('saveView: { args: SaveViewArgs; result: SavedViewRecord }');
+  expect(first.typescript).toContain('deleteView: { args: DeleteViewArgs; result: SavedViewRecord }');
+  expect(first.swift).toContain('public struct CoreSavedViewDefinition:');
+  expect(first.swift).toContain('public typealias Response = CoreSavedViewList');
   expect(first.swift).toContain('public struct CoreView:');
   expect(first.swift).toContain('public struct CoreFilter:');
   expect(first.swift).toContain('public typealias Response = [CoreWorkspaceRow]');
@@ -35,6 +40,15 @@ test('Swift codecs preserve required nulls, optional presence, and safe integers
   expect(swift).toContain('container.contains(.readAt)');
   expect(swift).toContain('9_007_199_254_740_991');
   expect(swift).toContain('public init(column: String, op: CoreFilterOp, value: CoreFilterValue? = nil)');
+});
+
+test('generated DTOs and requests carry projection and edit revision requirements', () => {
+  const { swift, typescript } = generateContract(contract);
+  for (const source of [swift, typescript]) {
+    expect(source).toContain('columns is SQL projection');
+    expect(source).toContain('fetch a full row before editing');
+    expect(source).toContain('expectedUpdatedAt is required when id is supplied');
+  }
 });
 
 test('unknown schema constructs and dangling operation types fail generation', () => {

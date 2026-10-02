@@ -313,6 +313,29 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
         }
       },
       "required": [
@@ -957,6 +980,202 @@
         "label",
         "excerpt"
       ]
+    },
+    "SavedViewDefinition": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/Count"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filter"
+          }
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Sort"
+          }
+        },
+        "search": {
+          "type": "string"
+        },
+        "trash": {
+          "type": "boolean"
+        },
+        "widths": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "description": "columns is SQL projection and may omit id, updated_at and hidden fields; fetch a full row before editing. For visible layout only, omit columns when querying rows."
+    },
+    "SavedViewRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavedViewDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/View"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "tbl",
+        "updated_at",
+        "deleted_at",
+        "definition",
+        "view",
+        "unavailable"
+      ]
+    },
+    "SavedViewList": {
+      "type": "object",
+      "properties": {
+        "views": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SavedViewRecord"
+          }
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "views",
+        "unavailable"
+      ]
+    },
+    "ListViewsArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "trash": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "SaveViewArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "definition": {
+          "$ref": "#/$defs/SavedViewDefinition"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "name",
+        "definition"
+      ],
+      "description": "expectedUpdatedAt is required when id is supplied; omit both to create a new view."
+    },
+    "DeleteViewArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedUpdatedAt"
+      ]
     }
   },
   "operations": {
@@ -977,7 +1196,8 @@
         "items": {
           "$ref": "#/$defs/WorkspaceRow"
         }
-      }
+      },
+      "description": "columns is SQL projection and may omit id, updated_at and hidden fields; fetch a full row before editing. For visible layout only, omit columns when querying rows."
     },
     "options": {
       "args": {
@@ -1055,6 +1275,32 @@
         "items": {
           "$ref": "#/$defs/SearchHit"
         }
+      }
+    },
+    "listViews": {
+      "args": {
+        "$ref": "#/$defs/ListViewsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SavedViewList"
+      },
+      "description": "columns is SQL projection and may omit id, updated_at and hidden fields; fetch a full row before editing. For visible layout only, omit columns when querying rows."
+    },
+    "saveView": {
+      "args": {
+        "$ref": "#/$defs/SaveViewArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SavedViewRecord"
+      },
+      "description": "expectedUpdatedAt is required when id is supplied; omit both to create a new view."
+    },
+    "deleteView": {
+      "args": {
+        "$ref": "#/$defs/DeleteViewArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SavedViewRecord"
       }
     }
   }

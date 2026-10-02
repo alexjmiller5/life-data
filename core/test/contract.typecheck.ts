@@ -17,4 +17,9 @@ const missingHandlers: CoreHandlers = { status: () => ({ lastSuccessfulSync: nul
 const badSearch: CoreArgs<'search'> = { endpoint: 'https://hub.example.test' };
 // @ts-expect-error search hits identify the table as well as the row
 const incompleteHit: CoreResult<'search'> = [{ id: 'row', label: 'Label', excerpt: 'Excerpt' }];
+// @ts-expect-error shared views have no persisted per-device selection
+const privateView: CoreArgs<'saveView'> = { table: 'items', name: 'Example', definition: { version: 1, selected: true } };
+// @ts-expect-error every deletion needs the selected revision
+const unsafeDelete: CoreArgs<'deleteView'> = { id: 'view' };
+void [privateView, unsafeDelete];
 void [missingTable, wrongSort, wrongValue, wrongArgs, wrongFeed, missingHandlers, badSearch, incompleteHit];

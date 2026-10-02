@@ -818,6 +818,39 @@ def _rekey(conn, table: str, old_id: str, new_id: str, **changes) -> None:
     conn.execute(f"UPDATE {qi(table)} SET deleted_at = updated_at WHERE id = ?", (old_id,))
 
 
+def _has_shared_views(conn) -> bool:
+    """Recognize operator-provisioned v1 storage; never adopt by table name alone."""
+    schema = conn.execute(
+        "SELECT sql FROM main.sqlite_master WHERE (type='table' AND name='views') "
+        "OR (type='trigger' AND name='views_updated_at') ORDER BY type"
+    ).fetchall()
+    expected = _pkg().table_ddl("views", ["name:text!", "tbl:ref!", "definition:json!"])
+    if [re.sub(r"\s+", " ", r["sql"]).strip() for r in schema] != [
+        re.sub(r"\s+", " ", sql).strip() for sql in expected
+    ]:
+        return False
+    entry = conn.execute(
+        "SELECT kind,display FROM catalog_tables WHERE id='views' AND deleted_at IS NULL"
+    ).fetchone()
+    props = conn.execute(
+        "SELECT * FROM catalog_properties WHERE tbl='views' AND deleted_at IS NULL"
+    ).fetchall()
+    required = {"name": "text", "tbl": "ref", "definition": "json"}
+    if not entry or dict(entry) != {"kind": "table", "display": "name"} or len(props) != 3:
+        return False
+    by_col = {p["col"]: p for p in props}
+    if set(by_col) != set(required) or any(
+        p["id"] != f"views.{col}" or p["type"] != required[col] or p["required"] != 1
+        for col, p in by_col.items()
+    ):
+        return False
+    return (
+        by_col["tbl"]["ref_table"] == "catalog_tables"
+        and by_col["definition"]["source"] == "life-core"
+        and by_col["definition"]["source_ref"] == "saved-views/v1"
+    )
+
+
 def rename_refs(conn, old: str, new: str) -> None:
     """Point every catalog, provenance and history reference at the new name.
     Runs inside the rename's transaction; the caller has already renamed the
@@ -842,6 +875,11 @@ def rename_refs(conn, old: str, new: str) -> None:
         )
     if conn.execute("SELECT 1 FROM catalog_tables WHERE id = ?", (old,)).fetchone():
         _rekey(conn, "catalog_tables", old, new)
+    if _has_shared_views(conn):
+        # Definitions contain layout/query state, never a repeated table name.
+        # Keep tombstones pointed at the renamed target for later restoration.
+        # catalog.write validates and journals this with the rest of the rename.
+        conn.execute("UPDATE views SET tbl = ? WHERE tbl = ?", (new, old))
     conn.execute(
         "UPDATE catalog_rules SET tbl = ? WHERE tbl = ? AND deleted_at IS NULL", (new, old)
     )

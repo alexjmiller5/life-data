@@ -135,10 +135,14 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
       const ids = JSON.stringify(pending.map(r => r.row_id));
       const select = [...new Set(['id', 'deleted_at', ...columns, ...(display ? [display] : [])])].map(qident).join(',');
       const rows = await db.all(`SELECT ${select} FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`, [ids]);
+      // Source PK collation can resolve a queued spelling to a different ID.
+      // Replace both identities: aliases in later batches may resolve to a row
+      // already indexed by an earlier batch. Cache and queue keys are binary.
+      const replacedIds = JSON.stringify([...new Set([...pending.map(r => r.row_id), ...rows.map(r => r.id)])]);
       const payload = JSON.stringify(rows.map(row => ({ id: row.id, label: displayName(row, display), trashed: row.deleted_at === null ? 0 : 1,
         body: columns.map(col => typeof row[col] === 'string' || typeof row[col] === 'number' ? String(row[col]) : '').join('\n') })));
-      await db.run('DELETE FROM _core_search_fts WHERE rowid IN (SELECT docid FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?)))', [table, ids]);
-      await db.run('DELETE FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, ids]);
+      await db.run('DELETE FROM _core_search_fts WHERE rowid IN (SELECT docid FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?)))', [table, replacedIds]);
+      await db.run('DELETE FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, replacedIds]);
       await db.run("INSERT INTO _core_search_docs(tbl,row_id,label,trashed) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.label'),json_extract(value,'$.trashed') FROM json_each(?)", [table, payload]);
       await db.run("INSERT INTO _core_search_fts(rowid,body) SELECT d.docid,json_extract(j.value,'$.body') FROM json_each(?) AS j JOIN _core_search_docs AS d ON d.tbl=? AND d.row_id=json_extract(j.value,'$.id')", [payload, table]);
       await db.run('DELETE FROM _core_search_dirty WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, ids]);

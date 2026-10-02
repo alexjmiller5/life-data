@@ -1,0 +1,40 @@
+{
+  "ddl": [
+    "CREATE TABLE \"views\" (\n    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),\n    \"name\" TEXT,\n    \"tbl\" TEXT,\n    \"definition\" TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n    deleted_at TEXT,\n    hub_at TEXT\n)",
+    "CREATE TRIGGER \"views_updated_at\" AFTER UPDATE ON \"views\" FOR EACH ROW\nWHEN NEW.updated_at = OLD.updated_at\nBEGIN\n    UPDATE \"views\" SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid;\nEND"
+  ],
+  "table": {
+    "id": "views",
+    "kind": "table",
+    "display": "name"
+  },
+  "properties": [
+    {
+      "id": "views.name",
+      "tbl": "views",
+      "col": "name",
+      "type": "text",
+      "required": 1,
+      "sort": 10
+    },
+    {
+      "id": "views.tbl",
+      "tbl": "views",
+      "col": "tbl",
+      "type": "ref",
+      "required": 1,
+      "sort": 20,
+      "ref_table": "catalog_tables"
+    },
+    {
+      "id": "views.definition",
+      "tbl": "views",
+      "col": "definition",
+      "type": "json",
+      "required": 1,
+      "sort": 30,
+      "source": "life-core",
+      "source_ref": "saved-views/v1"
+    }
+  ]
+}

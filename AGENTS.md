@@ -49,6 +49,13 @@ CLI.
   driver transaction. Cache DDL never enters `_schema_log`. `View.search`
   uses literal word prefixes; `contains` retains substring semantics. Raw
   Markdown is indexed, with conservative plain-text display cleanup only.
+- `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
+  `views` storage. `views.definition` has the catalog marker
+  `source=life-core`, `source_ref=saved-views/v1`; all actual definitions live
+  in table rows. Never auto-adopt a name collision or provision in the client.
+  Saved edits/deletes use the normal write path and require selected revisions.
+  The Python rename path updates recognized `views.tbl` in its transaction.
+  Returned view columns are SQL projection: clients need full rows to edit.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`

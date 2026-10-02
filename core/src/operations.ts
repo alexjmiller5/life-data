@@ -8,6 +8,7 @@ import { isReadOnlyTable, writeRow } from './write.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
 import { prepareSearch, search } from './search.ts';
+import { listViews, saveView, deleteView } from './saved-views.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
 /** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
@@ -42,6 +43,9 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     },
     rows: view => readRows(db, view),
     search: args => search(db, args),
+    listViews: args => listViews(db, args),
+    saveView: args => saveView(db, args, { origin }),
+    deleteView: args => deleteView(db, args, { origin }),
     options: args => readOptions(db, args),
     write: args => writeRow(db, args.table, args.patch, { origin, expectedUpdatedAt: args.expectedUpdatedAt }),
     status: () => syncStatus(db),
