@@ -414,3 +414,15 @@ test("handlers the hub adds later pass through instead of being dropped", () => 
   const wrapped = withUsage({ fetch: async () => new Response(), scheduled: async () => {}, queue }, { authenticate: async () => null });
   expect(wrapped.queue).toBe(queue);
 });
+
+test("a restricted token's cap error carries no deployment usage numbers", async () => {
+  const env = environment({ USAGE_LIMITS: JSON.stringify({ d1_rows_read: { cap: 7 } }) });
+  const narrow = await addToken(env, "svc:archiver", "tables:read:products,files:read:captures/pages/");
+  await seedUsage(env, { rows_read: 1234 });
+  const res = await call(env, "/v1/rows/pull", { method: "POST", body: { table: "products" }, token: narrow });
+  expect(res.status).toBe(429);
+  const body = await res.json();
+  sameShape(body, contract.cap_error_restricted);
+  expect(JSON.stringify(body)).not.toMatch(/1234|1\.2K|\b7\b/);
+  expect(Number(res.headers.get("Retry-After"))).toBe(body.retry_after);
+});

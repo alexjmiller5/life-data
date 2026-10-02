@@ -333,14 +333,20 @@ function preflight(request, env, methods) {
   }));
 }
 
-function capResponse(cap) {
+// Usage numbers go only to tokens that may read /v1/usage; a narrower token
+// learns that the deployment is capped and when it resumes, nothing more.
+function capResponse(cap, showUsage) {
   const retry = Math.max(1, Math.ceil((Date.parse(cap.resets_at) - Date.now()) / 1000));
   const l = DEFAULT_LIMITS[cap.metric];
+  const { used, cap: limit, ...rest } = cap;
   return json(
     {
       error: "usage_cap",
-      message: `Monthly ${l.label} cap reached (${compact(cap.cap)} ${l.unit}); sync resumes ${cap.resets_at}.`,
-      ...cap,
+      message: showUsage
+        ? `Monthly ${l.label} cap reached (${compact(limit)} ${l.unit}); sync resumes ${cap.resets_at}.`
+        : `Monthly ${l.label} cap reached; sync resumes ${cap.resets_at}.`,
+      ...rest,
+      ...(showUsage ? { used, cap: limit } : {}),
       retry_after: retry,
     },
     429,
@@ -485,7 +491,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           // later (e.g. one that reads the request body) must not bypass the cap.
           if (tenant && !UNCAPPED_ROUTE.test(url.pathname)) {
             const cap = await capState(env, new Date());
-            if (cap) return cors(request, env, capResponse(cap));
+            if (cap) return cors(request, env, capResponse(cap, READ_SCOPES.some((s) => tenant.scopes.includes(s))));
           }
         } catch (e) {
           return cors(request, env, json({ error: String(e) }, 500));

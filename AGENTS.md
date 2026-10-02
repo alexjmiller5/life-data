@@ -402,7 +402,8 @@ reports this deployment's own consumption only, never the provider account's.
   concurrent isolates insert once and a future push reuses the same id.
   Read state is deployment-wide.
 - **Cap.** At a D1 metric's cap every authenticated `/v1` route answers 429
-  `usage_cap` with `Retry-After` until the period resets, except the ones that
+  `usage_cap` with `Retry-After` until the period resets (usage numbers in the
+  body only for tokens that may read `/v1/usage`), except the ones that
   never read the data D1 (`UNCAPPED_ROUTE`: usage, notifications, session,
   tokens, files, streams, archive). Deny by default: a new D1 route is capped
   unless listed, and the cap is not gated on the route's scope check, so a
