@@ -437,3 +437,28 @@ test('optimistic trash and restore use the same revision guard, with canonical e
     ...clock, id: () => 'item-2', expectedUpdatedAt: T1,
   }), 'input');
 });
+
+test('each successful UI write replaces only its row marker, including trash and restore', async () => {
+  const db = await local();
+  const first = await writeRow(db, 'items', { name: 'Before' }, clock);
+  expect(await db.all("SELECT name FROM sqlite_master WHERE name='_core_pending'")).toEqual([{ name: '_core_pending' }]);
+  expect(await db.all('SELECT * FROM _core_pending')).toEqual([{ tbl: 'items', row_id: first.id, updated_at: T1 }]);
+  for (const patch of [{ name: 'After' }, { deleted_at: true }, { deleted_at: null }]) {
+    const row = await writeRow(db, 'items', { id: first.id, ...patch }, clock);
+    expect(await db.all('SELECT * FROM _core_pending')).toEqual([{ tbl: 'items', row_id: first.id, updated_at: row.updated_at }]);
+  }
+  const pending = await db.all('SELECT * FROM _core_pending');
+  await rejects(writeRow(db, 'items', { id: first.id, name: null }, clock), 'required');
+  await rejects(writeRow(db, 'items', { name: null }, { ...clock, id: () => 'invalid' }), 'required');
+  expect(await db.all('SELECT * FROM _core_pending')).toEqual(pending);
+});
+
+test('a pending-marker storage failure rolls back the row and its cell history', async () => {
+  const db = await local();
+  await db.run("CREATE TABLE _core_pending (tbl TEXT, row_id TEXT, updated_at TEXT CHECK(updated_at='2026-01-02T00:00:00.000Z'), PRIMARY KEY(tbl,row_id))");
+  const before = await writeRow(db, 'items', { name: 'Before' }, clock);
+  await rejects(writeRow(db, 'items', { id: before.id, name: 'After' }, clock), 'storage');
+  expect(await db.all('SELECT * FROM items')).toEqual([before]);
+  expect(await db.all('SELECT * FROM history')).toEqual([]);
+  expect(await db.all('SELECT * FROM _core_pending')).toEqual([{ tbl: 'items', row_id: before.id, updated_at: T1 }]);
+});

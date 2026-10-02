@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from life_data import HttpHub, LocalHub, connect, execute_sql, init, sync
+from life_data import HttpHub, LocalHub, connect, create_table, execute_sql, init, sync
 
 CASES = json.loads((Path(__file__).parent / "fixtures/sync-protocol/revisions.json").read_text())
 DDL = "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)"
@@ -64,3 +64,39 @@ db.db.close();
     monkeypatch.setattr(hub, "ensure_ready", lambda: pytest.fail("contacted another hub"))
     with pytest.raises(ValueError, match="hub changed"):
         sync(path, hub)
+
+
+def test_python_sync_does_not_acknowledge_ui_pending_markers(tmp_path):
+    path = init(tmp_path / "replica.db")
+    create_table(path, "items", ["name:text!"])
+    hub = LocalHub(tmp_path / "hub.db")
+    assert sync(path, hub)["rejected"] == []
+
+    def ui_status(action):
+        result = subprocess.run(
+            ["bun", "-", str(path), action],
+            input="""
+import { Database } from 'bun:sqlite';
+import { TestSql } from './core/test/support.ts';
+import { writeRow, syncStatus } from './core/src/index.ts';
+const db=new TestSql(); db.db.close(); db.db=new Database(process.argv[2]);
+if(process.argv[3]==='write') await writeRow(db,'items',{name:'UI edit'},{id:()=> 'ui'});
+console.log(JSON.stringify(await syncStatus(db))); db.db.close();
+""",
+            text=True,
+            capture_output=True,
+            check=True,
+            cwd=Path(__file__).resolve().parents[1],
+        )
+        return json.loads(result.stdout)
+
+    pending = {"lastSuccessfulSync": None, "pendingUiEdits": 1, "rejected": 0}
+    assert ui_status("write") == pending
+    execute_sql(path, "INSERT INTO items(id,name) VALUES ('cli','CLI edit')")
+    assert sync(path, hub)["rejected"] == []
+    assert execute_sql(hub.path, "SELECT id FROM items ORDER BY id") == [
+        {"id": "cli"},
+        {"id": "ui"},
+    ]
+    assert ui_status("read") == pending
+    assert execute_sql(hub.path, "SELECT name FROM sqlite_master WHERE name='_core_pending'") == []

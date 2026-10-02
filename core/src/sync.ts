@@ -9,6 +9,7 @@ export async function initCore(db: SqlDriver): Promise<void> {
   await db.run('CREATE TABLE IF NOT EXISTS _core_state (key TEXT PRIMARY KEY, value TEXT)');
   await db.run("CREATE TABLE IF NOT EXISTS _core_sync (tbl TEXT PRIMARY KEY, pull TEXT NOT NULL DEFAULT '', push TEXT NOT NULL DEFAULT '')");
   await db.run('CREATE TABLE IF NOT EXISTS _core_rejected (tbl TEXT, row_id TEXT, row TEXT NOT NULL, errors TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
+  await db.run('CREATE TABLE IF NOT EXISTS _core_pending (tbl TEXT NOT NULL, row_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
 }
 
 const active = new WeakSet<SqlDriver>();
@@ -86,9 +87,11 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       columns.set(table,(await db.all(`PRAGMA table_info(${qident(table)})`)).map(r=>String(r.name)));
       const push=String(states.get(table)?.push??'');
       const since=endpoint && push<=checkpoint ? push : '';
-      const mine=await db.all(`SELECT * FROM ${qident(table)} WHERE updated_at >= ?`,[since]);
+      // Pending UI rows need our own receipt even when another writer/clock
+      // has moved their state behind this client's timestamp checkpoint.
+      const mine=await db.all(`SELECT * FROM ${qident(table)} WHERE updated_at >= ? OR id IN (SELECT row_id FROM _core_pending WHERE tbl=?)`,[since,table]);
       candidates.set(table,mine);
-      if(allTables.includes('history') && table!=='history' && mine.length) pendingHistory.push(...await db.all('SELECT * FROM history WHERE tbl=? AND updated_at>=? AND row_id IN (SELECT value FROM json_each(?))',[table,since,JSON.stringify(mine.map(r=>r.id))]));
+      if(allTables.includes('history') && table!=='history' && mine.length) pendingHistory.push(...await db.all('SELECT * FROM history WHERE tbl=? AND (updated_at>=? OR row_id IN (SELECT row_id FROM _core_pending WHERE tbl=?)) AND row_id IN (SELECT value FROM json_each(?))',[table,since,table,JSON.stringify(mine.map(r=>r.id))]));
     }
   });
   const withheld=new Set<unknown>();
@@ -130,7 +133,10 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
         for(const row of rows) {
           const errors=out.rejected.filter((e:Row)=>e.id===row.id);
           if(errors.length) await db.run('INSERT OR REPLACE INTO _core_rejected(tbl,row_id,row,errors) VALUES (?,?,?,?)',[table,String(row.id),JSON.stringify(row),JSON.stringify(errors)]);
-          else await db.run('DELETE FROM _core_rejected WHERE tbl=? AND row_id=?',[table,String(row.id)]);
+          else {
+            await db.run('DELETE FROM _core_rejected WHERE tbl=? AND row_id=?',[table,String(row.id)]);
+            await db.run('DELETE FROM _core_pending WHERE tbl=? AND row_id=? AND updated_at<=?',[table,String(row.id),String(row.updated_at)]);
+          }
         }
       });
     }

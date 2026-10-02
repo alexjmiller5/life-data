@@ -5,3 +5,4 @@ export * from './view.ts';
 export * from './catalog.ts';
 export * from './http.ts';
 export * from './write.ts';
+export * from './status.ts';

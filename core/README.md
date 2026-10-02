@@ -16,6 +16,15 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   together. Pass `expectedUpdatedAt` in write options from the opened record
   to reject stale edits. Components must not write raw SQL. `isReadOnlyTable`
   recognizes built-in system tables and catalog entries with `kind: system`.
+- Each successful `writeRow` also commits a `_core_pending` marker for that
+  table, row and revision. Repeated edits coalesce into one pending row.
+  An accepted sync receipt clears only markers at or below its submitted
+  revision; newer concurrent edits, rejections and lost receipts stay pending.
+- `syncStatus(driver)` returns `{ lastSuccessfulSync, pendingUiEdits, rejected }`
+  from local durable state. The timestamp is the last successful core round's
+  checkpoint, or `null`. Counts are pending UI-written rows and rows in the
+  rejection inbox. Pending UI edits await this core's own valid receipt even
+  if Python has already pushed them; this is not the entire CLI sync queue.
 - `readCatalog` decodes properties. `compileView` produces parameterized,
   catalog-scoped SQL with filtering, sorting, literal search and bounded pages.
 - `createHttpHub(endpoint, token, fetch)` is the browser transport. The native

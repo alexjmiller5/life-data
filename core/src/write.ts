@@ -1,5 +1,6 @@
 import type { SqlDriver, Value } from './driver.ts';
 import { decodeProperty } from './catalog.ts';
+import { initCore } from './sync.ts';
 import { asList, empty, qident, validEditTimestamp, validateRow, type Property, type Row, type Violation } from './validate.ts';
 
 export type WriteViolation = Violation & { tbl: string; row_id: string | null };
@@ -226,6 +227,8 @@ export async function writeRow(
         }
         await db.run('DROP TABLE temp._core_write_before');
       }
+      await initCore(db);
+      await db.run('INSERT OR REPLACE INTO _core_pending(tbl,row_id,updated_at) VALUES (?,?,?)', [table, rowId, stamp]);
       return after;
     });
   } catch (error) {
