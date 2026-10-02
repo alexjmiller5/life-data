@@ -30,8 +30,11 @@ CLI.
   separate auth registry and `worker/src/login.js` owns the Access-gated
   browser flow. `worker/wrangler.jsonc` declares the main data D1, auth D1,
   R2 bindings and backup cron (those declarations ARE the provisioning).
-- `worker/src/validate.js` - the hub-side mirror of the row validator;
-  `tests/fixtures/validation-cases.json` is the contract both run.
+- `core/src/` - shared TypeScript validator, sync, write path, catalog, HTTP
+  adapter and view compiler for UI clients. `core/README.md` documents adapter
+  contracts and current boundaries. `worker/src/validate.js` re-exports the
+  shared validator and adds hub-specific validation.
+  `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`
@@ -215,8 +218,8 @@ CLI.
   DDL in `DB` cannot alter token state. `LOGIN_ACCESS_AUD` must equal the
   provisioned Access application's audience. `/login` never trusts identity
   headers and no login route accepts a bearer token in the browser URL.
-- `just test` runs pytest AND `bun test` in `worker/`.
-  The deploy workflow gates deployment on both suites.
+- `just test` runs pytest AND `bun test` in `worker/` and `core/`.
+  The deploy workflow gates deployment on all three suites.
 
 ## Sync internals
 

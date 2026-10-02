@@ -54,3 +54,10 @@ test("the Access-protected login pages never get CORS", async () => {
   const r = await call("/login", { method: "OPTIONS", headers: { Origin: APP } });
   expect(r.headers.get("Access-Control-Allow-Origin")).toBeNull();
 });
+
+test('the browser can read the server Date for the shared-core clock guard', async () => {
+  const response = await worker.fetch(new Request('https://hub.test/v1/session', {
+    headers: { Origin:'https://ui.test', Authorization:'Bearer test' },
+  }), {HUB_TOKEN:'test',CORS_ORIGINS:'https://ui.test'}, {waitUntil(){}});
+  expect(response.headers.get('Access-Control-Expose-Headers')?.split(',').map(s=>s.trim())).toContain('Date');
+});
