@@ -705,7 +705,7 @@ function withCors(response, origin) {
   const out = new Response(response.body, response);
   out.headers.set("Access-Control-Allow-Origin", origin);
   out.headers.append("Vary", "Origin");
-  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Date");
+  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Date, Retry-After");
   return out;
 }
 

@@ -6,3 +6,4 @@ export * from './catalog.ts';
 export * from './http.ts';
 export * from './write.ts';
 export * from './status.ts';
+export * from './services.ts';

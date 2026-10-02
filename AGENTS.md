@@ -35,6 +35,9 @@ CLI.
   contracts and current boundaries. `worker/src/validate.js` re-exports the
   shared validator and adds hub-specific validation.
   `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
+- `core/src/services.ts` - typed usage/feed/read-state clients over `ServiceHub`.
+  `tests/fixtures/hub-usage-contract.json` is the hub contract. Feed reads walk
+  from zero each time; presentation checkpoints and permissions belong to hosts.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`

@@ -31,6 +31,21 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   host supplies a `Hub` using URLSession. Neither credentials nor SQL drivers
   are owned by the core. HTTP adapters must expose the server Date header and
   impose a request timeout. Clock skew above five minutes blocks pushes.
+- `ServiceHub` extends `Hub` with `get(route)`. `createHttpHub` implements both;
+  native hosts provide the same HTTPS/loopback, no-redirect, no-cookie behavior.
+  `readUsage` returns the deployment's `UsageSummary`, preserving unmeasured
+  values as `null`. `readNotifications` walks the complete ascending feed from
+  zero each time to reconcile shared read state. Invalid pagination, failed
+  requests and the 1,000-page bound throw without returning a partial feed.
+  `markNotificationsRead(hub, { ids?, through? })` marks explicit IDs and/or
+  all sequences up to and including `through`, returning `{ unread_count }`.
+- `notificationPresentation(feed, previousBaseline)` returns
+  `{ notifications, baseline }`. A `null` baseline suppresses history and uses
+  `latest_cursor`; later calls select unread notifications above the baseline,
+  deduplicate by stable ID, and advance only through collected sequences.
+  Hosts own permissions, timers and persistence per canonical endpoint, and
+  save the proposed baseline only after successful presentation. Unknown
+  notification producers/types and their JSON data remain supported.
 
 `SqlDriver.transaction` must serialize other callers through commit/rollback.
 The browser host must exclude overlapping rounds across tabs with a Web Lock.

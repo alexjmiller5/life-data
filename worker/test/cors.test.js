@@ -61,3 +61,10 @@ test('the browser can read the server Date for the shared-core clock guard', asy
   }), {HUB_TOKEN:'test',CORS_ORIGINS:'https://ui.test'}, {waitUntil(){}});
   expect(response.headers.get('Access-Control-Expose-Headers')?.split(',').map(s=>s.trim())).toContain('Date');
 });
+
+test('the browser can read Retry-After when a hub response asks it to wait', async () => {
+  const response = await call('/v1/session', {
+    headers: { Origin: APP, Authorization: 'Bearer test' },
+  });
+  expect(response.headers.get('Access-Control-Expose-Headers')?.split(',').map(s => s.trim())).toContain('Retry-After');
+});

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHttpHub } from "../src/http.ts";
 import type { Row } from "../src/validate.ts";
+import type { Hub } from "../src/driver.ts";
+import { markNotificationsRead, readNotifications, readUsage } from "../src/services.ts";
+import fixture from "../../tests/fixtures/hub-usage-contract.json";
 
 const TOKEN = "fixture-device-token";
 const DATE = "Thu, 01 Jan 2026 00:00:00 GMT";
@@ -152,6 +155,126 @@ describe("HTTP hub over a real local server", () => {
       await expect(hub.post(route as string, {})).rejects.toThrow(/^invalid hub route$/);
     }
     expect(requests).toEqual([]);
+    expect(redirected).toBe(0);
+  });
+});
+
+describe("HTTP service GET transport", () => {
+  let server: ReturnType<typeof Bun.serve>;
+  let destination: ReturnType<typeof Bun.serve>;
+  let redirected: number;
+  let behavior: (request: Request) => Response;
+  const requests: { url: string; method: string; headers: Headers }[] = [];
+  beforeEach(() => {
+    requests.length = 0;
+    redirected = 0;
+    destination = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+      redirected++; return Response.json({ leaked: true });
+    } });
+    behavior = () => Response.json(fixture.usage, { headers: { Date: DATE } });
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      requests.push({ url: request.url, method: request.method, headers: new Headers(request.headers) });
+      return behavior(request);
+    } });
+  });
+  afterEach(async () => { await server.stop(true); await destination.stop(true); });
+
+  test("GET services preserve endpoint, auth, Date, and POST compatibility without bodies or cookies", async () => {
+    const hub = createHttpHub(`${server.url}base///`, TOKEN, async (url, init) => {
+      expect(init.redirect).toBe("error");
+      expect(init.credentials).toBe("omit");
+      if (init.method === "GET") expect(init.body).toBeUndefined();
+      return fetch(url, init);
+    });
+    const oldConsumer: Hub = hub;
+    expect<unknown>(await readUsage(hub)).toEqual(fixture.usage);
+    expect((await hub.get("/v1/usage")).date).toBe(DATE);
+    expect(requests[0].url).toBe(`${server.url}base/v1/usage`);
+    expect(requests[0].method).toBe("GET");
+    expect(requests[0].headers.get("Authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(requests[0].headers.get("Accept")).toBe("application/json");
+    expect(requests[0].headers.get("Cookie")).toBeNull();
+    await oldConsumer.post("/v1/echo", {});
+    expect(requests.at(-1)?.method).toBe("POST");
+  });
+
+  test("full service round trip fetches pages then reconciles a shared read receipt", async () => {
+    let read = false;
+    const n = fixture.notifications.notifications[0];
+    behavior = request => {
+      const url = new URL(request.url);
+      if (url.pathname === "/v1/notifications/read") {
+        expect(request.method).toBe("POST"); read = true; return Response.json({ unread_count: 0 });
+      }
+      const after = url.searchParams.get("after");
+      expect(url.searchParams.get("limit")).toBe("200");
+      const seq = after === "0" ? 7 : 9;
+      return Response.json({ notifications: [{ ...n, seq, id: `event:${seq}`, read_at: read ? n.created_at : null }],
+        next_cursor: after === "0" ? 7 : null, latest_cursor: 9, unread_count: read ? 0 : 2 });
+    };
+    const hub = createHttpHub(server.url.toString(), TOKEN, fetch);
+    expect((await readNotifications(hub)).notifications.map(n => n.seq)).toEqual([7, 9]);
+    expect(await markNotificationsRead(hub, { through: 9 })).toEqual({ unread_count: 0 });
+    expect((await readNotifications(hub)).notifications.every(n => n.read_at !== null)).toBe(true);
+    expect(requests.map(r => new URL(r.url).search)).toEqual([
+      "?after=0&limit=200", "?after=7&limit=200", "", "?after=0&limit=200", "?after=7&limit=200",
+    ]);
+  });
+
+  test.each([301, 302, 303, 307, 308])("GET refuses redirect %i before sending credentials again", async status => {
+    behavior = () => Response.redirect(destination.url.toString(), status);
+    await expect(createHttpHub(server.url.toString(), TOKEN, fetch).get("/v1/usage"))
+      .rejects.toThrow(/^hub request failed$/);
+    expect(redirected).toBe(0);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("GET refuses same-origin redirects", async () => {
+    behavior = () => Response.redirect(`${server.url}v1/notifications`, 307);
+    await expect(createHttpHub(server.url.toString(), TOKEN, fetch).get("/v1/usage"))
+      .rejects.toThrow(/^hub request failed$/);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("429 cap bodies remain private; usage remains readable for the explanation", async () => {
+    const hub = createHttpHub(server.url.toString(), TOKEN, fetch);
+    behavior = () => Response.json({ ...fixture.cap_error, message: TOKEN }, { status: 429 });
+    await expect(hub.get("/v1/usage")).rejects.toThrow(/^hub HTTP 429$/);
+    behavior = () => Response.json({ ...fixture.usage, ...fixture.usage_capped });
+    expect((await readUsage(hub)).capped).toEqual(fixture.usage_capped.capped);
+  });
+
+  test.each([
+    ["html", "hub response is not JSON"], ["json", "hub invalid JSON response"], ["network", "hub request failed"],
+  ])("GET sanitizes %s errors", async (kind, message) => {
+    const hub = createHttpHub(server.url.toString(), TOKEN, async () => {
+      if (kind === "network") throw new Error(TOKEN);
+      return new Response(TOKEN, { headers: { "Content-Type": kind === "html" ? "text/html" : "application/json" } });
+    });
+    const error = await hub.get("/v1/usage").catch(e => e as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(message);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  test("GET permits only fixed services and canonical feed query keys/values", async () => {
+    const hub = createHttpHub(server.url.toString(), TOKEN, fetch);
+    for (const route of ["/v1/usage", "/v1/notifications", "/v1/notifications?after=0&limit=1", "/v1/notifications?after=9007199254740991&limit=200"]) {
+      await hub.get(route);
+    }
+    const sent = requests.length;
+    for (const route of [
+      "https://other.test/v1/usage", "//other.test", "/../v1/usage", "/%2e%2e/v1/usage", "/v1/rows/pull",
+      "/v1/usage?token=secret", "/v1/notifications?after=0&limit=200&token=secret", "/v1/notifications#secret",
+      "/v1/notifications?after=0&after=1&limit=200", "/v1/notifications?limit=200&after=0",
+      "/v1/notifications?after=-1&limit=200", "/v1/notifications?after=1.5&limit=200",
+      "/v1/notifications?after=9007199254740992&limit=200", "/v1/notifications?after=0&limit=0",
+      "/v1/notifications?after=0&limit=201", "/v1/notifications?after=%30&limit=200",
+      "/v1/notifications?after=01&limit=200", "/v1/notifications?after=0&limit=200\n", "", null, 1,
+    ]) {
+      await expect(hub.get(route as string)).rejects.toThrow(/^invalid hub route$/);
+    }
+    expect(requests).toHaveLength(sent);
     expect(redirected).toBe(0);
   });
 });

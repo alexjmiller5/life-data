@@ -1,11 +1,11 @@
-import type { Hub } from "./driver.ts";
+import type { ServiceHub } from "./services.ts";
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 /** Browser-compatible transport. Inject fetch explicitly; platforms can wrap it
  * with their own AbortSignal/timeout. Core creates no controllers or timers.
  */
-export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher): Hub {
+export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher): ServiceHub {
   let url: URL;
   try {
     if (typeof endpoint !== "string" || !/^https?:\/\//i.test(endpoint)
@@ -23,8 +23,44 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
   if (typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new Error("invalid hub token");
   if (typeof fetcher !== "function") throw new Error("hub fetch implementation required");
   const base = url.href.replace(/\/+$/, "");
+  async function request(method: "POST" | "GET", route: string, body?: string) {
+    let response: Response;
+    try {
+      response = await fetcher(base + route, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json",
+          ...(method === "POST" ? { "Content-Type": "application/json" } : {}) },
+        ...(body === undefined ? {} : { body }),
+        redirect: "error",
+        credentials: "omit",
+      });
+    } catch {
+      // Transport/abort exceptions may echo credentials or private URLs.
+      throw new Error("hub request failed");
+    }
+    if (response.status < 200 || response.status >= 300) throw new Error(`hub HTTP ${response.status}`);
+    const contentType = response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase();
+    if (contentType !== "application/json" && !(contentType?.startsWith("application/") && contentType.endsWith("+json"))) {
+      throw new Error("hub response is not JSON");
+    }
+    let data: unknown;
+    try { data = await response.json(); }
+    catch { throw new Error("hub invalid JSON response"); }
+    const date = response.headers.get("Date");
+    return { data, ...(date ? { date } : {}) };
+  }
   return {
     endpoint: base,
+    async get(route) {
+      // Only client-generated service URIs. No arbitrary queries or values can
+      // carry credentials, override an origin, or escape the endpoint path.
+      if (typeof route !== "string") throw new Error("invalid hub route");
+      const feed = /^\/v1\/notifications\?after=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$/.exec(route);
+      if (route !== "/v1/usage" && route !== "/v1/notifications"
+        && !(feed && feed[0] === route && Number.isSafeInteger(Number(feed[1]))
+          && Number(feed[2]) <= 200)) throw new Error("invalid hub route");
+      return request("GET", route);
+    },
     async post(route, body) {
       // API paths only: no origin overrides, traversal, query, or fragments.
       if (typeof route !== "string" || !/^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(route)) {
@@ -38,29 +74,7 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
       } catch {
         throw new Error("invalid hub request body");
       }
-      let response: Response;
-      try {
-        response = await fetcher(base + route, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
-          body: serialized,
-          redirect: "error",
-          credentials: "omit",
-        });
-      } catch {
-        // Transport/abort exceptions may echo credentials or private URLs.
-        throw new Error("hub request failed");
-      }
-      if (response.status < 200 || response.status >= 300) throw new Error(`hub HTTP ${response.status}`);
-      const contentType = response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase();
-      if (contentType !== "application/json" && !(contentType?.startsWith("application/") && contentType.endsWith("+json"))) {
-        throw new Error("hub response is not JSON");
-      }
-      let data: unknown;
-      try { data = await response.json(); }
-      catch { throw new Error("hub invalid JSON response"); }
-      const date = response.headers.get("Date");
-      return { data, ...(date ? { date } : {}) };
+      return request("POST", route, serialized);
     },
   };
 }
