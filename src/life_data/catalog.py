@@ -879,7 +879,13 @@ def rename_refs(conn, old: str, new: str) -> None:
         # Definitions contain layout/query state, never a repeated table name.
         # Keep tombstones pointed at the renamed target for later restoration.
         # catalog.write validates and journals this with the rest of the rename.
-        conn.execute("UPDATE views SET tbl = ? WHERE tbl = ?", (new, old))
+        # A synced revision can be ahead of this device's clock. The timestamp
+        # trigger alone could lower it, causing LWW to discard the rename.
+        conn.execute(
+            f"UPDATE views SET tbl = ?, updated_at = max({_pkg().NOW}, "
+            "strftime('%Y-%m-%dT%H:%M:%fZ',updated_at,'+0.001 seconds')) WHERE tbl = ?",
+            (new, old),
+        )
     conn.execute(
         "UPDATE catalog_rules SET tbl = ? WHERE tbl = ? AND deleted_at IS NULL", (new, old)
     )

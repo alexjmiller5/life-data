@@ -54,7 +54,9 @@ CLI.
   `source=life-core`, `source_ref=saved-views/v1`; all actual definitions live
   in table rows. Never auto-adopt a name collision or provision in the client.
   Saved edits/deletes use the normal write path and require selected revisions.
-  The Python rename path updates recognized `views.tbl` in its transaction.
+  The Python rename path updates recognized `views.tbl` in its transaction,
+  advancing each affected revision beyond its previous value and at least to
+  database time so LWW and push discovery retain the rename under clock skew.
   Returned view columns are SQL projection: clients need full rows to edit.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.

@@ -2,11 +2,14 @@
 
 import json
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from test_core import _serve
 
 from life_data import (
+    HttpHub,
     LocalHub,
     catalog,
     connect,
@@ -122,11 +125,13 @@ def test_view_validation_failure_rolls_back_entire_rename(db):
         text="Keep the original target",
     )
     before = execute_sql(db, "SELECT * FROM _schema_log")
+    views_before = execute_sql(db, "SELECT * FROM views")
     with pytest.raises(catalog.ValidationError):
         rename_table(db, "items", "records")
     assert execute_sql(db, "SELECT * FROM _schema_log") == before
     assert execute_sql(db, "SELECT id FROM catalog_tables WHERE id='items' AND deleted_at IS NULL")
     assert execute_sql(db, "SELECT tbl FROM views") == [{"tbl": "items"}]
+    assert execute_sql(db, "SELECT * FROM views") == views_before
 
 
 def test_core_writes_sync_between_clients_and_survive_python_rename(db, tmp_path):
@@ -162,3 +167,81 @@ def test_core_writes_sync_between_clients_and_survive_python_rename(db, tmp_path
     assert (
         client(db, "listViews", {"table": "records", "trash": True})["views"][0]["id"] == "shared"
     )
+
+
+@pytest.fixture(params=["local", "http"])
+def rename_hub(tmp_path, request):
+    backing = init(tmp_path / "rename-hub.db")
+    if request.param == "local":
+        yield LocalHub(backing), backing
+        return
+    server = _serve(backing)
+    try:
+        yield (
+            HttpHub(
+                f"http://127.0.0.1:{server.server_port}", {"Authorization": "Bearer testtoken"}
+            ),
+            backing,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("clock_offset", [-60, 60], ids=["past", "future"])
+def test_view_rename_revision_reaches_existing_and_fresh_replicas(
+    db, tmp_path, rename_hub, clock_offset
+):
+    hub, backing = rename_hub
+    # Within supported skew, with .999 to exercise carrying into the next second.
+    previous = (
+        (datetime.now(UTC) + timedelta(seconds=clock_offset))
+        .replace(microsecond=999000)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    insert_rows(
+        db,
+        "views",
+        [
+            {"id": "trash", "name": "Trashed", "tbl": "items", "definition": '{"version":1}'},
+            {
+                "id": "untouched",
+                "name": "Other target",
+                "tbl": "views",
+                "definition": '{"version":1}',
+            },
+        ],
+    )
+    with connect(db) as conn:
+        conn.execute("UPDATE views SET updated_at=?", (previous,))
+        conn.execute("UPDATE views SET deleted_at=? WHERE id='trash'", (previous,))
+        # The timestamp trigger fires on that tombstone edit; restore the fixture revision.
+        conn.execute("UPDATE views SET updated_at=? WHERE id='trash'", (previous,))
+    assert sync(db, hub)["rejected"] == []
+    other = init(tmp_path / "existing.db")
+    assert sync(other, hub)["rejected"] == []
+    assert client(other, "listViews", {"table": "items"})["views"][0]["updated_at"] == previous
+
+    rename_table(db, "items", "records")
+    assert sync(db, hub)["rejected"] == []
+    assert sync(other, hub)["rejected"] == []
+    fresh = init(tmp_path / "fresh.db")
+    assert sync(fresh, hub)["rejected"] == []
+    for replica in [other, fresh]:
+        views = client(replica, "listViews", {"table": "records"})["views"]
+        assert [view["id"] for view in views] == ["shared"]
+        assert views[0]["updated_at"] > previous
+        trash = client(replica, "listViews", {"table": "records", "trash": True})["views"]
+        assert [view["id"] for view in trash] == ["trash"]
+        assert trash[0]["updated_at"] > previous
+    for path in [db, backing, other, fresh]:
+        assert execute_sql(path, "SELECT tbl,updated_at FROM views WHERE id='untouched'") == [
+            {"tbl": "views", "updated_at": previous}
+        ]
+    assert execute_sql(
+        db, "SELECT row_id,col,old,new FROM history WHERE tbl='views' ORDER BY row_id"
+    ) == [
+        {"row_id": "shared", "col": "tbl", "old": "items", "new": "records"},
+        {"row_id": "trash", "col": "tbl", "old": "items", "new": "records"},
+    ]
