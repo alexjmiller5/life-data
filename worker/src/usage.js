@@ -290,15 +290,45 @@ async function measure(env, ctx, fn) {
 const json = (obj, status = 200, headers = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", ...headers } });
 
-// ponytail: mirrors the CORS_ORIGINS rule of the hub's own CORS (life-ui-foundation);
-// once that lands, import its helper instead.
-function cors(request, env, res) {
+// CORS for the routes this wrapper answers itself, with the hub's CORS_ORIGINS
+// rule (exact listed origins; bearer auth, never cookies). Preflight is answered
+// before authentication: browsers never send credentials on OPTIONS.
+// ponytail: mirrors the hub's own CORS (life-ui-foundation); share one helper once both land.
+const OWN_METHODS = { "/v1/usage": ["GET"], "/v1/notifications": ["GET"], "/v1/notifications/read": ["POST"] };
+const ALLOW_HEADERS = ["authorization", "content-type", "if-none-match"];
+
+function listedOrigin(request, env) {
   const origin = request.headers.get("Origin");
-  if (!origin || !(env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).includes(origin)) return res;
+  return origin && (env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).includes(origin) ? origin : null;
+}
+
+function cors(request, env, res) {
+  const origin = listedOrigin(request, env);
+  if (!origin) return res;
   const out = new Response(res.body, res);
   out.headers.set("Access-Control-Allow-Origin", origin);
   out.headers.append("Vary", "Origin");
+  out.headers.set("Access-Control-Expose-Headers", "ETag, Date, Retry-After");
   return out;
+}
+
+function preflight(request, env, methods) {
+  const origin = listedOrigin(request, env);
+  const method = request.headers.get("Access-Control-Request-Method");
+  const asked = (request.headers.get("Access-Control-Request-Headers") || "")
+    .split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (!origin) return json({ error: "origin not allowed" }, 403);
+  if (!methods.includes(method) || !asked.every((h) => ALLOW_HEADERS.includes(h))) {
+    return json({ error: "method or header not allowed" }, 403);
+  }
+  return cors(request, env, new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Methods": methods.join(", "),
+      "Access-Control-Allow-Headers": ALLOW_HEADERS.join(", "),
+      "Access-Control-Max-Age": "86400",
+    },
+  }));
 }
 
 function capResponse(cap) {
@@ -435,6 +465,11 @@ export function withUsage(hub, { authenticate, allowed = () => true, sweepCron }
       const url = new URL(request.url);
       return measure(env, ctx, async (menv, mctx, meter) => {
         if (!url.pathname.startsWith("/v1/")) return hub.fetch(request, menv, mctx);
+        if (request.method === "OPTIONS") {
+          // Never authenticated, never capped: the hub answers other routes' preflight.
+          const methods = OWN_METHODS[url.pathname];
+          return methods ? preflight(request, env, methods) : hub.fetch(request, menv, mctx);
+        }
         const tenant = await authenticate(request, menv, mctx);
         if (tenant) meter.principal = tenant.name;
         try {

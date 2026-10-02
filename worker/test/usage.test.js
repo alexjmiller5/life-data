@@ -307,3 +307,80 @@ test("the meter and the hub share one token lookup per request", async () => {
   await call(env, "/v1/cursor", { method: "POST", body: { tables: [] }, token });
   expect(lookups).toBe(1);
 });
+
+// --- CORS for the meter's own routes (browser clients) ---------------------------
+
+const ORIGIN = "https://client.example";
+
+async function raw(env, path, init) {
+  const ctx = context();
+  const res = await worker.fetch(new Request(`https://hub.test${path}`, init), env, ctx);
+  await ctx.settle();
+  return res;
+}
+
+const preflight = (method, headers = "authorization", origin = ORIGIN) => ({
+  method: "OPTIONS",
+  headers: { Origin: origin, "Access-Control-Request-Method": method, "Access-Control-Request-Headers": headers },
+});
+
+test("preflight for the usage and feed routes is answered before authentication", async () => {
+  const env = environment({ CORS_ORIGINS: `https://other.example, ${ORIGIN}` });
+  for (const [path, method, headers] of [
+    ["/v1/notifications", "GET", "authorization"],
+    ["/v1/usage", "GET", "Authorization"],
+    ["/v1/notifications/read", "POST", "authorization, content-type"],
+  ]) {
+    const res = await raw(env, path, preflight(method, headers));
+    expect([path, res.status]).toEqual([path, 204]);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN);
+    expect(res.headers.get("Access-Control-Allow-Methods")).toContain(method);
+    expect(res.headers.get("Access-Control-Allow-Headers").toLowerCase()).toContain("authorization");
+    expect(res.headers.get("Access-Control-Max-Age")).toBe("86400");
+    expect(res.headers.get("Vary")).toContain("Origin");
+  }
+});
+
+test("preflight stays narrow: unlisted origin, method or header is refused", async () => {
+  const env = environment({ CORS_ORIGINS: ORIGIN });
+  for (const init of [
+    preflight("GET", "authorization", "https://evil.example"),
+    preflight("DELETE"),
+    preflight("GET", "authorization, x-evil"),
+    { method: "OPTIONS", headers: { "Access-Control-Request-Method": "GET" } }, // no Origin
+  ]) {
+    const res = await raw(env, "/v1/notifications", init);
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(null);
+  }
+  expect((await raw(environment(), "/v1/notifications", preflight("GET"))).status).toBe(403); // no CORS_ORIGINS
+});
+
+test("browser GET and mark-read carry CORS headers for a listed origin only", async () => {
+  const env = environment({ CORS_ORIGINS: ORIGIN });
+  const auth = { Authorization: "Bearer root" };
+  const get = await raw(env, "/v1/notifications", { headers: { ...auth, Origin: ORIGIN } });
+  expect(get.status).toBe(200);
+  expect(get.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN);
+  expect(get.headers.get("Access-Control-Expose-Headers")).toContain("Retry-After");
+  const post = await raw(env, "/v1/notifications/read", {
+    method: "POST", headers: { ...auth, Origin: ORIGIN, "Content-Type": "application/json" }, body: JSON.stringify({ ids: [] }),
+  });
+  expect(post.status).toBe(200);
+  expect(post.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN);
+  const stranger = await raw(env, "/v1/usage", { headers: { ...auth, Origin: "https://evil.example" } });
+  expect(stranger.status).toBe(200);
+  expect(stranger.headers.get("Access-Control-Allow-Origin")).toBe(null);
+});
+
+test("a capped deployment never answers a preflight with the cap error", async () => {
+  const env = environment({ CORS_ORIGINS: ORIGIN, USAGE_LIMITS: JSON.stringify({ d1_rows_read: { cap: 1 } }) });
+  await seedUsage(env, { rows_read: 5 });
+  const res = await raw(env, "/v1/rows/pull", { ...preflight("POST", "authorization, content-type"), headers: { ...preflight("POST", "authorization, content-type").headers, Authorization: "Bearer root" } });
+  expect(res.status).not.toBe(429);
+  const capped = await raw(env, "/v1/rows/pull", {
+    method: "POST", headers: { Authorization: "Bearer root", Origin: ORIGIN }, body: JSON.stringify({ table: "t" }),
+  });
+  expect(capped.status).toBe(429);
+  expect(capped.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN); // the browser can read why
+});

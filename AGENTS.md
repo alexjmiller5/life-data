@@ -413,6 +413,10 @@ reports this deployment's own consumption only, never the provider account's.
   remain; `latest_cursor` is the newest seq, which a new device stores as its
   baseline before presenting native alerts. Shapes:
   `tests/fixtures/hub-usage-contract.json`, asserted by `worker/test/usage.test.js`.
+- **CORS.** For a `CORS_ORIGINS` origin the wrapper answers these routes'
+  preflight before authentication and the cap (per-route methods; headers
+  Authorization, Content-Type, If-None-Match), and its responses, including
+  the 429, expose `Retry-After`. Other routes' preflight goes to the hub.
 
 ## Streams
 
