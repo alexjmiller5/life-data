@@ -1,0 +1,54 @@
+{
+  "_about": "Example responses of the hub's usage meter and notification feed. worker/test/usage.test.js asserts the hub's actual responses have these keys and value types (a null on either side matches anything: that field may be unmeasured). Clients test against the same examples.",
+  "usage": {
+    "period": { "start": "2026-10-01T00:00:00.000Z", "end": "2026-11-01T00:00:00.000Z", "anchor_day": 1 },
+    "measured_at": "2026-10-02T15:04:05.123Z",
+    "capped": null,
+    "metrics": {
+      "d1_rows_read": { "kind": "cumulative", "unit": "rows", "used": 1234567890, "allowance": 25000000000, "cap": 25000000000, "alert_at": [0.2, 0.5, 0.8], "measured_at": "2026-10-02T15:04:05.123Z" },
+      "d1_rows_written": { "kind": "cumulative", "unit": "rows", "used": 812345, "allowance": 50000000, "cap": 50000000, "alert_at": [0.2, 0.5, 0.8], "measured_at": "2026-10-02T15:04:05.123Z" },
+      "requests": { "kind": "cumulative", "unit": "requests", "used": 104322, "allowance": 10000000, "cap": null, "alert_at": [0.5, 0.8], "measured_at": "2026-10-02T15:04:05.123Z" },
+      "d1_storage_bytes": { "kind": "gauge", "unit": "bytes", "used": 366403584, "allowance": 5000000000, "cap": null, "alert_at": [], "measured_at": "2026-10-02T14:58:00.000Z" }
+    },
+    "by_principal": [
+      { "id": "device:3f2a9c", "label": "MacBook Air", "kind": "token", "rows_read": 1000000000, "rows_written": 600000, "requests": 80000 },
+      { "id": "system:sweep", "label": null, "kind": "system", "rows_read": 200000000, "rows_written": 1000, "requests": 2880 }
+    ]
+  },
+  "usage_capped": {
+    "capped": { "metric": "d1_rows_read", "used": 25000000000, "cap": 25000000000, "resets_at": "2026-11-01T00:00:00.000Z" }
+  },
+  "notifications": {
+    "notifications": [
+      {
+        "seq": 7,
+        "id": "usage:2026-10-01:d1_rows_read:20",
+        "created_at": "2026-10-02T15:04:05.123Z",
+        "producer": "usage",
+        "type": "usage.threshold",
+        "severity": "info",
+        "title": "Life Data used 20% of its monthly D1 reads",
+        "body": "5B of 25B rows this period (resets Nov 1). Sync pauses at 25B.",
+        "data": null,
+        "read_at": null
+      }
+    ],
+    "next_cursor": null,
+    "latest_cursor": 7,
+    "unread_count": 1
+  },
+  "notification_data": {
+    "usage.threshold": { "metric": "d1_rows_read", "unit": "rows", "used": 5000000000, "allowance": 25000000000, "cap": 25000000000, "fraction": 0.2, "period_start": "2026-10-01T00:00:00.000Z", "period_end": "2026-11-01T00:00:00.000Z" },
+    "usage.cap": { "metric": "d1_rows_read", "unit": "rows", "used": 25000000000, "allowance": 25000000000, "cap": 25000000000, "fraction": 1, "period_start": "2026-10-01T00:00:00.000Z", "period_end": "2026-11-01T00:00:00.000Z" }
+  },
+  "mark_read": { "unread_count": 0 },
+  "cap_error": {
+    "error": "usage_cap",
+    "message": "Monthly D1 reads cap reached (25B rows); sync resumes 2026-11-01T00:00:00.000Z.",
+    "metric": "d1_rows_read",
+    "used": 25000000000,
+    "cap": 25000000000,
+    "resets_at": "2026-11-01T00:00:00.000Z",
+    "retry_after": 2541600
+  }
+}

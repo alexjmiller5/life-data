@@ -44,7 +44,15 @@ function tokensMatch(a, b) {
 // machines). Everything else authenticates against the _tokens table in AUTH_DB -
 // scoped, individually revocable, minted via /v1/tokens/* with the admin
 // token. Tokens are stored as SHA-256 hashes; a lost D1 leaks no secrets.
-async function authenticate(request, env, ctx) {
+// Resolved once per request: the usage meter (src/usage.js) authenticates to
+// attribute a request before the hub routes it, and both get the same tenant.
+const tenants = new WeakMap();
+function authenticate(request, env, ctx) {
+  if (!tenants.has(request)) tenants.set(request, resolveTenant(request, env, ctx));
+  return tenants.get(request);
+}
+
+async function resolveTenant(request, env, ctx) {
   const header = request.headers.get("Authorization") || "";
   let token = "";
   if (header.startsWith("Bearer ")) {
@@ -756,4 +764,4 @@ export default {
   },
 };
 
-export { ROUTES, allowed, validatePush, TOKENS_TABLE };
+export { ROUTES, SWEEP_CRON, allowed, authenticate, validatePush, TOKENS_TABLE };
