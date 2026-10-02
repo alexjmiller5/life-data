@@ -1,0 +1,1007 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Life Core JSON boundary",
+  "description": "Owned by life-data. Wire shapes and current operations only; platform dependencies and sync policy are implemented in TypeScript.",
+  "$defs": {
+    "JSONValue": true,
+    "Row": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/JSONValue"
+      }
+    },
+    "Count": {
+      "type": "integer"
+    },
+    "FilterOp": {
+      "type": "string",
+      "enum": [
+        "eq",
+        "ne",
+        "contains",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "empty",
+        "not_empty"
+      ]
+    },
+    "FilterValue": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "SortDirection": {
+      "type": "string",
+      "enum": [
+        "asc",
+        "desc"
+      ]
+    },
+    "Sort": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/SortDirection"
+        }
+      },
+      "required": [
+        "column",
+        "direction"
+      ]
+    },
+    "Filter": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/FilterOp"
+        },
+        "value": {
+          "$ref": "#/$defs/FilterValue"
+        }
+      },
+      "required": [
+        "column",
+        "op"
+      ]
+    },
+    "View": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filter"
+          }
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Sort"
+          }
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        },
+        "trash": {
+          "type": "boolean"
+        },
+        "search": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "OptionDef": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string"
+        },
+        "d": {
+          "type": "string"
+        },
+        "sort": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "v"
+      ]
+    },
+    "PropertyFlag": {
+      "type": [
+        "number",
+        "boolean"
+      ]
+    },
+    "Property": {
+      "type": "object",
+      "properties": {
+        "tbl": {
+          "type": "string"
+        },
+        "col": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PropertyFlag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OptionDef"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options_sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "min_items": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_items": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ref_table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "derived_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "immutable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PropertyFlag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deprecated": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PropertyFlag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "col"
+      ]
+    },
+    "Violation": {
+      "type": "object",
+      "properties": {
+        "col": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "col",
+        "rule",
+        "message"
+      ]
+    },
+    "WriteViolation": {
+      "type": "object",
+      "properties": {
+        "col": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "row_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "col",
+        "rule",
+        "message",
+        "tbl",
+        "row_id"
+      ]
+    },
+    "Catalog": {
+      "type": "object",
+      "properties": {
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Property"
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "tables",
+        "properties",
+        "rules"
+      ]
+    },
+    "WorkspaceRow": {
+      "type": "object",
+      "properties": {
+        "record": {
+          "$ref": "#/$defs/Row"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record",
+        "label"
+      ]
+    },
+    "SyncSettings": {
+      "type": "object",
+      "properties": {
+        "maxRows": {
+          "$ref": "#/$defs/Count"
+        },
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      },
+      "required": []
+    },
+    "SyncResult": {
+      "type": "object",
+      "properties": {
+        "pulled": {
+          "$ref": "#/$defs/Count"
+        },
+        "pushed": {
+          "$ref": "#/$defs/Count"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "pulled",
+        "pushed",
+        "skipped",
+        "rejected"
+      ]
+    },
+    "SyncStatus": {
+      "type": "object",
+      "properties": {
+        "lastSuccessfulSync": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingUiEdits": {
+          "$ref": "#/$defs/Count"
+        },
+        "rejected": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "lastSuccessfulSync",
+        "pendingUiEdits",
+        "rejected"
+      ]
+    },
+    "UsagePeriod": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        },
+        "anchor_day": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "anchor_day"
+      ]
+    },
+    "UsageMetricKind": {
+      "type": "string",
+      "enum": [
+        "cumulative",
+        "gauge"
+      ]
+    },
+    "UsageMetric": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/UsageMetricKind"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "used": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cap": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alert_at": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "measured_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "unit",
+        "used",
+        "allowance",
+        "cap",
+        "alert_at",
+        "measured_at"
+      ]
+    },
+    "UsageCap": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "used": {
+          "type": "number"
+        },
+        "cap": {
+          "type": "number"
+        },
+        "resets_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric",
+        "used",
+        "cap",
+        "resets_at"
+      ]
+    },
+    "UsagePrincipal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "rows_read": {
+          "type": "number"
+        },
+        "rows_written": {
+          "type": "number"
+        },
+        "requests": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "rows_read",
+        "rows_written",
+        "requests"
+      ]
+    },
+    "UsageSummary": {
+      "type": "object",
+      "properties": {
+        "period": {
+          "$ref": "#/$defs/UsagePeriod"
+        },
+        "measured_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capped": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageCap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/UsageMetric"
+          }
+        },
+        "by_principal": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UsagePrincipal"
+          }
+        }
+      },
+      "required": [
+        "period",
+        "measured_at",
+        "capped",
+        "metrics",
+        "by_principal"
+      ]
+    },
+    "HubNotification": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "$ref": "#/$defs/Count"
+        },
+        "id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "producer": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/JSONValue"
+        },
+        "read_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "seq",
+        "id",
+        "created_at",
+        "producer",
+        "type",
+        "severity",
+        "title",
+        "body",
+        "data",
+        "read_at"
+      ]
+    },
+    "NotificationFeed": {
+      "type": "object",
+      "properties": {
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HubNotification"
+          }
+        },
+        "next_cursor": {
+          "type": "null"
+        },
+        "latest_cursor": {
+          "$ref": "#/$defs/Count"
+        },
+        "unread_count": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "notifications",
+        "next_cursor",
+        "latest_cursor",
+        "unread_count"
+      ]
+    },
+    "NotificationPresentation": {
+      "type": "object",
+      "properties": {
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HubNotification"
+          }
+        },
+        "baseline": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "notifications",
+        "baseline"
+      ]
+    },
+    "NotificationReadSelector": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "through": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": []
+    },
+    "NotificationReadResult": {
+      "type": "object",
+      "properties": {
+        "unread_count": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "unread_count"
+      ]
+    },
+    "EmptyArgs": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "EndpointArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint"
+      ]
+    },
+    "SyncArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "maxRows": {
+          "$ref": "#/$defs/Count"
+        },
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      },
+      "required": [
+        "endpoint"
+      ]
+    },
+    "OptionsArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "column"
+      ]
+    },
+    "WriteArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "patch": {
+          "$ref": "#/$defs/Row"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "patch"
+      ]
+    },
+    "NotificationReadArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "selector": {
+          "$ref": "#/$defs/NotificationReadSelector"
+        }
+      },
+      "required": [
+        "endpoint",
+        "selector"
+      ]
+    },
+    "NotificationPresentationArgs": {
+      "type": "object",
+      "properties": {
+        "feed": {
+          "$ref": "#/$defs/NotificationFeed"
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "feed",
+        "baseline"
+      ]
+    }
+  },
+  "operations": {
+    "catalog": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Catalog"
+      }
+    },
+    "rows": {
+      "args": {
+        "$ref": "#/$defs/View"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/WorkspaceRow"
+        }
+      }
+    },
+    "options": {
+      "args": {
+        "$ref": "#/$defs/OptionsArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "write": {
+      "args": {
+        "$ref": "#/$defs/WriteArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
+      }
+    },
+    "status": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SyncStatus"
+      }
+    },
+    "sync": {
+      "args": {
+        "$ref": "#/$defs/SyncArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SyncResult"
+      }
+    },
+    "serviceUsage": {
+      "args": {
+        "$ref": "#/$defs/EndpointArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/UsageSummary"
+      }
+    },
+    "serviceNotifications": {
+      "args": {
+        "$ref": "#/$defs/EndpointArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/NotificationFeed"
+      }
+    },
+    "markNotificationsRead": {
+      "args": {
+        "$ref": "#/$defs/NotificationReadArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/NotificationReadResult"
+      }
+    },
+    "notificationPresentation": {
+      "args": {
+        "$ref": "#/$defs/NotificationPresentationArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/NotificationPresentation"
+      }
+    }
+  }
+}

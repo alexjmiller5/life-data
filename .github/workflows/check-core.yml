@@ -1,0 +1,22 @@
+name: Core contract
+
+on:
+  push:
+    branches-ignore: [main]
+    paths: ["core/**", "worker/**", "tests/fixtures/**", "scripts/generate-core-contract.ts", ".github/workflows/check-core.yml"]
+  pull_request:
+    paths: ["core/**", "worker/**", "tests/fixtures/**", "scripts/generate-core-contract.ts", ".github/workflows/check-core.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - working-directory: core
+        run: bun install --frozen-lockfile && bun test && bun run check

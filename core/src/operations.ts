@@ -1,0 +1,48 @@
+import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
+import type { SqlDriver } from './driver.ts';
+import type { ServiceHub } from './services.ts';
+import { readCatalog } from './catalog.ts';
+import { allowed } from './validate.ts';
+import { compileView, displayName } from './view.ts';
+import { isReadOnlyTable, writeRow } from './write.ts';
+import { sync } from './sync.ts';
+import { syncStatus } from './status.ts';
+import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
+
+/** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
+export async function readRows(db: SqlDriver, view: View): Promise<WorkspaceRow[]> {
+  const catalog = await readCatalog(db);
+  const table = catalog.tables.find(t => t.id === view.table);
+  if (!table) throw new Error('Table is not in the catalog');
+  const query = compileView(view, catalog.properties);
+  const rows = await db.all(query.sql, query.params);
+  return rows.map(record => ({ record, label: displayName(record, typeof table.display === 'string' ? table.display : undefined) }));
+}
+
+export async function readOptions(db: SqlDriver, { table, column }: OptionsArgs): Promise<string[]> {
+  const catalog = await readCatalog(db);
+  const property = catalog.properties.find(p => p.tbl === table && p.col === column);
+  if (!property || !['select', 'multi_select'].includes(property.type ?? '')) throw new Error('Select property is not in the catalog');
+  const rows = property.options_sql ? await db.all(`SELECT * FROM (${property.options_sql})`) : [];
+  const extra = rows.map(row => Object.values(row)[0] as string);
+  return allowed(property, () => extra);
+}
+
+/** Typed local dispatch, not a network protocol. Credentials stay in the host. */
+export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local'): CoreHandlers {
+  return {
+    async catalog() {
+      const catalog = await readCatalog(db);
+      return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
+    },
+    rows: view => readRows(db, view),
+    options: args => readOptions(db, args),
+    write: args => writeRow(db, args.table, args.patch, { origin, expectedUpdatedAt: args.expectedUpdatedAt }),
+    status: () => syncStatus(db),
+    sync: args => sync(db, hub(args.endpoint), { maxRows: args.maxRows, tables: args.tables }),
+    serviceUsage: args => readUsage(hub(args.endpoint)),
+    serviceNotifications: args => readNotifications(hub(args.endpoint)),
+    markNotificationsRead: args => markNotificationsRead(hub(args.endpoint), args.selector),
+    notificationPresentation: args => notificationPresentation(args.feed, args.baseline),
+  };
+}

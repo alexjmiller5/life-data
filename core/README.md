@@ -58,10 +58,26 @@ the CLI's canonical timestamp triggers are supported. Missing local references r
 table to be included and synced. Skipped tables have no remote browsing API in
 this package yet. Sync snapshots pending rows in memory; very large full
 replicas will need snapshots staged in temporary tables. Search is a bounded
-SQL scan, not an FTS index. Saved-view storage, enrollment and native contract
-generation are client integration work.
+SQL scan, not an FTS index. Saved-view storage and enrollment are client integration work.
 
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases
 run in both Python and TypeScript; core tests also call the actual Worker over
 its D1-compatible SQLite test adapter. No live dataset is needed.
+
+The JSON boundary lives in `contract/core.json`. Run
+`bun ../scripts/generate-core-contract.ts` to regenerate TypeScript models,
+operation pairs, and Swift `Core` models. Check mode is read-only and part of
+`just check`. The generator intentionally supports only the schema vocabulary
+in use; unsupported constructs fail. Swift codecs preserve required nulls and
+optional missing/null/value fields and reject integers outside JS precision.
+`CoreRequests` couples each Swift request to its response type; TS `CoreHandlers`
+requires every current operation. `createCoreHandlers` invokes existing core
+behavior, including `readRows` and `readOptions`, with platform dependencies
+injected. This is an in-process API, not a server RPC negotiation protocol.
+
+Consumers vendor the schema, generator and generated artifacts together. The
+contract SHA-256 identifies that local artifact pair; their bridge must compare
+it with the bundled runtime before dispatch. Consumers retain queues, file/Web
+locks, host-only database lifecycle, and notification checkpoints. Generation
+adds no platform timers, storage, credentials or speculative scoped sync.

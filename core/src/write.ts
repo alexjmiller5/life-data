@@ -3,7 +3,8 @@ import { decodeProperty } from './catalog.ts';
 import { initCore } from './sync.ts';
 import { asList, empty, qident, validEditTimestamp, validateRow, type Property, type Row, type Violation } from './validate.ts';
 
-export type WriteViolation = Violation & { tbl: string; row_id: string | null };
+import type { WriteViolation } from './contract.generated.ts';
+export type { WriteViolation } from './contract.generated.ts';
 export class ValidationError extends Error {
   constructor(public readonly violations: WriteViolation[]) {
     super(violations.map(v => `${v.tbl}[${v.row_id ?? ''}].${v.col}: ${v.message}`).join('\n'));

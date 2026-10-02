@@ -1,7 +1,8 @@
 import type { SqlDriver, Hub } from './driver.ts';
 import { qident, validEditTimestamp, type Row } from './validate.ts';
-export type SyncOptions = { maxRows?: number; tables?: Record<string, boolean>; now?: () => Date; maxClockSkewMs?: number };
-export type SyncResult = { pulled: number; pushed: number; skipped: string[]; rejected: Row[] };
+import type { SyncSettings, SyncResult } from './contract.generated.ts';
+export type { SyncResult } from './contract.generated.ts';
+export type SyncOptions = SyncSettings & { now?: () => Date; maxClockSkewMs?: number };
 
 export async function initCore(db: SqlDriver): Promise<void> {
   await db.run("CREATE TABLE IF NOT EXISTS _schema_log (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), ddl TEXT NOT NULL)");

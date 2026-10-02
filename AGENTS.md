@@ -38,6 +38,11 @@ CLI.
 - `core/src/services.ts` - typed usage/feed/read-state clients over `ServiceHub`.
   `tests/fixtures/hub-usage-contract.json` is the hub contract. Feed reads walk
   from zero each time; presentation checkpoints and permissions belong to hosts.
+- `core/contract/core.json` owns the client JSON shapes and current operation
+  pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
+  codecs; `--check` verifies reproducibility without writing. Edit the contract,
+  never generated files. `createCoreHandlers` keeps local dispatch behavior in
+  TypeScript; hosts inject credentials, transport, locking and storage.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`

@@ -7,3 +7,5 @@ export * from './http.ts';
 export * from './write.ts';
 export * from './status.ts';
 export * from './services.ts';
+export * from './contract.generated.ts';
+export * from './operations.ts';

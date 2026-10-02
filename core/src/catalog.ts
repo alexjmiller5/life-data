@@ -1,3 +1,4 @@
+import type { Catalog } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
 import { qident, type Property, type Row } from './validate.ts';
 
@@ -13,7 +14,7 @@ export function decodeProperty(row: Row): Property {
   return decoded;
 }
 
-export async function readCatalog(db: SqlDriver): Promise<{tables: Row[]; properties: Property[]; rules: Row[]}> {
+export async function readCatalog(db: SqlDriver): Promise<Catalog> {
   const existing=new Set((await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r=>r.name));
   const read=(table:string)=>existing.has(table) ? db.all(`SELECT * FROM ${qident(table)} WHERE deleted_at IS NULL ORDER BY id`) : Promise.resolve([]);
   return {tables:await read('catalog_tables'), properties:(await read('catalog_properties')).map(decodeProperty), rules:await read('catalog_rules')};

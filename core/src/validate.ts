@@ -2,32 +2,8 @@
 // client. Mirror of life_data.catalog.validate_row (Python); the shared fixture
 // tests/fixtures/validation-cases.json is the contract both run.
 
-export type Row = Record<string, unknown>;
-
-export type OptionDef = { v: string; d?: string; sort?: number };
-
-export type Property = {
-  tbl?: string;
-  col: string;
-  label?: string | null;
-  sort?: number | null;
-  type?: string | null;
-  required?: number | boolean | null;
-  default_value?: string | null;
-  options?: OptionDef[] | null;
-  options_sql?: string | null;
-  min_items?: number | null;
-  max_items?: number | null;
-  pattern?: string | null;
-  ref_table?: string | null;
-  derived_by?: string | null;
-  inputs?: string[] | null;
-  immutable?: number | boolean | null;
-  deprecated?: number | boolean | null;
-  description?: string | null;
-};
-
-export type Violation = { col: string; rule: string; message: string };
+import type { Row, OptionDef, Property, Violation } from './contract.generated.ts';
+export type { Row, OptionDef, Property, Violation } from './contract.generated.ts';
 
 export type ValidateOptions = {
   /** Derived columns the hub is filling in this write (derivation runs only). */

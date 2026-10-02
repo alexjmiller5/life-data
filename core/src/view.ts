@@ -1,21 +1,7 @@
 import { qident, type Property, type Row } from "./validate.ts";
 
-export type Filter = {
-  column: string;
-  op: "eq" | "ne" | "contains" | "gt" | "gte" | "lt" | "lte" | "empty" | "not_empty";
-  value?: string | number | boolean | null;
-};
-
-export type View = {
-  table: string;
-  columns?: string[];
-  filters?: Filter[];
-  sort?: { column: string; direction: "asc" | "desc" }[];
-  limit?: number;
-  offset?: number;
-  trash?: boolean;
-  search?: string;
-};
+import type { View } from './contract.generated.ts';
+export type { Filter, View } from './contract.generated.ts';
 
 const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at"]);
 const TEXT_TYPES = new Set(["text", "markdown", "select", "url", "email", "phone", "ref", "date", "datetime"]);

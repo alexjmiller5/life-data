@@ -18,7 +18,7 @@ test:
 check:
     uv run ruff check .
     uv run ruff format --check .
-    cd core && bunx tsc --noEmit
+    cd core && bun run check
 
 # auto-fix formatting and lints
 fmt:
