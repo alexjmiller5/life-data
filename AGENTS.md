@@ -43,6 +43,12 @@ CLI.
   codecs; `--check` verifies reproducibility without writing. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
+- `core/src/search.ts` owns local FTS5/unicode61 search and its durable
+  `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
+  including independent Python edits; index draining and searching share one
+  driver transaction. Cache DDL never enters `_schema_log`. `View.search`
+  uses literal word prefixes; `contains` retains substring semantics. Raw
+  Markdown is indexed, with conservative plain-text display cleanup only.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`

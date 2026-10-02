@@ -1,10 +1,10 @@
 import { qident, type Property, type Row } from "./validate.ts";
+import { compileSearch } from './search.ts';
 
 import type { View } from './contract.generated.ts';
 export type { Filter, View } from './contract.generated.ts';
 
 const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at"]);
-const TEXT_TYPES = new Set(["text", "markdown", "select", "url", "email", "phone", "ref", "date", "datetime"]);
 
 function checkObject(value: unknown, keys: string[], label: string): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)
@@ -17,6 +17,8 @@ function checkObject(value: unknown, keys: string[], label: string): asserts val
 /** Compile a catalog-scoped view. Equality is null-safe; contains is literal
  * (ASCII case-insensitive text, exact JSON array membership). Empty includes
  * NULL, empty strings and, for multi-value properties, empty JSON arrays.
+ * Nonempty search requires the prepared local FTS index. Prefer readRows(),
+ * which drains its queue and queries in the same transaction.
  */
 export function compileView(view: View, properties: Property[]): { sql: string; params: (string | number | null)[] } {
   checkObject(view, ["table", "columns", "filters", "sort", "limit", "offset", "trash", "search"], "view");
@@ -95,11 +97,8 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
   }
 
   if (view.search) {
-    const matches: string[] = [];
-    for (const p of props.values()) {
-      if (TEXT_TYPES.has(p.type ?? "text")) matches.push(`instr(lower(${column(p.col)}), lower(${bind(view.search)})) > 0`);
-    }
-    where.push(matches.length ? `(${matches.join(" OR ")})` : "0");
+    const query = compileSearch(view.search);
+    where.push(query ? `${column('id')} IN (SELECT d.row_id FROM _core_search_fts JOIN _core_search_docs AS d ON d.docid=_core_search_fts.rowid WHERE _core_search_fts MATCH ${bind(query)} AND d.tbl=${bind(view.table)})` : '0');
   }
   const order: string[] = [];
   let sortedById = false;

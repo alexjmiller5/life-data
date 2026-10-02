@@ -1,6 +1,7 @@
 import type { SqlDriver, Value } from './driver.ts';
 import { decodeProperty } from './catalog.ts';
 import { initCore } from './sync.ts';
+import { isSearchTrigger } from './search.ts';
 import { asList, empty, qident, validEditTimestamp, validateRow, type Property, type Row, type Violation } from './validate.ts';
 
 import type { WriteViolation } from './contract.generated.ts';
@@ -28,8 +29,8 @@ export function isReadOnlyTable(table: string, catalogEntry?: Row): boolean {
  * now/id are host/test seams; id generates row IDs only. History IDs always
  * come from SQLite. No caller may supply created_at, updated_at or hub_at.
  * Enforced invariants require the CLI's estate-wide snapshot write path.
- * Custom triggers anywhere in main/temp block writes. Only the exact main
- * timestamp trigger shipped by Python is supported; this writer keeps it idle.
+ * Custom triggers anywhere in main/temp block writes. Exact main timestamp
+ * triggers and queue-only search triggers are supported.
  * Forms should pass expectedUpdatedAt from their selected row. A stale edit
  * fails with rule='conflict'; omit it for unconditional merges into current data.
  */
@@ -82,9 +83,10 @@ export async function writeRow(
       }
       // ponytail: no complete trigger journal yet. Inspect the whole database,
       // including history and TEMP triggers, before any mutation. Names alone
-      // cannot prove safety; only Python's exact, dormant timestamp DDL can.
+      // cannot prove safety; recognize only exact timestamp/queue-only DDL.
       const triggers = await db.all("SELECT name,tbl_name,sql,0 AS temporary FROM main.sqlite_master WHERE type='trigger' UNION ALL SELECT name,tbl_name,sql,1 AS temporary FROM temp.sqlite_master WHERE type='trigger'");
       for (const trigger of triggers) {
+        if (isSearchTrigger(trigger)) continue;
         const t = String(trigger.tbl_name);
         const canonical = `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
         if (trigger.temporary || String(trigger.sql).replace(/\s+/g, ' ').trim() !== canonical) {

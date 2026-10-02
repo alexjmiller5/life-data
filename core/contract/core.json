@@ -914,6 +914,49 @@
         "feed",
         "baseline"
       ]
+    },
+    "SearchArgs": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "SearchHit": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "label",
+        "excerpt"
+      ]
     }
   },
   "operations": {
@@ -1001,6 +1044,17 @@
       },
       "result": {
         "$ref": "#/$defs/NotificationPresentation"
+      }
+    },
+    "search": {
+      "args": {
+        "$ref": "#/$defs/SearchArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/SearchHit"
+        }
       }
     }
   }

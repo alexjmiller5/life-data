@@ -38,7 +38,8 @@ test('typed handlers execute the same core reads, writes, receipts and service m
     requests.push(route); return { data: route === '/v1/usage' ? usage.usage : usage.notifications };
   }, async post(route, body) { requests.push([route, body]); return { data: usage.mark_read }; } };
   const handlers = core.createCoreHandlers(db, endpoint => { expect(endpoint).toBe(hub.endpoint); return hub; }, 'fixture');
-  expect(Object.keys(handlers).sort()).toEqual(['catalog', 'rows', 'options', 'write', 'status', 'sync', 'serviceUsage', 'serviceNotifications', 'markNotificationsRead', 'notificationPresentation'].sort());
+  expect(Object.keys(handlers).sort()).toEqual(['catalog', 'rows', 'search', 'options', 'write', 'status', 'sync', 'serviceUsage', 'serviceNotifications', 'markNotificationsRead', 'notificationPresentation'].sort());
+  expect((await handlers.search({ text: 'item', table: 'items', limit: 2 })).map(r => r.id)).toEqual(['1', '2']);
   expect((await handlers.catalog({})).tables[0].readOnly).toBe(false);
   const saved = await handlers.write({ table: 'items', patch: { id: '1', name: 'Changed' }, expectedUpdatedAt: T0 });
   expect((await handlers.rows({ table: 'items', filters: [{ column: 'id', op: 'eq', value: '1' }] }))[0].label).toBe('Changed');

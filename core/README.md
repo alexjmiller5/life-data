@@ -26,7 +26,28 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   rejection inbox. Pending UI edits await this core's own valid receipt even
   if Python has already pushed them; this is not the entire CLI sync queue.
 - `readCatalog` decodes properties. `compileView` produces parameterized,
-  catalog-scoped SQL with filtering, sorting, literal search and bounded pages.
+  catalog-scoped SQL with filtering, sorting and bounded pages. `contains`
+  remains a literal substring filter (or exact JSON array membership).
+- `search(driver, { text, table?, limit?, offset? })` searches the local replica
+  with FTS5 and returns `{ table, id, label, excerpt }[]`. `View.search` uses
+  the same index before filtering, sorting and paging. Search ANDs literal
+  word prefixes, folds case/accents with `unicode61`, and does not accept FTS
+  operators. It is word search, not arbitrary substring matching. Empty or
+  punctuation-only global searches return no hits. Limits default to 50 and
+  cap at 200; queries are limited to 4096 characters / 64 words. Global hits
+  rank by BM25 with table/id tie-breakers and exclude trash; row views retain
+  their explicit sorting and trash selection.
+- Search indexes physically present, cataloged textual columns, including raw
+  Markdown, select, URL, email, phone, ref, date and datetime values. It does
+  not search uncataloged fields, JSON, numbers, blobs, or remote skipped data.
+  Retained rows from skipped tables are still local results and may be stale:
+  hosts must keep sync coverage warnings visible. No result is a claim of
+  complete hub coverage. Labels use the shared display-name function.
+- Excerpts use up to 24 FTS tokens, capped at 512 SQLite characters, with
+  conservative cleanup of Markdown headings, lists, links and inline markers.
+  Link destinations, code and table text remain searchable. This is **raw
+  Markdown indexing plus display cleanup**, not a maintained plain-text
+  projection or a Markdown renderer. Render excerpts as plain text, never HTML.
 - `createHttpHub(endpoint, token, fetch)` is the browser transport. The native
   host supplies a `Hub` using URLSession. Neither credentials nor SQL drivers
   are owned by the core. HTTP adapters must expose the server Date header and
@@ -52,13 +73,40 @@ The browser host must exclude overlapping rounds across tabs with a Web Lock.
 A native host sharing a Python replica must hold `<database>.sync.lock` around
 sync. The core additionally refuses overlap on one driver instance.
 
+SQLite must support **FTS5 with the unicode61 tokenizer**. Hosts may call
+`assertSearchSupport(driver)` at database open for an explicit capability error;
+search also checks on use and never silently falls back to a table scan. The
+probe creates only local cache tables. Browser hosts need an FTS5-enabled WASM
+artifact and must verify FTS reads through their read-only SQL adapter. Native
+hosts verify the actual GRDB/JSC connection, not a separate CLI SQLite binary.
+
+The search cache uses `_core_search_fts`, `_core_search_docs`,
+`_core_search_dirty` and `_core_search_state`. Queue-only persistent triggers
+record OLD/NEW IDs in the same transaction as writes, including pulls and
+independent Python writes. They invoke no FTS functions in those writers.
+Before searching, core reconciles catalog/schema fingerprints, drains dirty
+rows in batches, and reads results under one BEGIN IMMEDIATE transaction.
+Failed drains roll back and retain their queue; missing cache components or
+triggers cause a rebuild. Dropped/renamed tables and catalog changes purge or
+rebuild affected entries. None of this local DDL is logged or synced, and cache
+work does not create history, pending UI edits or revisions on source rows.
+
+Clean searches read metadata and the FTS index, not source table contents.
+Initial backfills and schema changes scan affected tables. A dirty table with
+UNIQUE constraints or custom collation also gets an indexed ID anti-join to
+remove silent `INSERT/UPDATE OR REPLACE` victims when SQLite delete triggers
+are disabled. Other edits read only queued IDs. Use `readRows` for searched
+views; callers using `compileView` directly must first call `prepareSearch`
+inside the same driver transaction as the query.
+
 Current limits: enforced SQL invariants and custom triggers fail closed in
 `writeRow` until the complete validation/journaling engine is integrated. Only
-the CLI's canonical timestamp triggers are supported. Missing local references require their
+the CLI's canonical timestamp triggers and exact core search queue triggers are
+supported. Missing local references require their
 table to be included and synced. Skipped tables have no remote browsing API in
 this package yet. Sync snapshots pending rows in memory; very large full
-replicas will need snapshots staged in temporary tables. Search is a bounded
-SQL scan, not an FTS index. Saved-view storage and enrollment are client integration work.
+replicas will need snapshots staged in temporary tables. Saved-view storage is
+not implemented in this package; enrollment remains a host integration.
 
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases

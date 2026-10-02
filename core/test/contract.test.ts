@@ -13,6 +13,9 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.typescript).toContain('export type View =');
   expect(first.typescript).toContain('export interface CoreOperations');
   expect(first.typescript).toContain('rows: { args: View; result: WorkspaceRow[] }');
+  expect(first.typescript).toContain('search: { args: SearchArgs; result: SearchHit[] }');
+  expect(first.swift).toContain('public init(text: String, table: String? = nil, limit: CoreCount? = nil, offset: CoreCount? = nil)');
+  expect(first.swift).toContain('public typealias Response = [CoreSearchHit]');
   expect(first.swift).toContain('public struct CoreView:');
   expect(first.swift).toContain('public struct CoreFilter:');
   expect(first.swift).toContain('public typealias Response = [CoreWorkspaceRow]');

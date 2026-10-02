@@ -152,17 +152,13 @@ describe("compileView against SQLite", () => {
       expect(compiled.params).toContain(value);
       expect(ids({ filters: [filter] })).toEqual(["a"]);
     }
-    expect(ids({ search: value })).toEqual(["a"]);
     expect(ids()).toHaveLength(5);
   });
 
-  test("search covers catalog text fields, grouped with filters and the trash predicate", () => {
-    expect(ids({ search: "NEEDLE" })).toEqual(["b"]);
-    expect(ids({ search: "needle", filters: [{ column: "score", op: "gt", value: 10 }] })).toEqual([]);
-    expect(ids({ search: "needle", trash: true })).toEqual(["z"]);
-    expect(ids({ search: "%_\\" })).toEqual(["a"]);
-    expect(ids({ search: "10" })).toEqual([]);
-    expect(ids({ search: "anything" }, [{ col: "score", type: "number" }])).toEqual([]);
+  test("empty search needs no index; nonempty search compiles a bound FTS lookup", () => {
+    const query = compileView({ table: 'group', search: 'needle' }, properties);
+    expect(query.sql).toContain('_core_search_fts MATCH ?');
+    expect(query.params).toEqual(['"needle"*', 'group', 50, 0]);
     expect(ids({ search: "" })).toEqual(["a", "b", "c", "d", "e"]);
   });
 
@@ -173,7 +169,6 @@ describe("compileView against SQLite", () => {
       { filters: [{ column: "private_column", op: "eq", value: "secret" }] },
       { sort: [{ column: "private_column", direction: "asc" }] },
     ]) expect(() => compileView({ table: "group", ...view } as View, catalog)).toThrow();
-    expect(ids({ search: "hidden" }, catalog)).toEqual([]);
   });
 });
 

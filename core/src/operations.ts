@@ -7,16 +7,21 @@ import { compileView, displayName } from './view.ts';
 import { isReadOnlyTable, writeRow } from './write.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
+import { prepareSearch, search } from './search.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
 /** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
 export async function readRows(db: SqlDriver, view: View): Promise<WorkspaceRow[]> {
-  const catalog = await readCatalog(db);
-  const table = catalog.tables.find(t => t.id === view.table);
-  if (!table) throw new Error('Table is not in the catalog');
-  const query = compileView(view, catalog.properties);
-  const rows = await db.all(query.sql, query.params);
-  return rows.map(record => ({ record, label: displayName(record, typeof table.display === 'string' ? table.display : undefined) }));
+  const read = async () => {
+    const catalog = await readCatalog(db);
+    const table = catalog.tables.find(t => t.id === view.table);
+    if (!table) throw new Error('Table is not in the catalog');
+    const query = compileView(view, catalog.properties);
+    if (view.search) await prepareSearch(db, catalog);
+    const rows = await db.all(query.sql, query.params);
+    return rows.map(record => ({ record, label: displayName(record, typeof table.display === 'string' ? table.display : undefined) }));
+  };
+  return view.search ? db.transaction(read) : read();
 }
 
 export async function readOptions(db: SqlDriver, { table, column }: OptionsArgs): Promise<string[]> {
@@ -36,6 +41,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
     },
     rows: view => readRows(db, view),
+    search: args => search(db, args),
     options: args => readOptions(db, args),
     write: args => writeRow(db, args.table, args.patch, { origin, expectedUpdatedAt: args.expectedUpdatedAt }),
     status: () => syncStatus(db),

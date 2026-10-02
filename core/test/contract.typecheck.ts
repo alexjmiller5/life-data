@@ -13,4 +13,8 @@ const wrongArgs: CoreArgs<'rows'> = { endpoint: 'https://hub.example.test' };
 const wrongFeed: CoreResult<'serviceNotifications'> = { notifications: [], next_cursor: 7, latest_cursor: 7, unread_count: 0 };
 // @ts-expect-error handlers must cover every current operation
 const missingHandlers: CoreHandlers = { status: () => ({ lastSuccessfulSync: null, pendingUiEdits: 0, rejected: 0 }) };
-void [missingTable, wrongSort, wrongValue, wrongArgs, wrongFeed, missingHandlers];
+// @ts-expect-error a search needs text, not an endpoint or SQL
+const badSearch: CoreArgs<'search'> = { endpoint: 'https://hub.example.test' };
+// @ts-expect-error search hits identify the table as well as the row
+const incompleteHit: CoreResult<'search'> = [{ id: 'row', label: 'Label', excerpt: 'Excerpt' }];
+void [missingTable, wrongSort, wrongValue, wrongArgs, wrongFeed, missingHandlers, badSearch, incompleteHit];
