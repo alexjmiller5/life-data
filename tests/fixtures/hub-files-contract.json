@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "conditional_put": {
+    "headers": {
+      "If-None-Match": "*",
+      "Content-Type": "text/html",
+      "X-Content-SHA256": "74c7835231c92b40bf6415ed21bb8e9cacfb624f16b8a15510a3984874594aa6"
+    },
+    "status": 201,
+    "body": {
+      "key": "captures/attempt/page.html",
+      "mime": "text/html",
+      "bytes": 17,
+      "sha256": "74c7835231c92b40bf6415ed21bb8e9cacfb624f16b8a15510a3984874594aa6",
+      "etag": "\"opaque-etag\""
+    }
+  },
+  "exists": {
+    "status": 412,
+    "body": {
+      "error": "file_exists"
+    }
+  },
+  "checksum_mismatch": {
+    "status": 400,
+    "body": {
+      "error": "checksum_mismatch"
+    }
+  },
+  "retrieval_headers": {
+    "Content-Type": "text/html",
+    "Content-Disposition": "attachment",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "Cache-Control": "private, no-store, no-transform",
+    "X-Content-SHA256": "74c7835231c92b40bf6415ed21bb8e9cacfb624f16b8a15510a3984874594aa6"
+  }
+}

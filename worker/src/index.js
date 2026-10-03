@@ -11,6 +11,7 @@ import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
+import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedResult, ScopeDenied } from "./scopes.js";
@@ -688,11 +689,7 @@ async function handleArchiveGet(request, env, url) {
   if (request.method === "HEAD") {
     const head = await env.ARCHIVE.head(key);
     if (!head) return new Response(null, { status: 404 });
-    const headers = new Headers();
-    head.writeHttpMetadata(headers);
-    headers.set("Cache-Control", "private, no-store, no-transform");
-    headers.set("Accept-Ranges", "bytes");
-    headers.set("Content-Length", String(head.size));
+    const headers = fileHeaders(head);
     return new Response(null, { headers });
   }
   // range: pass the Headers object only when a Range header exists — R2
@@ -703,10 +700,7 @@ async function handleArchiveGet(request, env, url) {
     ? await env.ARCHIVE.get(key, { range: request.headers })
     : await env.ARCHIVE.get(key);
   if (!obj) return json({ error: "not found" }, 404);
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set("Cache-Control", "private, no-store, no-transform");
-  headers.set("Accept-Ranges", "bytes");
+  const headers = fileHeaders(obj);
   if (rangeHeader && obj.range) {
     const start = obj.range.offset ?? Math.max(0, obj.size - (obj.range.suffix ?? 0));
     const length = obj.range.length ?? obj.size - start;
@@ -734,7 +728,7 @@ function withCors(response, origin) {
   const out = new Response(response.body, response);
   out.headers.set("Access-Control-Allow-Origin", origin);
   out.headers.append("Vary", "Origin");
-  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Date, Retry-After");
+  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Date, Retry-After, X-Content-SHA256");
   return out;
 }
 
@@ -745,7 +739,7 @@ function preflight(request, env) {
     status: 204,
     headers: {
       "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH",
-      "Access-Control-Allow-Headers": "Authorization, Content-Type, If-None-Match, Range",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, If-None-Match, Range, X-Content-SHA256",
       "Access-Control-Max-Age": "86400",
     },
   }), origin);
@@ -815,10 +809,7 @@ async function handle(request, env, ctx, url) {
       if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
       let key;
       try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
-      const object = await tenant.archive.put(key, request.body, {
-        httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" },
-      });
-      return json({ key, etag: object.httpEtag }, 201);
+      return await putFile(request, tenant.archive, key);
     }
     if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
       const route = TOKEN_ROUTES[url.pathname];

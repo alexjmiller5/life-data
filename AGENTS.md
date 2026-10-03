@@ -631,7 +631,14 @@ ARCHIVE binding. Prefix scopes `files:read:<prefix>/` and
 The same checks protect the legacy `/v1/archive/<key>` read route;
 `tables:read` never grants object access. Full/admin retain archive access.
 Reject encoded separators, double encoding, dot/empty segments and control
-characters before touching storage. Tests exercise real token creation,
+characters before touching storage. Conditional PUT uses `If-None-Match: *` and required lowercase hex
+`X-Content-SHA256`; the storage service validates the streamed bytes atomically.
+201 returns key/mime/bytes/sha256/etag. Existing keys return 412; retries reconcile
+through independently authorized HEAD metadata. Unconditional legacy writes remain
+compatible; unchecked legacy objects have no SHA-256. Every object response is
+attachment + nosniff + sandbox/default-src-none CSP, regardless of MIME.
+Canonical shapes: `tests/fixtures/hub-files-contract.json`.
+Tests exercise real token creation,
 revocation and requests against an in-memory archive.
 
 Approved consumers: People Sync retains person/record photos and source

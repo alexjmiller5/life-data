@@ -86,3 +86,14 @@ active/paused watched table definitions and exact recording trigger SQL in its D
 transaction; structural changes require retiring affected subscriptions first.
 Unrelated schema changes remain available. Subscription retirement does not discard
 pending events.
+
+Conditional file creation uses PUT with `If-None-Match: *`, `Content-Type` and
+`X-Content-SHA256` (64 lowercase hex digits). R2 verifies the streamed checksum
+before committing. 201 returns `{key,mime,bytes,sha256,etag}`; an existing key is
+412 `{error:"file_exists"}` even for identical bytes. Reconcile independently
+with HEAD and compare Content-Type, Content-Length and X-Content-SHA256 before
+publishing metadata. A mismatch requires a new key, never overwrite. Legacy
+unconditional writes remain supported; unchecked legacy objects return a null
+JSON checksum and omit the checksum header. ETag is separate and opaque.
+All object responses, including legacy reads, use attachment/nosniff/sandbox CSP
+because a supplied MIME type cannot establish that content is passive.
