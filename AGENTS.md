@@ -152,9 +152,14 @@ CLI.
   work in failed; subsequent calls/sweeps resume. SQL text is bounded at D1's 100KB limit. Ordinary 500-row writes use bulk
   upserts. Budget exhaustion is retryable per row; sync leaves its push cursor
   unchanged whenever any row rejects.
-- **Checks are pure; producers may touch the world.** Invariant SQL is one
-  SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
-  now)`; `changed`/`before` are temp tables the engine provides). Audits run
+- **Checks must be pure; producers may touch the world.** Invariant SQL is one
+  SELECT. Core/Worker share `core/src/rule-sql.ts`; Python mirrors its fixture.
+  The conservative text screen rejects date/time functions (even explicit-input
+  forms), CURRENT_DATE/TIME/TIMESTAMP, randomness, connection-state functions,
+  `localtime` and `'now'`. Compare or slice `(SELECT ts FROM now)` directly;
+  `changed`/`before` are engine contexts. This is not a parser or proof of
+  determinism through views/custom functions; rule authors must keep those
+  dependencies deterministic. Defaults are separate from invariant SQL. Audits run
   via `life audit`. **Derivations are `http:<name>` and run on the hub only**:
   a client never writes a derived column (any write that changes one is
   rejected locally and again at the hub), and the hub verifies

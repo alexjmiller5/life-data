@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { D1Shim } from './d1shim.js';
 import { ROUTES } from '../src/index.js';
 import { queryBudget } from '../src/write.js';
+import ruleSql from '../../tests/fixtures/rule-sql-cases.json';
 
 const T0 = '2025-01-01T00:00:00.000Z', T1 = '2025-01-02T00:00:00.000Z', T2 = '2025-01-03T00:00:00.000Z';
 async function fresh(table = 'items') {
@@ -14,6 +15,17 @@ async function fresh(table = 'items') {
   return db;
 }
 const push = (db, rows, table = 'items') => ROUTES['/v1/rows/push']({ table, columns: [...new Set(rows.flatMap(Object.keys))], rows }, db);
+
+for (const { sql } of ruleSql.filter(c => !c.allowed && c.sql.startsWith('SELECT'))) {
+  test(`unsupported ambient SQL cannot commit a hub edit: ${sql}`, async () => {
+    const db = await fresh();
+    db.db.query('INSERT INTO catalog_rules (id,tbl,kind,enforce,sql,text) VALUES (?,?,?,?,?,?)')
+      .run('clock-rule','items','invariant',1,sql,'Unsupported rule');
+    await expect(push(db, [{id:'a',name:'New',updated_at:T0}])).rejects.toThrow('invalid invariant SELECT');
+    expect(db.db.query('SELECT * FROM items').all()).toEqual([]);
+    expect(db.db.query('SELECT * FROM history').all()).toEqual([]);
+  });
+}
 
 test('F1: a real local numeric edit retains only its original event on acceptance and replay', async () => {
   const fixture = Bun.spawnSync(['uv','run','--quiet','--project',`${import.meta.dir}/../..`,'python','-B',`${import.meta.dir}/fixtures/numeric-history.py`], {

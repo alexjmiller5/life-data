@@ -380,6 +380,40 @@ def test_rule_sql_rejects_nondeterminism():
     check_rule_sql("SELECT id FROM t WHERE x > (SELECT ts FROM now)")
 
 
+@pytest.mark.parametrize(
+    "case",
+    json.loads((Path(__file__).parent / "fixtures/rule-sql-cases.json").read_text()),
+    ids=lambda case: case["sql"],
+)
+def test_supported_rule_sql_contract(case):
+    if case["allowed"]:
+        check_rule_sql(case["sql"])
+    else:
+        with pytest.raises(ValueError):
+            check_rule_sql(case["sql"])
+
+
+def test_existing_ambient_rule_rolls_back_the_python_write(db):
+    create_table(db, "items", ["name:text"])
+    insert_rows(db, "items", [{"id": "item-1", "name": "Before"}])
+    with connect(db) as conn:
+        conn.execute(
+            "INSERT INTO catalog_rules (id,tbl,kind,enforce,sql,text) VALUES (?,?,?,?,?,?)",
+            (
+                "clock-rule",
+                "items",
+                "invariant",
+                1,
+                "SELECT id FROM changed WHERE CURRENT_DATE IS NULL",
+                "Unsupported rule",
+            ),
+        )
+    with pytest.raises(ValueError, match="rule sql may not"):
+        execute_sql(db, "UPDATE items SET name='After' WHERE id='item-1'")
+    assert execute_sql(db, "SELECT name FROM items") == [{"name": "Before"}]
+    assert execute_sql(db, "SELECT * FROM history WHERE tbl='items'") == []
+
+
 def test_set_rule_compiles_invariant(db):
     with pytest.raises(ValueError, match="no such table"):
         set_rule(

@@ -2,6 +2,7 @@ import type { SqlDriver, Value } from './driver.ts';
 import { decodeProperty } from './catalog.ts';
 import { initCore } from './sync.ts';
 import { coverageProblem } from './coverage.ts';
+import { supportedRuleSql } from './rule-sql.ts';
 import { isSearchTrigger } from './search.ts';
 import { asList, empty, qident, validEditTimestamp, validateRow, type Property, type Row, type Violation } from './validate.ts';
 
@@ -84,8 +85,8 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   const rules = allRules.filter(r => r.tbl === table);
   for (const rule of rules) {
     if (rule.enforce !== 1 || (rule.scope != null && rule.scope !== 'table')
-      || typeof rule.sql !== 'string' || !/^\s*SELECT\b/i.test(rule.sql) || /random\s*\(|localtime|'now'/i.test(rule.sql)) {
-      fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} must be a supported deterministic table SELECT using now.ts.`);
+      || !supportedRuleSql(rule.sql)) {
+      fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} uses unsupported SQL. Use a table SELECT without clock, date/time, randomness or connection-state functions; compare or slice now.ts directly.`);
     }
     try {
       await db.all(`WITH changed AS (SELECT * FROM main.${quote(table)} WHERE 0),

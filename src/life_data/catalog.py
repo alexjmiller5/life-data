@@ -912,15 +912,27 @@ def rename_refs(conn, old: str, new: str) -> None:
 
 # --- invariants --------------------------------------------------------------
 
-FORBIDDEN = re.compile(r"random\s*\(|localtime|'now'", re.IGNORECASE)
+# Mirror core/src/rule-sql.ts; shared rule-sql-cases.json is the contract.
+# This conservative text screen is not a parser or a transitive purity proof.
+_RULE_FUNCTIONS = (
+    "random|randomblob|date|time|datetime|julianday|unixepoch|strftime|timediff|"
+    "changes|total_changes|last_insert_rowid|sqlite_version|sqlite_source_id"
+)
+_RULE_TRIVIA = r"(?:\s|/\*[\s\S]*?\*/|--[^\n]*(?:\n|$))*"
+FORBIDDEN = re.compile(
+    rf"\b(?:{_RULE_FUNCTIONS})[\"'`\]]?{_RULE_TRIVIA}\("
+    r"|\bcurrent_(?:timestamp|date|time)\b|localtime|'now'",
+    re.IGNORECASE,
+)
 
 
 def check_rule_sql(sql: str) -> None:
-    if not sql or _first(sql) != "SELECT":
+    if not sql or not re.match(r"^\s*SELECT\b", sql, re.IGNORECASE):
         raise ValueError("rule sql must be a single SELECT")
     if FORBIDDEN.search(sql):
         raise ValueError(
-            "rule sql may not use random(), localtime, or 'now' (use (SELECT ts FROM now))"
+            "rule sql may not use clock, date/time, randomness or connection-state "
+            "functions (compare or slice (SELECT ts FROM now) directly)"
         )
 
 
@@ -999,6 +1011,9 @@ def compile_sql(conn: sqlite3.Connection, sql: str, tbl: str | None = None) -> N
 
 
 def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
+    # Existing/synced catalog rows also pass the boundary, not only set_rule.
+    check_rule_sql(rule["sql"])
+
     def cleanup():
         pass
 

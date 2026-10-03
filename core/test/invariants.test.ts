@@ -5,9 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '../src/index.ts';
 import rules from '../../tests/fixtures/table-invariants.json';
+import ruleSql from '../../tests/fixtures/rule-sql-cases.json';
+import { supportedRuleSql } from '../src/rule-sql.ts';
 import { schema, setup, TestSql, T0, T1, T2 } from './support.ts';
 
 const databases: { close(): void }[] = [];
+test.each(ruleSql)('shared supported rule SQL boundary: $sql', ({ sql, allowed }) => {
+  expect(supportedRuleSql(sql)).toBe(allowed);
+});
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 function fixture(rule = rules[0]) {
   const result = setup();
@@ -347,3 +352,11 @@ test.each([
   for (const [key,value] of Object.entries(change)) await db.run(`UPDATE catalog_rules SET ${key}=?`, [value]);
   await blocked(db, 'invariant');
 });
+
+test.each(ruleSql.filter(c => !c.allowed && c.sql.startsWith('SELECT')))(
+  'unsupported ambient SQL cannot approve or commit a UI edit: $sql', async ({ sql }) => {
+    const { db, hub } = fixture();
+    await core.sync(db, hub);
+    await db.run('UPDATE catalog_rules SET sql=?', [sql]);
+    await blocked(db, 'invariant');
+  });

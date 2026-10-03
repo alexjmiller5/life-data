@@ -134,6 +134,16 @@ make multi-row Python mutations or cross-table cascades replayable as one
 atomic sync operation. `tests/fixtures/table-invariants.json` exercises Python
 and core origins through their real hub implementations and second replicas.
 
+Rules must be deterministic over their declared data and captured `now.ts`.
+The shared core/Worker SQL text screen and Python parity fixture reject the
+date/time function family (including safe explicit-input calls), CURRENT_DATE,
+CURRENT_TIME, CURRENT_TIMESTAMP, randomness and connection-state functions.
+Compare or slice `now.ts` directly, for example `substr((SELECT ts FROM now),1,10)`.
+This conservative screen can reject matching text in comments/literals; it is
+not a SQL parser or proof about indirect reads through views, custom functions
+or data-dependent SQL. Those dependencies remain the rule author's contract.
+Catalog defaults are separate and retain their existing behavior.
+
 The durable `_core_coverage` certificates belong to sync, not UI preferences.
 They certify an unfiltered full pull and subsequent successful incremental
 walks for one endpoint, public schema/log identity, checkpoint and version.
