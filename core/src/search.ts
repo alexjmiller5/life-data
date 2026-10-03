@@ -3,6 +3,7 @@ import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { displayName } from './view.ts';
+import { isReadOnlyTable } from './write.ts';
 
 export const SEARCH_TEXT_TYPES = new Set(['text', 'markdown', 'select', 'url', 'email', 'phone', 'ref', 'date', 'datetime']);
 
@@ -186,10 +187,13 @@ export async function search(db: SqlDriver, args: SearchArgs): Promise<SearchHit
     if (table !== undefined && !catalog.tables.some(t => t.id === table)) throw new Error('Table is not in the catalog');
     await prepareSearch(db, catalog);
     if (!query) return [];
+    // Read-only system rows (history, provenance, catalog) repeat user text; list them after records.
+    const system = catalog.tables.filter(t => isReadOnlyTable(String(t.id), t)).map(t => String(t.id));
     const hits = await db.all(`SELECT d.tbl AS "table",d.row_id AS id,d.label,substr(snippet(_core_search_fts,0,'','','...',24),1,512) AS excerpt
       FROM _core_search_fts JOIN _core_search_docs AS d ON d.docid=_core_search_fts.rowid
       WHERE _core_search_fts MATCH ? AND d.trashed=0 ${table === undefined ? '' : 'AND d.tbl=?'}
-      ORDER BY bm25(_core_search_fts),d.tbl,d.row_id LIMIT ? OFFSET ?`, [query, ...(table === undefined ? [] : [table]), Math.min(limit, 200), offset]) as SearchHit[];
+      ORDER BY d.tbl IN (${system.map(() => '?').join(',')}),bm25(_core_search_fts),d.tbl,d.row_id LIMIT ? OFFSET ?`,
+      [query, ...(table === undefined ? [] : [table]), ...system, Math.min(limit, 200), offset]) as SearchHit[];
     return hits.map(hit => ({ ...hit, excerpt: excerptText(hit.excerpt) }));
   });
 }

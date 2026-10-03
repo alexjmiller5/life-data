@@ -49,6 +49,22 @@ test('FTS searches raw Markdown and catalog text with accent folding and literal
   expect((await db.all("SELECT sql FROM sqlite_master WHERE name='_core_search_fts'"))[0].sql).toContain('fts5');
 });
 
+test('read-only system table matches follow user records regardless of relevance', async () => {
+  const { db } = await local();
+  await db.run("INSERT INTO catalog_tables(id) VALUES ('history'),('audit')");
+  await db.run("ALTER TABLE catalog_tables ADD COLUMN kind TEXT");
+  await db.run("UPDATE catalog_tables SET kind='system' WHERE id='audit'");
+  await db.run('CREATE TABLE audit (id TEXT PRIMARY KEY, note TEXT, deleted_at TEXT)');
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('h.old','history','old','text'),('h.new','history','new','text'),('a.note','audit','note','text')");
+  // Each system row repeats the term, so plain relevance would rank it first.
+  await db.run("INSERT INTO history(id,tbl,row_id,col,old,new) VALUES ('h1','items','a','name','Field guide field','Field guide field field')");
+  await db.run("INSERT INTO audit(id,note) VALUES ('s1','field field field field')");
+  const hits = await search(db, { text: 'field' });
+  expect(hits[0]?.table).toBe('items');
+  expect(hits.slice(1).map(h => h.table).sort()).toEqual(['audit', 'history']);
+  expect((await search(db, { text: 'field', table: 'history' })).map(h => h.id)).toEqual(['h1']);
+});
+
 test('MATCH operators, punctuation and SQL-shaped input are literal and bounded', async () => {
   const { db } = await local();
   await db.run("INSERT INTO items(id,name,body) VALUES ('b','quoted','alpha OR beta')");
