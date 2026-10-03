@@ -1,8 +1,10 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "life-data",
-	"main": "src/index.js",
+	"main": "src/main.js",
 	"compatibility_date": "2026-07-06",
+	// AsyncLocalStorage: the usage meter attributes each D1 result to its request.
+	"compatibility_flags": ["nodejs_als"],
 	"workers_dev": true,
 	"observability": { "enabled": true },
 	// The hub's storage. Declaring the bindings here IS the provisioning —

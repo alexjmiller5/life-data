@@ -26,6 +26,8 @@ CLI.
 - `src/life_data/catalog.py` - the catalog engine: typed properties, rules,
   derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
   connection.
+- `worker/src/main.js` - the deployed entry: `worker/src/index.js` wrapped
+  by `worker/src/usage.js` (usage meter, hard cap, notification feed).
 - `worker/src/index.js` - the hub service; `worker/src/auth.js` owns the
   separate auth registry and `worker/src/login.js` owns the Access-gated
   browser flow. `worker/wrangler.jsonc` declares the main data D1, auth D1,
@@ -471,6 +473,54 @@ expired rows are reusable. Create this internal table before taking schema
 read guards. Its DDL is never logged for sync and it has no catalog rows;
 full operational backups retain it. Existing calls and sweeps retry after
 expiry, with no additional schedule or automatic retry loop.
+
+## Usage meter, cap and notifications
+
+`worker/src/usage.js` wraps the hub (`main.js` is the deployed entry). It
+reports this deployment's own consumption only, never the provider account's.
+
+- **Metering.** One stable wrapper per D1 binding adds every result's
+  `meta.rows_read`/`rows_written`/`size_after` to the meter of the request it
+  runs in, found through AsyncLocalStorage (`nodejs_als` flag), including
+  `ctx.waitUntil` work. Stable wrappers keep identity caches such as
+  `ensureHubAtIndexes` hitting; a per-request wrapper would rerun them. The
+  wrapper's `first()` runs `all()` (D1's own `first()` runs the whole
+  statement and drops meta); `raw()` reports no meta. After the response and
+  its waitUntil work settle, one AUTH_DB batch adds the request to
+  `_usage (period, principal)`: principal = token name, `admin`,
+  `system:sweep`/`system:backup` or `anonymous`. `authenticate` is resolved
+  once per request, shared by the meter and the hub.
+- **Limits.** Defaults are the provider's included monthly amounts (D1 reads
+  25B, writes 50M, requests 10M, storage 5 GB). `USAGE_LIMITS` (JSON, per
+  metric `{allowance, cap, alert_at}`) and `USAGE_PERIOD_ANCHOR_DAY` (1-28,
+  default 1) override them. Requests never cap: a refused request still bills.
+- **Notifications.** The flush that crosses an `alert_at` fraction or a cap
+  inserts into `_notifications` (AUTH_DB) at that moment. The id
+  (`usage:<period-start-date>:<metric>:<pct|cap>`) is the dedupe key, so
+  concurrent isolates insert once and a future push reuses the same id.
+  Read state is deployment-wide.
+- **Cap.** At a D1 metric's cap every authenticated `/v1` route answers 429
+  `usage_cap` with `Retry-After` until the period resets (usage numbers in the
+  body only for tokens that may read `/v1/usage`), except the ones that
+  never read the data D1 (`UNCAPPED_ROUTE`: usage, notifications, session,
+  tokens, files, streams, archive). Deny by default: a new D1 route is capped
+  unless listed, and the cap is not gated on the route's scope check, so a
+  finer-grained grant cannot bypass it. The sweep cron is skipped; the backup
+  still runs. Each isolate rereads period totals every 30 s and after its own
+  flushes. `withUsage` wraps `fetch` and `scheduled` and passes any other
+  handler through unmetered; wrap a new handler (queue, ...) there, and name
+  a new cron's principal there (any non-sweep cron is `system:backup` today).
+- **Endpoints.** `GET /v1/usage` and `GET /v1/notifications?after=<seq>&limit=<1-200>`
+  need `full`, `tables:read` or admin; `POST /v1/notifications/read`
+  `{ids:[...]}` or `{through: seq}` needs `full`/admin and returns the unread
+  count. The feed is ascending by `seq`; `next_cursor` is set while more pages
+  remain; `latest_cursor` is the newest seq, which a new device stores as its
+  baseline before presenting native alerts. Shapes:
+  `tests/fixtures/hub-usage-contract.json`, asserted by `worker/test/usage.test.js`.
+- **CORS.** For a `CORS_ORIGINS` origin the wrapper answers these routes'
+  preflight before authentication and the cap (per-route methods; headers
+  Authorization, Content-Type, If-None-Match), and its responses, including
+  the 429, expose `Retry-After`. Other routes' preflight goes to the hub.
 
 ## Streams
 
