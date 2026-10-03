@@ -19,6 +19,8 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.typescript).toContain('listViews: { args: ListViewsArgs; result: SavedViewList }');
   expect(first.typescript).toContain('saveView: { args: SaveViewArgs; result: SavedViewRecord }');
   expect(first.typescript).toContain('deleteView: { args: DeleteViewArgs; result: SavedViewRecord }');
+  expect(first.typescript).toContain('writeability: { args: WriteabilityArgs; result: Writeability }');
+  expect(first.swift).toContain('public typealias Response = CoreWriteability');
   expect(first.swift).toContain('public struct CoreSavedViewDefinition:');
   expect(first.swift).toContain('public typealias Response = CoreSavedViewList');
   expect(first.swift).toContain('public struct CoreView:');

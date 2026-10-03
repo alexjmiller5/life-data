@@ -1,5 +1,6 @@
 import type { SqlDriver, Hub } from './driver.ts';
 import { qident, validEditTimestamp, type Row } from './validate.ts';
+import { COVERAGE_VERSION, coverageSchema, initCoverage, validCoverage } from './coverage.ts';
 import type { SyncSettings, SyncResult } from './contract.generated.ts';
 export type { SyncResult } from './contract.generated.ts';
 export type SyncOptions = SyncSettings & { now?: () => Date; maxClockSkewMs?: number };
@@ -11,6 +12,7 @@ export async function initCore(db: SqlDriver): Promise<void> {
   await db.run("CREATE TABLE IF NOT EXISTS _core_sync (tbl TEXT PRIMARY KEY, pull TEXT NOT NULL DEFAULT '', push TEXT NOT NULL DEFAULT '')");
   await db.run('CREATE TABLE IF NOT EXISTS _core_rejected (tbl TEXT, row_id TEXT, row TEXT NOT NULL, errors TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
   await db.run('CREATE TABLE IF NOT EXISTS _core_pending (tbl TEXT NOT NULL, row_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
+  await initCoverage(db);
 }
 
 const active = new WeakSet<SqlDriver>();
@@ -48,6 +50,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   // Binding an unbound CLI must not legitimize its unknown global cursors.
   await db.transaction(async()=>{
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
     if(!cliState) {
       await db.run("INSERT OR REPLACE INTO _sync_state(key,value) VALUES ('hub_url',?),('checkpoint_version','')",[hub.endpoint]);
     }
@@ -76,15 +79,24 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const validMark=(value:unknown)=>value===''||validEditTimestamp(value);
   if(!marks || !validMark(marks.max_hub_at) || !marks.tables || tables.some(t=>!validMark(marks.tables[t]))) throw new Error('invalid cursor response');
   const states=new Map((await db.all('SELECT * FROM _core_sync')).map(r=>[String(r.tbl),r]));
+  const proofs=new Map((await db.all('SELECT * FROM _core_coverage')).map(r=>[String(r.tbl),r]));
+  const pullSince=new Map<string,string>();
+  let coverageSignature='';
   const columns=new Map<string,string[]>(), candidates=new Map<string,Row[]>();
   let checkpoint='';
   const pendingHistory:Row[]=[];
   await db.transaction(async()=>{
+    coverageSignature=(await coverageSchema(db)).signature;
+    // Persist exclusions and schema invalidation even if this round fails.
+    for(const proof of proofs.values()) if(!tables.includes(String(proof.tbl)) || !validCoverage(proof,hub.endpoint,coverageSignature,states.get(String(proof.tbl))?.pull)) {
+      await db.run('DELETE FROM _core_coverage WHERE tbl=?',[String(proof.tbl)]);
+    }
     checkpoint=(options.now?.() ?? new Date()).toISOString();
     // Persist recovery even if this round fails, rejects, or skips a table.
     await db.run("UPDATE _core_sync SET push='' WHERE push > ?",[checkpoint]);
     for(const state of states.values()) if(String(state.push)>checkpoint) state.push='';
     for(const table of tables) {
+      pullSince.set(table,endpoint && validCoverage(proofs.get(table),hub.endpoint,coverageSignature,states.get(table)?.pull) ? String(states.get(table)!.pull) : '');
       columns.set(table,(await db.all(`PRAGMA table_info(${qident(table)})`)).map(r=>String(r.name)));
       const push=String(states.get(table)?.push??'');
       const since=endpoint && push<=checkpoint ? push : '';
@@ -98,7 +110,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const withheld=new Set<unknown>();
   for (const table of tables) {
     const cols=columns.get(table)!;
-    const since=endpoint ? String(states.get(table)?.pull??'') : '';
+    const since=pullSince.get(table)!;
     let after: string | undefined;
     do {
       const page=await post('/v1/rows/pull',{table,columns:cols,since,limit:200,...(after ? {after} : {})});
@@ -145,11 +157,14 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   }
   // Cursor advancement commits only after every request succeeds.
   await db.transaction(async()=>{
+    if((await coverageSchema(db)).signature!==coverageSignature) throw new Error('schema changed during sync; retry before certifying coverage');
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
     for(const table of tables) {
       const rejected=result.rejected.some(r=>r.table===table)||(table==='history'&&withheld.size>0);
       await db.run('INSERT OR REPLACE INTO _core_sync(tbl,pull,push) VALUES (?,?,?)',[table,marks.tables?.[table]??marks.max_hub_at??'',rejected ? String(states.get(table)?.push??'') : checkpoint]);
+      await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,marks.tables[table],COVERAGE_VERSION]);
     }
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','ready')");
     if(!result.rejected.length) await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('last_sync',?)",[checkpoint]);
   });
   return result;

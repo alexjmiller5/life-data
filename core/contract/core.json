@@ -1176,6 +1176,40 @@
         "id",
         "expectedUpdatedAt"
       ]
+    },
+    "WriteabilityArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "Writeability": {
+      "type": "object",
+      "description": "Advisory table guards only. writeRow rechecks under its writer transaction; coverage is not a simultaneous or current remote snapshot.",
+      "properties": {
+        "writable": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriteViolation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "writable",
+        "reason"
+      ]
     }
   },
   "operations": {
@@ -1302,6 +1336,15 @@
       "result": {
         "$ref": "#/$defs/SavedViewRecord"
       }
+    },
+    "writeability": {
+      "args": {
+        "$ref": "#/$defs/WriteabilityArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Writeability"
+      },
+      "description": "Read-only advisory. Always use write for the transactionally rechecked mutation."
     }
   }
 }

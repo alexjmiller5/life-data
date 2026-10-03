@@ -1,10 +1,11 @@
 import type { SqlDriver, Value } from './driver.ts';
 import { decodeProperty } from './catalog.ts';
 import { initCore } from './sync.ts';
+import { coverageProblem } from './coverage.ts';
 import { isSearchTrigger } from './search.ts';
 import { asList, empty, qident, validEditTimestamp, validateRow, type Property, type Row, type Violation } from './validate.ts';
 
-import type { WriteViolation } from './contract.generated.ts';
+import type { WriteViolation, Writeability, WriteabilityArgs } from './contract.generated.ts';
 export type { WriteViolation } from './contract.generated.ts';
 export class ValidationError extends Error {
   constructor(public readonly violations: WriteViolation[]) {
@@ -24,11 +25,106 @@ export function isReadOnlyTable(table: string, catalogEntry?: Row): boolean {
     || String(catalogEntry?.kind ?? '').trim().toLowerCase() === 'system';
 }
 
+type Fail = (col: string, rule: string, message: string) => never;
+async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
+  const quote = (name: string): string => {
+    try { return qident(name); } catch { return fail(name, 'identifier', 'Invalid SQL identifier.'); }
+  };
+  if (typeof table !== 'string') fail('', 'input', 'table must be a string.');
+  quote(table);
+  if (isReadOnlyTable(table)) fail('', 'read_only', 'System tables are read-only through writeRow.');
+  const exists = async (name: string) => (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", [name])).length > 0;
+  for (const name of [table, 'catalog_properties', 'catalog_rules', 'history']) {
+    if (!await exists(name)) fail('', 'schema', `Missing ${name} in this replica; sync its schema before writing.`);
+  }
+  if (await exists('catalog_tables')) {
+    const entry = (await db.all('SELECT * FROM main.catalog_tables WHERE id=? AND deleted_at IS NULL', [table]))[0];
+    if (isReadOnlyTable(table, entry)) fail('', 'read_only', 'Catalog system tables are read-only through writeRow.');
+  }
+  // ponytail: no complete trigger journal yet. Inspect the whole database,
+  // including history and TEMP triggers, before any mutation. Names alone
+  // cannot prove safety; recognize only exact timestamp/queue-only DDL.
+  const triggers = await db.all("SELECT name,tbl_name,sql,0 AS temporary FROM main.sqlite_master WHERE type='trigger' UNION ALL SELECT name,tbl_name,sql,1 AS temporary FROM temp.sqlite_master WHERE type='trigger'");
+  for (const trigger of triggers) {
+    if (isSearchTrigger(trigger)) continue;
+    const t = String(trigger.tbl_name);
+    const canonical = `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
+    if (trigger.temporary || String(trigger.sql).replace(/\s+/g, ' ').trim() !== canonical) {
+      fail('', 'trigger', `Unsupported trigger ${trigger.name} on ${t}; this database needs a writer that validates and journals all trigger effects before writeRow can edit it.`);
+    }
+  }
+  const physicalTables = await db.all("SELECT name,'main' AS db FROM main.sqlite_master WHERE type='table' UNION ALL SELECT name,'temp' AS db FROM temp.sqlite_master WHERE type='table'");
+  for (const entry of physicalTables) {
+    const keys = await db.all(`PRAGMA ${entry.db}.foreign_key_list(${quote(String(entry.name))})`);
+    if (keys.length) {
+      fail('', 'foreign_key', `SQLite foreign keys on ${entry.name} are unsupported: host enforcement can differ and cascade effects are not journaled. Use catalog references or the CLI writer.`);
+    }
+  }
+  const info = await db.all(`PRAGMA main.table_info(${quote(table)})`);
+  const cols = info.map(r => String(r.name));
+  if (info.filter(c => Number(c.pk) > 0).length !== 1 || !info.some(c => c.name === 'id' && c.pk === 1)) fail('id', 'schema', 'writeRow requires id as the single primary key.');
+  for (const col of cols) quote(col);
+  if (['id', 'created_at', 'updated_at', 'deleted_at'].some(c => !cols.includes(c))) {
+    fail('', 'schema', 'Table lacks the sync columns required by writeRow.');
+  }
+  const props = (await db.all('SELECT * FROM main.catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY sort,col', [table])).map(row => {
+    try { return decodeProperty(row); }
+    catch { return fail(String(row.col ?? ''), 'catalog', 'Invalid catalog property; repair options/inputs before writing.'); }
+  });
+  if (!props.length) fail('', 'catalog', 'Table has no active catalog properties; sync or catalog it before writing.');
+  for (const p of props) {
+    if (typeof p.col !== 'string' || !cols.includes(p.col)) fail('', 'catalog', 'Catalog column is absent from the local schema; sync before writing.');
+    if ((p.options != null && (!Array.isArray(p.options) || p.options.some(o => !plain(o) || typeof o.v !== 'string')))
+      || (p.inputs != null && (!Array.isArray(p.inputs) || p.inputs.some(i => typeof i !== 'string')))) {
+      fail(p.col, 'catalog', 'Invalid catalog options or inputs.');
+    }
+  }
+  const allRules = await db.all("SELECT * FROM main.catalog_rules WHERE kind='invariant' AND enforce != 0 AND deleted_at IS NULL ORDER BY id");
+  if (allRules.some(r => r.scope === 'estate')) fail('', 'invariant', 'Estate-scoped enforcement is unsupported; use a table-scoped rule.');
+  const rules = allRules.filter(r => r.tbl === table);
+  for (const rule of rules) {
+    if (rule.enforce !== 1 || (rule.scope != null && rule.scope !== 'table')
+      || typeof rule.sql !== 'string' || !/^\s*SELECT\b/i.test(rule.sql) || /random\s*\(|localtime|'now'/i.test(rule.sql)) {
+      fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} must be a supported deterministic table SELECT using now.ts.`);
+    }
+    try {
+      await db.all(`WITH changed AS (SELECT * FROM main.${quote(table)} WHERE 0),
+        before AS (SELECT * FROM main.${quote(table)} WHERE 0), now AS (SELECT '2000-01-01T00:00:00.000Z' AS ts)
+        SELECT * FROM (${rule.sql}) LIMIT 0`);
+    } catch { fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} cannot compile with the portable before/changed/now contexts.`); }
+  }
+  if (rules.length) {
+    const problem = await coverageProblem(db);
+    if (problem) fail('', 'coverage', problem);
+  }
+  return { cols, props, rules };
+}
+
+const storageViolation = (table: string, rowId: string | null): WriteViolation => ({ tbl: table, row_id: rowId, col: '', rule: 'storage', message: 'Local write failed; transaction rolled back. Check the schema, catalog SQL and database constraints.' });
+
+/** Advisory table guards only; writeRow rechecks in its own transaction and
+ * still validates the actual patch, selected revision and stored values. */
+export async function writeability(db: SqlDriver, args: WriteabilityArgs): Promise<Writeability> {
+  let table = '';
+  try {
+    const field = plain(args) ? Object.getOwnPropertyDescriptor(args, 'table') : undefined;
+    if (!field?.enumerable || !('value' in field) || typeof field.value !== 'string' || Reflect.ownKeys(args).some(k => k !== 'table')) {
+      throw new ValidationError([{ tbl: '', row_id: null, col: '', rule: 'input', message: 'Invalid writeability arguments.' }]);
+    }
+    table = field.value;
+    await db.transaction(() => prepareWrite(db, table, (col, rule, message) => { throw new ValidationError([{ tbl: table, row_id: null, col, rule, message }]); }));
+    return { writable: true, reason: null };
+  } catch (error) {
+    return { writable: false, reason: error instanceof ValidationError ? error.violations[0]! : storageViolation(table, null) };
+  }
+}
+
 /** Missing id creates; supplied id edits an existing row (never upserts).
  * deleted_at:true requests deletion at the new revision; null restores.
  * now/id are host/test seams; id generates row IDs only. History IDs always
  * come from SQLite. No caller may supply created_at, updated_at or hub_at.
- * Enforced invariants require the CLI's estate-wide snapshot write path.
+ * Table invariants require verified global schema coverage. The one-row
+ * before/changed contexts preserve SQLite values; custom effects stay closed.
  * Custom triggers anywhere in main/temp block writes. Exact main timestamp
  * triggers and queue-only search triggers are supported.
  * Forms should pass expectedUpdatedAt from their selected row. A stale edit
@@ -73,51 +169,8 @@ export async function writeRow(
       rowId = patch.id as string;
     }
     return await db.transaction(async () => {
+      const { cols, props, rules } = await prepareWrite(db, table, fail);
       const exists = async (name: string) => (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", [name])).length > 0;
-      for (const name of [table, 'catalog_properties', 'catalog_rules', 'history']) {
-        if (!await exists(name)) fail('', 'schema', `Missing ${name} in this replica; sync its schema before writing.`);
-      }
-      if (await exists('catalog_tables')) {
-        const entry = (await db.all('SELECT * FROM main.catalog_tables WHERE id=? AND deleted_at IS NULL', [table]))[0];
-        if (isReadOnlyTable(table, entry)) fail('', 'read_only', 'Catalog system tables are read-only through writeRow.');
-      }
-      // ponytail: no complete trigger journal yet. Inspect the whole database,
-      // including history and TEMP triggers, before any mutation. Names alone
-      // cannot prove safety; recognize only exact timestamp/queue-only DDL.
-      const triggers = await db.all("SELECT name,tbl_name,sql,0 AS temporary FROM main.sqlite_master WHERE type='trigger' UNION ALL SELECT name,tbl_name,sql,1 AS temporary FROM temp.sqlite_master WHERE type='trigger'");
-      for (const trigger of triggers) {
-        if (isSearchTrigger(trigger)) continue;
-        const t = String(trigger.tbl_name);
-        const canonical = `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
-        if (trigger.temporary || String(trigger.sql).replace(/\s+/g, ' ').trim() !== canonical) {
-          fail('', 'trigger', `Unsupported trigger ${trigger.name} on ${t}; this database needs a writer that validates and journals all trigger effects before writeRow can edit it.`);
-        }
-      }
-      const cols = (await db.all(`PRAGMA main.table_info(${quote(table)})`)).map(r => String(r.name));
-      for (const col of cols) quote(col);
-      if (['id', 'created_at', 'updated_at', 'deleted_at'].some(c => !cols.includes(c))) {
-        fail('', 'schema', 'Table lacks the sync columns required by writeRow.');
-      }
-      const props = (await db.all('SELECT * FROM main.catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY sort,col', [table])).map(row => {
-        try { return decodeProperty(row); }
-        catch { return fail(String(row.col ?? ''), 'catalog', 'Invalid catalog property; repair options/inputs before writing.'); }
-      });
-      if (!props.length) fail('', 'catalog', 'Table has no active catalog properties; sync or catalog it before writing.');
-      for (const p of props) {
-        if (typeof p.col !== 'string' || !cols.includes(p.col)) fail('', 'catalog', 'Catalog column is absent from the local schema; sync before writing.');
-        if ((p.options != null && (!Array.isArray(p.options) || p.options.some(o => !plain(o) || typeof o.v !== 'string')))
-          || (p.inputs != null && (!Array.isArray(p.inputs) || p.inputs.some(i => typeof i !== 'string')))) {
-          fail(p.col, 'catalog', 'Invalid catalog options or inputs.');
-        }
-      }
-      // ponytail: enforced invariants need estate snapshots; use the CLI until
-      // before/changed/now can cover trigger-driven changes and cross-table reads.
-      const rules = await db.all("SELECT * FROM main.catalog_rules WHERE kind='invariant' AND enforce != 0 AND deleted_at IS NULL");
-      for (const rule of rules) {
-        if (rule.tbl === table || rule.scope === 'estate') {
-          fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} requires the CLI write path; use the CLI until local invariant execution is supported.`);
-        }
-      }
       const byCol = new Map(props.map(p => [p.col, p]));
       const values: Record<string, Value> = Object.create(null);
       const encode = (col: string, value: unknown): Value => {
@@ -174,14 +227,17 @@ export async function writeRow(
       }
       values.updated_at = stamp;
       if (Object.hasOwn(patch, 'deleted_at')) values.deleted_at = patch.deleted_at === true ? stamp : null;
+      if (before || rules.length) {
+        // OR ABORT and the effect guards restrict this writer to one identity.
+        // SQLite snapshots/EXCEPT preserve types without exposing bookkeeping.
+        await db.run(`CREATE TEMP TABLE temp._core_write_before AS SELECT * FROM ${target} WHERE ${before ? 'id=?' : '0'}`, before ? [rowId] : []);
+      }
       if (before) {
-        // Preserve SQLite storage classes/precision for cell comparisons and casts.
-        await db.run(`CREATE TEMP TABLE temp._core_write_before AS SELECT * FROM ${target} WHERE id=?`, [rowId]);
         const keys = Object.keys(values);
-        await db.run(`UPDATE ${target} SET ${keys.map(c => `${quote(c)}=?`).join(',')} WHERE id=?`, [...keys.map(c => values[c]!), rowId]);
+        await db.run(`UPDATE OR ABORT ${target} SET ${keys.map(c => `${quote(c)}=?`).join(',')} WHERE id=?`, [...keys.map(c => values[c]!), rowId]);
       } else {
         const keys = Object.keys(values);
-        await db.run(`INSERT INTO ${target} (${keys.map(quote).join(',')}) VALUES (${keys.map(() => '?').join(',')})`, keys.map(c => values[c]!));
+        await db.run(`INSERT OR ABORT INTO ${target} (${keys.map(quote).join(',')}) VALUES (${keys.map(() => '?').join(',')})`, keys.map(c => values[c]!));
       }
       const after = (await db.all(`SELECT * FROM ${target} WHERE id=?`, [rowId]))[0];
       if (!after || after.id !== rowId || after.updated_at !== stamp
@@ -219,6 +275,14 @@ export async function writeRow(
           message: v.rule === 'ref' ? 'Reference is not live in the local replica; sync the reference table and retry (it may be incomplete).' : v.message }));
         if (violations.length) throw new ValidationError(violations);
       }
+      for (const rule of rules) {
+        const hits = await db.all(`WITH changed AS (
+          SELECT * FROM ${target} WHERE id=? EXCEPT SELECT * FROM temp._core_write_before
+        ), before AS (SELECT * FROM temp._core_write_before WHERE id IN (SELECT id FROM changed)), now AS (SELECT ? AS ts)
+        SELECT * FROM (${rule.sql}) LIMIT 1`, [rowId, instant.toISOString()]);
+        if (hits.length) throw new ValidationError([{ tbl: table, row_id: typeof hits[0]!.id === 'string' ? hits[0]!.id : null,
+          col: String(rule.col ?? ''), rule: String(rule.id), message: String(rule.text ?? 'Enforced invariant rejected the write.') }]);
+      }
       if (before) {
         const historyHasHubAt = (await db.all('PRAGMA main.table_info(history)')).some(c => c.name === 'hub_at');
         for (const col of cols.filter(c => !['updated_at', 'hub_at'].includes(c))) {
@@ -228,8 +292,8 @@ export async function writeRow(
             FROM ${target} AS a JOIN temp._core_write_before AS b ON a.id=b.id WHERE b.${c} IS NOT a.${c}`,
           [table, col, origin, stamp, stamp, ...(historyHasHubAt ? [null] : [])]);
         }
-        await db.run('DROP TABLE temp._core_write_before');
       }
+      if (before || rules.length) await db.run('DROP TABLE temp._core_write_before');
       await initCore(db);
       await db.run('INSERT OR REPLACE INTO _core_pending(tbl,row_id,updated_at) VALUES (?,?,?)', [table, rowId, stamp]);
       return after;
@@ -238,6 +302,6 @@ export async function writeRow(
     if (error instanceof ValidationError) throw error;
     // SQL constraints, malformed catalog SQL and driver failures all abort the
     // transaction. Keep the structured boundary without leaking row values.
-    throw new ValidationError([{ tbl: table, row_id: rowId, col: '', rule: 'storage', message: 'Local write failed; transaction rolled back. Check the schema, catalog SQL and database constraints.' }]);
+    throw new ValidationError([storageViolation(table, rowId)]);
   }
 }

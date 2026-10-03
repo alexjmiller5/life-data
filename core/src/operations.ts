@@ -4,7 +4,7 @@ import type { ServiceHub } from './services.ts';
 import { readCatalog } from './catalog.ts';
 import { allowed } from './validate.ts';
 import { compileView, displayName } from './view.ts';
-import { isReadOnlyTable, writeRow } from './write.ts';
+import { isReadOnlyTable, writeRow, writeability } from './write.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
 import { prepareSearch, search } from './search.ts';
@@ -48,6 +48,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     deleteView: args => deleteView(db, args, { origin }),
     options: args => readOptions(db, args),
     write: args => writeRow(db, args.table, args.patch, { origin, expectedUpdatedAt: args.expectedUpdatedAt }),
+    writeability: args => writeability(db, args),
     status: () => syncStatus(db),
     sync: args => sync(db, hub(args.endpoint), { maxRows: args.maxRows, tables: args.tables }),
     serviceUsage: args => readUsage(hub(args.endpoint)),

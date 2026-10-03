@@ -123,14 +123,58 @@ are disabled. Other edits read only queued IDs. Use `readRows` for searched
 views; callers using `compileView` directly must first call `prepareSearch`
 inside the same driver transaction as the query.
 
-Current limits: enforced SQL invariants and custom triggers fail closed in
-`writeRow` until the complete validation/journaling engine is integrated. Only
-the CLI's canonical timestamp triggers and exact core search queue triggers are
-supported. Missing local references require their
-table to be included and synced. Skipped tables have no remote browsing API in
-this package yet. Sync snapshots pending rows in memory; very large full
-replicas will need snapshots staged in temporary tables. Enrollment remains a
-host integration.
+`writeRow` supports deterministic, table-scoped enforced SQL invariants after
+verified replication coverage. `before` contains the selected row before an
+edit (empty for inserts); `changed` is its actual SQLite snapshot/`EXCEPT`
+difference, and `now.ts` is captured once. Both row contexts have the table's
+exact shape, with no bookkeeping columns. Checks run before history/pending
+edits commit, including for tombstones. Only the affected table's rules run,
+matching Python's single-row write and Worker OLD/NEW contexts. This does not
+make multi-row Python mutations or cross-table cascades replayable as one
+atomic sync operation. `tests/fixtures/table-invariants.json` exercises Python
+and core origins through their real hub implementations and second replicas.
+
+The durable `_core_coverage` certificates belong to sync, not UI preferences.
+They certify an unfiltered full pull and subsequent successful incremental
+walks for one endpoint, public schema/log identity, checkpoint and version.
+Ordinary cursors, row counts and Python daemon acknowledgements never grant
+proof. Missing/stale proof forces a full backfill; skipped tables invalidate
+their proof. A durable refresh flag blocks invariant writes across failures
+and restarts until recovery completes. Certificates and readiness commit with
+sync checkpoints; none of this local metadata is logged or synced.
+
+Because rule SQL can read other tables, this stage conservatively requires
+coverage of **every table in the global schema, including history/provenance**.
+Unbound or externally imported files are not assumed complete. Coverage is
+not freshness, a simultaneous remote snapshot, or a guarantee of hub acceptance.
+The hub rechecks its own state; rejection retains the local pending edit and
+history. There are no scoped replication assumptions or new hub endpoints.
+
+`writeability(db, { table })` returns `{ writable, reason: WriteViolation | null }`.
+It is a read-only advisory over the same table guards as `writeRow`; a successful
+answer does not approve a patch or selected revision. The writer rechecks
+inside its transaction. Reasons include `coverage`, `trigger`, `foreign_key`,
+`invariant`, `schema` and `read_only`; UI can display `reason.message` directly.
+
+Custom triggers and enforced estate rules remain blocked. Only the CLI's exact
+timestamp triggers and core queue-only search triggers are supported. Every
+declared SQLite foreign key anywhere in main/temp blocks writes, including
+NO ACTION/RESTRICT: host enforcement differs, and cascade effects are not
+journaled. Catalog `ref`/`multi_ref` validation continues normally. Adapters
+must permit read-only
+`PRAGMA main.foreign_key_list(...)` and `PRAGMA temp.foreign_key_list(...)`;
+failure to inspect blocks the write. `INSERT/UPDATE OR ABORT` prevent implicit
+REPLACE deletions, so the guarded writer changes one primary-key identity.
+
+Guard work reads schema/catalog/certificate metadata and one FK list per
+physical table. The before snapshot holds at most one row, and each invariant
+returns at most one violation. Rule SQL can still scan large tables or joins;
+this does not impose a CPU deadline or bounded SQL execution cost. No host
+timer, progress-handler API, or whole-table JS snapshot is introduced.
+Missing local references require their table to be included and synced.
+Skipped tables have no remote browsing API here. Sync snapshots pending rows
+in memory; very large full replicas will need snapshots staged in temporary
+tables. Enrollment remains a host integration.
 
 Shared saved-view storage is an ordinary synced `views` table, with
 `name:text!`, `tbl:ref!` (to `catalog_tables`) and `definition:json!`, plus the

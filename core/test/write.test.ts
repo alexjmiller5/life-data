@@ -178,14 +178,14 @@ test('references fail honestly for unknown, skipped, missing and deleted rows', 
   await rejects(writeRow(db, 'items', { id: 'item-1', name: 'target' }, clock), 'catalog');
 });
 
-test('enforced invariants fail closed with actionable structured errors, even for soft deletion', async () => {
+test('unbound enforced invariants require coverage, even for soft deletion', async () => {
   const db = await local();
   await writeRow(db, 'items', { name: 'Before' }, clock);
   await db.run("INSERT INTO catalog_rules(id,tbl,kind,enforce,sql,text) VALUES ('nonempty','items','invariant',1,'SELECT id FROM changed WHERE name IS NULL','Name required')");
-  const error = await rejects(writeRow(db, 'items', { id: 'item-1', name: 'After' }, clock), 'invariant');
-  expect(error.message).toContain('nonempty');
+  const error = await rejects(writeRow(db, 'items', { id: 'item-1', name: 'After' }, clock), 'coverage');
+  expect(error.message).toContain('coverage');
   expect(error.message).toContain('CLI');
-  await rejects(writeRow(db, 'items', { id: 'item-1', deleted_at: true }, clock), 'invariant');
+  await rejects(writeRow(db, 'items', { id: 'item-1', deleted_at: true }, clock), 'coverage');
   expect(await db.all('SELECT name FROM items')).toEqual([{ name: 'Before' }]);
   expect(await db.all('SELECT * FROM history')).toEqual([]);
   await db.run('UPDATE catalog_rules SET enforce=0');

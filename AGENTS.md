@@ -61,6 +61,18 @@ CLI.
   advancing each affected revision beyond its previous value and at least to
   database time so LWW and push discovery retain the rename under clock skew.
   Returned view columns are SQL projection: clients need full rows to edit.
+- `core/src/write.ts` shares table guards with advisory `writeability` and runs
+  deterministic table invariants with one-row SQLite `before`/`changed` contexts
+  and a captured `now.ts`. Custom triggers, estate enforcement and all declared
+  SQLite FKs remain blocked, including NO ACTION/RESTRICT and disabled FKs;
+  catalog references keep their ordinary validation.
+  Adapters must allow read-only `main/temp.foreign_key_list` introspection.
+  `core/src/coverage.ts` owns local `_core_coverage` certificates: successful
+  full pulls and certified incrementals only, endpoint/schema/cursor/version
+  bound, with interrupted refreshes blocked. Invariants require every global
+  schema table, including history/provenance; coverage is neither freshness
+  nor a simultaneous remote snapshot. Legacy cursors and unbound files grant
+  no proof. Certificates/refresh state never sync or enter logged DDL.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`

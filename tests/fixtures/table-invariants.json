@@ -1,0 +1,44 @@
+[
+  {
+    "id": "positive",
+    "sql": "SELECT id FROM changed WHERE qty < 0",
+    "text": "Quantity must be nonnegative",
+    "allowed": {"qty": 4},
+    "blocked": {"qty": -1}
+  },
+  {
+    "id": "nondecreasing",
+    "sql": "SELECT c.id FROM changed c JOIN before b USING(id) WHERE c.qty < b.qty",
+    "text": "Quantity cannot decrease",
+    "allowed": {"qty": 4},
+    "blocked": {"qty": 1}
+  },
+  {
+    "id": "context-shape",
+    "sql": "SELECT id FROM changed WHERE name = 'Rejected' OR (SELECT count(*) FROM before) > 1 OR (SELECT count(*) FROM (SELECT * FROM before EXCEPT SELECT * FROM changed)) != (SELECT count(*) FROM before)",
+    "text": "Contexts have the same row shape and contain only the changed identity",
+    "allowed": {"name": "Accepted"},
+    "blocked": {"name": "Rejected"}
+  },
+  {
+    "id": "cross-table",
+    "sql": "SELECT id FROM changed WHERE qty > (SELECT qty FROM limits WHERE id = 'cap')",
+    "text": "Quantity exceeds the local limit",
+    "allowed": {"qty": 4},
+    "blocked": {"qty": 6}
+  },
+  {
+    "id": "tombstone",
+    "sql": "SELECT id FROM changed WHERE deleted_at IS NOT NULL",
+    "text": "Deletion is forbidden",
+    "allowed": {"name": "Accepted"},
+    "blocked": {"deleted_at": true}
+  },
+  {
+    "id": "captured-now",
+    "sql": "SELECT id FROM changed WHERE name = 'Rejected' OR (SELECT count(*) FROM now) != 1 OR (SELECT ts FROM now) IS NULL OR length((SELECT ts FROM now)) != 24",
+    "text": "A single captured clock belongs to the write",
+    "allowed": {"name": "Accepted"},
+    "blocked": {"name": "Rejected"}
+  }
+]
