@@ -270,7 +270,9 @@ CLI.
   `apply_purges` in `__init__.py`), replicas pull `purges` before any other
   table and apply it, and both drop covered copies from pushes (rows,
   `history` rows and attachments) without rejecting them, since a rejection
-  would pin an old replica's cursor. Inserts are not filtered. Purging again
+  would pin an old replica's cursor. After accepting a push the hub re-applies
+  the markers covering those rows (its own logged event for the edit carries
+  the old value), and replicas filter covered rows out of every pull. Inserts are not filtered. Purging again
   moves `purged_at` forward to cover a re-import. Only `life purge` writes
   `purges`; engine tables are never purge targets. Keep both implementations
   in step.

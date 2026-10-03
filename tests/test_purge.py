@@ -262,3 +262,40 @@ def test_purge_repairs_an_interrupted_setup(db):
     assert trigger in logged, "the trigger must replay to the hub and replicas"
     assert execute_sql(db, "SELECT 1 FROM catalog_tables WHERE id = 'purges'")
     assert len(execute_sql(db, "SELECT 1 FROM catalog_properties WHERE tbl = 'purges'")) == 4
+
+
+def test_a_redaction_synced_with_its_marker_leaves_no_old_value_anywhere(pair):
+    a, b, hub = pair
+    execute_sql(a, "UPDATE items SET name = '[redacted]' WHERE id = 'r1'")
+    purge(a, "items", "r1", cols=["name"])
+    assert not life.sync(a, hub)["rejected"]
+    assert not life.sync(b, hub)["rejected"]
+    for path in (a, hub.path, b):
+        [m] = execute_sql(path, "SELECT purged_at FROM purges")
+        old = execute_sql(
+            path,
+            "SELECT * FROM history WHERE tbl = 'items' AND row_id = 'r1' AND col = 'name' "
+            f"AND created_at <= '{m['purged_at']}'",
+        )
+        assert old == [], path
+        assert "secret" not in json.dumps(execute_sql(path, "SELECT * FROM history"))
+
+
+def test_a_replica_does_not_take_covered_copies_from_the_hub(pair):
+    a, b, hub = pair
+    purge(a, "items", "r1")
+    life.sync(a, hub)
+    life.sync(b, hub)
+    # a hub that never applied the marker still serves the old row and event
+    with life.connect(hub.path) as conn:
+        conn.execute(
+            "INSERT INTO items (id, name, updated_at, hub_at) "
+            f"VALUES ('r1', 'secret', '{OLD}', '{FUTURE}')"
+        )
+        conn.execute(
+            "INSERT INTO history (id, tbl, row_id, col, old, new, created_at, updated_at, hub_at) "
+            f"VALUES ('h-stale', 'items', 'r1', 'name', 'a', 'secret', '{OLD}', '{OLD}', '{FUTURE}')"
+        )
+    life.sync(b, hub)
+    assert _rows(b, "items") == []
+    assert _history(b) == []

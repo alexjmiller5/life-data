@@ -83,3 +83,14 @@ test("a column marker drops that column's old events and keeps the others", asyn
   await push({ table: "history", columns: Object.keys(rows[0]), rows }, db);
   expect(await ids(db, "SELECT id FROM history WHERE id LIKE 'h-%' ORDER BY id")).toEqual(["h-note"]);
 });
+
+test("the hub's own event for an edit a column marker covers is removed too", async () => {
+  const db = await seed();
+  await pushMarker(db, "name");
+  const T15 = "2026-01-01T00:00:01.500Z";
+  const out = await push({ table: "items", columns: ["id", "name", "updated_at"], rows: [{ id: "r1", name: "[redacted]", updated_at: T15 }] }, db);
+  expect(out.upserted).toBe(1);
+  const { results } = await db.prepare("SELECT * FROM history WHERE col = 'name' AND created_at <= ?").bind(T2).all();
+  expect(results).toEqual([]);
+  expect(JSON.stringify((await db.prepare("SELECT * FROM history").all()).results)).not.toContain("secret");
+});

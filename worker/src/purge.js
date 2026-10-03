@@ -35,6 +35,11 @@ export function uncovered(index, table, rows) {
   return rows.filter((r) => !covers(index, table, r.id, (col, at) => col == null && (r.updated_at ?? "") <= at));
 }
 
+// The markers covering these rows, in the shape applyPurges takes.
+export const markersFor = (index, table, ids) =>
+  ids.flatMap((id) => (index.get(JSON.stringify([table, id])) ?? [])
+    .map(([col, purged_at]) => ({ tbl: table, row_id: id, col, purged_at })));
+
 // Hard-delete what each live marker covers, stamped at or before purged_at.
 export async function applyPurges(db, markers) {
   const live = markers.filter((m) => !m.deleted_at);

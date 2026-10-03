@@ -414,6 +414,14 @@ def _covers_event(index: dict, event: dict) -> bool:
     )
 
 
+def _markers_for(index: dict, table: str, ids: list[str]) -> list[dict]:
+    return [
+        {"tbl": table, "row_id": rid, "col": col, "purged_at": at}
+        for rid in ids
+        for col, at in index.get((table, rid), [])
+    ]
+
+
 def _uncovered(index: dict, table: str, rows: list[dict]) -> list[dict]:
     if not index or table == PURGES:
         return rows
@@ -754,6 +762,10 @@ class LocalHub:
                 finally:
                     if conn.in_transaction:
                         conn.execute("RELEASE pushed_row")
+            # The hub logs its own event for an accepted edit; a marker that
+            # covers the row removes it again, old value included.
+            if not insert_only and table != PURGES:
+                apply_purges(conn, _markers_for(purged, table, [r["id"] for r in accepted]))
             if table == PURGES and accepted:
                 apply_purges(
                     conn,
@@ -1258,7 +1270,7 @@ def _sync_locked(path: Path, hub) -> dict:
         cols, mine = columns[table], candidates[table]
         # the pull is inclusive (hub_at >= cursor), so the comparison is too
         quiet = marks is not None and last_pull and marks.get(table, last_pull) < last_pull
-        remote = [] if quiet else hub.rows_pull(table, cols, last_pull)
+        remote = _uncovered(purged, table, [] if quiet else hub.rows_pull(table, cols, last_pull))
         if remote:
             # `pulled` counts rows the LWW upsert actually APPLIED, not rows
             # received: the sync after a push re-reads its own rows (stamped

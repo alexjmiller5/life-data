@@ -7,7 +7,7 @@
 // knows how the caller was authenticated.
 
 import { pushChecked, queryBudget } from "./write.js";
-import { PURGES, applyPurges, purgeIndex, uncovered } from "./purge.js";
+import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
@@ -349,6 +349,11 @@ const ROUTES = {
     const { accepted, rejected } = await pushChecked(db, table,
       rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, stamping,
       uncovered(purged, "history", body.history ?? []));
+    // The hub logs its own event for an accepted edit; a marker that covers
+    // the row removes it again, old value included.
+    if (table !== PURGES && accepted.length) {
+      await applyPurges(db, markersFor(purged, table, accepted.map((row) => row.id)));
+    }
     if (table === PURGES && accepted.length) {
       const { results } = await db
         .prepare(`SELECT * FROM ${PURGES} WHERE id IN (SELECT value FROM json_each(?))`)
