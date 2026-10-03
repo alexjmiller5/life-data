@@ -1386,6 +1386,236 @@
       "required": [
         "receiptId"
       ]
+    },
+    "EnrollmentApprovalArgs": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "name"
+      ]
+    },
+    "EnrollmentPolicy": {
+      "type": "object",
+      "properties": {
+        "pollIntervalSeconds": {
+          "$ref": "#/$defs/Count"
+        },
+        "timeoutSeconds": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxResponseBytes": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "pollIntervalSeconds",
+        "timeoutSeconds",
+        "maxResponseBytes"
+      ]
+    },
+    "EnrollmentApproval": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "approvalCode": {
+          "type": "string"
+        },
+        "deviceName": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/EnrollmentPolicy"
+        }
+      },
+      "required": [
+        "path",
+        "approvalCode",
+        "deviceName",
+        "policy"
+      ]
+    },
+    "ReplicaIneligibilityCode": {
+      "type": "string",
+      "enum": [
+        "full_scope_required",
+        "invalid_capabilities",
+        "schema_unavailable",
+        "replica_sync_disabled"
+      ]
+    },
+    "ReplicaIneligibility": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ReplicaIneligibilityCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ReplicaEligibility": {
+      "type": "object",
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplicaIneligibility"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "allowed",
+        "reason"
+      ]
+    },
+    "SessionInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "replica": {
+          "$ref": "#/$defs/ReplicaEligibility"
+        }
+      },
+      "required": [
+        "name",
+        "scopes",
+        "replica"
+      ]
+    },
+    "SessionDataArgs": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/JSONValue"
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "SessionReply": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/Count"
+        },
+        "data": {
+          "$ref": "#/$defs/JSONValue"
+        },
+        "retryAfterSeconds": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "status",
+        "data"
+      ],
+      "description": "Host supplies HTTP status, bounded parsed JSON on 200 or null otherwise. Never derive status from error strings. Optional Retry-After delay is parsed by the host without platform clocks in core."
+    },
+    "EnrollmentPollArgs": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "$ref": "#/$defs/SessionReply"
+        },
+        "expectedFingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reply",
+        "expectedFingerprint"
+      ]
+    },
+    "EnrollmentPollState": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved"
+      ]
+    },
+    "EnrollmentPollResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/EnrollmentPollState"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryAfterSeconds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "session",
+        "retryAfterSeconds"
+      ],
+      "description": "Approved means the candidate identity was authenticated. Hosts must also require session.replica.allowed before installing it for replica use. Pending never distinguishes an unapproved token from a revoked one."
+    },
+    "SessionRevocationState": {
+      "type": "string",
+      "enum": [
+        "revoked",
+        "unauthorized"
+      ]
+    },
+    "SessionRevocationResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/SessionRevocationState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "description": "Unauthorized is not proof that an unregistered approval URL has been cancelled; a later browser approval remains possible."
     }
   },
   "operations": {
@@ -1557,6 +1787,42 @@
         "$ref": "#/$defs/Row"
       },
       "description": "Undo last saved change through the ordinary validated writer, requiring the captured revision and shape. Success consumes the receipt; failure preserves it. No redo or timestamp restoration. Hosts pause autosave and preserve newer drafts for explicit review."
+    },
+    "enrollmentApproval": {
+      "args": {
+        "$ref": "#/$defs/EnrollmentApprovalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/EnrollmentApproval"
+      },
+      "description": "Pure relative approval path and public fingerprint code. Hosts validate/canonicalize the endpoint and generate/hash the candidate token; core never receives it."
+    },
+    "validateDeviceSession": {
+      "args": {
+        "$ref": "#/$defs/SessionDataArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
+      },
+      "description": "Pure nonadmin identity validation and current full-scope replica eligibility. Dedicated manual names are allowed. No network or storage."
+    },
+    "enrollmentPollResult": {
+      "args": {
+        "$ref": "#/$defs/EnrollmentPollArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/EnrollmentPollResult"
+      },
+      "description": "Pure classification of one bounded session response, matching device:<fingerprint> only on approval. Hosts own deadline/cancellation and cap the returned retry delay to remaining time; never poll after the deadline."
+    },
+    "sessionRevocationResult": {
+      "args": {
+        "$ref": "#/$defs/SessionReply"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionRevocationResult"
+      },
+      "description": "Pure classification of session POST. Only 200 with logged_out true confirms revocation; 401 is separately unauthorized, never proof that future approval is impossible."
     }
   }
 }

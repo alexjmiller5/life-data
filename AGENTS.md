@@ -38,6 +38,14 @@ CLI.
 - `core/src/services.ts` - typed usage/feed/read-state clients over `ServiceHub`.
   `tests/fixtures/hub-usage-contract.json` is the hub contract. Feed reads walk
   from zero each time; presentation checkpoints and permissions belong to hosts.
+- `core/src/enrollment.ts` owns four pure enrollment/session policy operations.
+  `tests/fixtures/enrollment-policy.json` is portable host conformance data,
+  checked against actual Worker approval/session responses in core tests.
+  Relative approval paths carry only a fingerprint; hosts own endpoint validation,
+  crypto, typed HTTP replies, deadlines, cancellation and credential storage.
+  A validated identity is not replica permission: require `session.replica.allowed`.
+  A 401 cleanup result is unauthorized, not proof that later approval is cancelled.
+  Python login behavior and hub routes are independent of these pure UI operations.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
   codecs; `--check` verifies reproducibility without writing. Edit the contract,

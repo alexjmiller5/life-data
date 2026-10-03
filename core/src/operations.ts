@@ -6,6 +6,7 @@ import { allowed } from './validate.ts';
 import { compileView, displayName } from './view.ts';
 import { isReadOnlyTable, writeability } from './write.ts';
 import { createWriteSession } from './undo.ts';
+import { enrollmentApproval, validateDeviceSession, enrollmentPollResult, sessionRevocationResult } from './enrollment.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
 import { prepareSearch, search } from './search.ts';
@@ -40,6 +41,10 @@ export async function readOptions(db: SqlDriver, { table, column }: OptionsArgs)
 export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local'): CoreHandlers {
   const writes = createWriteSession(db, origin);
   return {
+    enrollmentApproval,
+    validateDeviceSession: ({ data }) => validateDeviceSession(data),
+    enrollmentPollResult: ({ reply, expectedFingerprint }) => enrollmentPollResult(reply, expectedFingerprint),
+    sessionRevocationResult,
     async catalog() {
       const catalog = await readCatalog(db);
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };

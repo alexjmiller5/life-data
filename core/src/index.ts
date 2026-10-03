@@ -12,3 +12,4 @@ export * from './operations.ts';
 export * from './search.ts';
 export * from './saved-views.ts';
 export * from './remote.ts';
+export * from './enrollment.ts';

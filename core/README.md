@@ -438,3 +438,85 @@ contract SHA-256 identifies that local artifact pair; their bridge must compare
 it with the bundled runtime before dispatch. Consumers retain queues, file/Web
 locks, host-only database lifecycle, and notification checkpoints. Generation
 adds no platform timers, storage, credentials or speculative scoped sync.
+
+## Pure enrollment policy
+
+`enrollment.ts` implements policy over the existing `/login` approval page and
+GET/POST `/v1/session`. It performs no HTTP, SQL, credential access, cryptography,
+clock reads or browser operations. The four generated dispatch operations are:
+
+| Operation | Arguments | Result |
+| --- | --- | --- |
+| `enrollmentApproval` | `{ fingerprint, name }` | `{ path, approvalCode, deviceName, policy }` |
+| `validateDeviceSession` | `{ data }` | `{ name, scopes, replica }` |
+| `enrollmentPollResult` | `{ reply, expectedFingerprint }` | `{ state, session, retryAfterSeconds }` |
+| `sessionRevocationResult` | `{ status, data, retryAfterSeconds? }` | `{ state }` |
+
+Standalone exports use `validateDeviceSession(data)`,
+`enrollmentPollResult(reply, expectedFingerprint)` and
+`sessionRevocationResult(reply)`; the approval export takes the same arguments
+as dispatch. These functions are also usable before a database is opened.
+
+`enrollmentApproval` returns a relative `/login?key=...&name=...` path, an eight
+hex-character approval code, and `device:<fingerprint>`. Only a lowercase
+64-character SHA-256 fingerprint is accepted. The label matches the Worker's
+`validLabel`: trimmed, 1-100 UTF-16 units, with ASCII controls/DEL rejected in
+the original input. Encoding replaces unpaired surrogates like URLSearchParams,
+without needing that global in JSC. Hosts validate/canonicalize and capture the
+endpoint before appending this path. Never supply a bearer token as the key.
+
+`policy` carries `pollIntervalSeconds: 5`, `timeoutSeconds: 300`, and
+`maxResponseBytes: 65536`; the same frozen values are exported as
+`ENROLLMENT_POLICY`. Host crypto generates a dedicated `lt_` token from 24 random
+bytes encoded as hex and hashes the entire UTF-8 token. Native persistence is
+in device-only Keychain, browser credentials stay session-only, and operator or
+another client's credentials are never copied into enrollment.
+
+`SessionReply` is `{ status: number, data: JSONValue, retryAfterSeconds?: number }`.
+The host supplies the actual HTTP status, bounded parsed JSON on 200, and `null`
+on non-success. Never parse an error string to recover status. The host transport
+uses the fixed session route, refuses redirects/cookies, enforces the response
+byte bound, and sanitizes network/body parsing failures. Core's existing Hub HTTP
+transport is unchanged; it does not yet expose this session envelope.
+
+Polling accepts 200 only after nonadmin session validation and exact
+`device:<expectedFingerprint>` identity matching. Generic session validation
+allows dedicated manual names. Name `admin` or an `admin` scope is rejected.
+`SessionInfo.replica` is `{ allowed, reason }`, where a refusal has a stable
+`code` plus a displayable `message`. Current replicas require scope `full`.
+Absent capabilities remain compatible. An advertised `capabilities` object may
+contain unrelated future keys; core ignores them. Only the recognized fields
+are checked: `schema` must be a string and `replica_sync` a boolean when present;
+`schema: "none"` and `replica_sync: false` refuse replica use. Invalid recognized
+field/container types also refuse. No future positive capability values grant
+permission in place of `full`, and core adds no capability fields to hub replies.
+
+An `approved` result means the candidate identity authenticated; it does **not**
+override a denied `session.replica`. Require `replica.allowed` before installing
+credentials for Life UI replica use. This is eligibility from the supplied
+response, not a freshness guarantee about server authorization.
+
+HTTP 401/403/429/5xx poll replies are `pending`; other statuses fail. Pending has
+`session: null` and a retry delay of at least five seconds. For 429/503, an optional
+host-parsed `retryAfterSeconds` (nonnegative safe integer) can extend that delay;
+core never reads a clock or parses an HTTP date. Malformed HTTP Retry-After
+headers should be omitted by the host. Hosts use a monotonic five-minute deadline,
+cap waits to remaining time **before** converting units, and never issue another
+poll or accept approval after timeout/cancellation/attempt replacement. Network
+failures and malformed 200 replies are errors, not implicit approval or retries.
+
+Session POST confirms `revoked` only for 200 with `logged_out: true`. A 401 returns
+`unauthorized`: the existing hub cannot invalidate an unregistered, non-expiring
+approval link. Best-effort cleanup on cancel/timeout can race later browser
+approval, so never describe it as guaranteed revocation. Retain only public
+fingerprint/device-management recovery instructions after discarding a candidate.
+An approved but uninstalled candidate should be revoked if installation fails.
+Normal logout revokes before deleting a saved credential, preserving it on remote
+failure so retry remains possible. Hosts guard credential replacement and late
+callbacks using the captured endpoint/attempt identity; policy has no session slot.
+
+`tests/fixtures/enrollment-policy.json` supplies JSON operation cases and expected
+results/errors for browser/JSC host conformance. Core also exercises real Worker
+approval, session and revocation responses with isolated SQLite auth storage.
+Python login production behavior is not changed, and no extra Python policy
+implementation is introduced.

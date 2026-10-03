@@ -28,3 +28,10 @@ const forgedUndo: CoreArgs<'undo'> = { receiptId: 'receipt', patch: { name: 'For
 // @ts-expect-error an empty undo slot must be explicit null
 const absentUndo: CoreResult<'undoStatus'> = {};
 void [forgedUndo, absentUndo];
+// @ts-expect-error hosts supply numeric HTTP status, never exception text
+const stringStatus: CoreArgs<'sessionRevocationResult'> = { status: 'HTTP 401', data: null };
+// @ts-expect-error approval always binds the candidate fingerprint
+const unboundApproval: CoreArgs<'enrollmentPollResult'> = { reply: { status: 200, data: {} } };
+// @ts-expect-error a null pending session is required in the generated shape
+const ambiguousPoll: CoreResult<'enrollmentPollResult'> = { state: 'pending', retryAfterSeconds: 5 };
+void [stringStatus, unboundApproval, ambiguousPoll];
