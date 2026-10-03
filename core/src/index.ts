@@ -11,3 +11,4 @@ export * from './contract.generated.ts';
 export * from './operations.ts';
 export * from './search.ts';
 export * from './saved-views.ts';
+export * from './remote.ts';

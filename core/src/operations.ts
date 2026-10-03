@@ -8,6 +8,7 @@ import { isReadOnlyTable, writeRow, writeability } from './write.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
 import { prepareSearch, search } from './search.ts';
+import { readRemoteRows, readRemoteRow } from './remote.ts';
 import { listViews, saveView, deleteView } from './saved-views.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
@@ -42,6 +43,8 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
     },
     rows: view => readRows(db, view),
+    remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
+    remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
     listViews: args => listViews(db, args),
     saveView: args => saveView(db, args, { origin }),

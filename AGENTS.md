@@ -49,6 +49,16 @@ CLI.
   driver transaction. Cache DDL never enters `_schema_log`. `View.search`
   uses literal word prefixes; `contains` retains substring semantics. Raw
   Markdown is indexed, with conservative plain-text display cleanup only.
+- `core/src/remote.ts` provides transient read-only `remoteRows`/`remoteRow`
+  operations through the existing paginated rows/pull API, one request each.
+  Durable endpoint binding and known local table schema are checked before
+  HTTP and again before returning rows; nothing is initialized or merged.
+  Opaque cursors bind endpoint/table/schema. Full known columns, core labels
+  and explicit tombstones are returned; SQLite checks ID order/equality with
+  the actual column collation and no source-row scan. Hosts keep remote mode
+  separate from local edits/search and deduplicate IDs across changing pages.
+  No coverage, count or snapshot guarantee follows from browsing; usage caps
+  still apply and core never retries. The bridge contract owns both operations.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.

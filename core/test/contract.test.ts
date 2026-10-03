@@ -14,6 +14,12 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.typescript).toContain('export interface CoreOperations');
   expect(first.typescript).toContain('rows: { args: View; result: WorkspaceRow[] }');
   expect(first.typescript).toContain('search: { args: SearchArgs; result: SearchHit[] }');
+  expect(first.typescript).toContain('remoteRows: { args: RemoteRowsArgs; result: RemoteRowsPage }');
+  expect(first.typescript).toContain('remoteRow: { args: RemoteRowArgs; result: RemoteRowResult }');
+  expect(first.swift).toContain('public init(record: CoreRow, label: String, deleted: Bool)');
+  expect(first.swift).toContain('public init(endpoint: String, table: String, limit: CoreCount? = nil, cursor: String? = nil)');
+  expect(first.swift).toContain('public init(rows: [CoreRemoteRecord], nextCursor: String?)');
+  expect(first.swift).toContain('public typealias Response = CoreRemoteRowResult');
   expect(first.swift).toContain('public init(text: String, table: String? = nil, limit: CoreCount? = nil, offset: CoreCount? = nil)');
   expect(first.swift).toContain('public typealias Response = [CoreSearchHit]');
   expect(first.typescript).toContain('listViews: { args: ListViewsArgs; result: SavedViewList }');

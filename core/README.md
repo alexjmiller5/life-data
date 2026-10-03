@@ -264,9 +264,72 @@ returns at most one violation. Rule SQL can still scan large tables or joins;
 this does not impose a CPU deadline or bounded SQL execution cost. No host
 timer, progress-handler API, or whole-table JS snapshot is introduced.
 Missing local references require their table to be included and synced.
-Skipped tables have no remote browsing API here. Sync snapshots pending rows
+Skipped tables can be browsed online through the read-only operations below.
+Sync snapshots pending rows
 in memory; very large full replicas will need snapshots staged in temporary
 tables. Enrollment remains a host integration.
+
+### Online read-only rows
+
+`readRemoteRows(db, hub, { table, limit?, cursor? })` reads one page from the
+existing `/v1/rows/pull` route. Limit defaults to 50 and must be 1-200. It
+returns `{ rows: RemoteRecord[], nextCursor: string | null }`; each record is
+`{ record, label, deleted }`, with all locally known physical columns, the
+ordinary core display label and an explicit tombstone flag. Pass `nextCursor`
+unchanged to continue, or omit it to refresh. A full final page still has a
+cursor and requires one empty terminal request. Never infer a total count.
+
+`readRemoteRow(db, hub, { table, id })` makes one equality-filtered pull with
+limit 2 and returns `{ row: RemoteRecord | null }`. It rejects ambiguous or
+mismatched results. Equality uses the ID column's SQLite collation: NOCASE and
+RTRIM lookups return the stored ID spelling. The generated bridge operations
+are `remoteRows` and `remoteRow`; their args also carry `endpoint`, and hosts
+inject its transport/credential through `createCoreHandlers` as usual.
+
+These are transient, read-only results, separate from local views, FTS and
+editing. There is no persistent merge, DDL, sync checkpoint, coverage proof,
+pending marker or rejected-history change. A successful read does not grant
+writeability. Do not pass a remote record to the local writer. Neither method
+initializes an external file or changes its endpoint binding.
+
+At least one durable Python/core binding must already match the transport's
+canonical endpoint, and every present binding must agree, before any HTTP.
+The table must exist in the local main schema and active catalog, with a
+single TEXT primary key named `id` and the `updated_at`/`deleted_at` columns.
+Internal tables, views and virtual tables are unavailable. Shape checks use
+`main.table_xinfo`, already part of the host read-only contract. Short metadata
+transactions end before HTTP; the same binding, target shape, display metadata
+and logged schema identity are checked again before returning a response.
+Missing columns on the hub require ordinary schema sync, never a partial-row
+fallback. The existing route's legacy `updated_at` fallback still applies on
+tables without `hub_at`; malformed legacy rows with null revisions cannot be
+promised visible by that route.
+
+Cursors are versioned opaque strings scoped to endpoint, table and local
+schema identity. They are not credentials, signatures or remote snapshots;
+keep them with the current in-memory page, never use them as sync checkpoints.
+Responses require exact requested columns, scalar values, valid revision and
+tombstone timestamps, bounded row counts and a consistent terminal cursor.
+SQLite compound SELECTs compare the returned IDs under the target column's
+collation, including equivalent duplicates and progress past the previous ID.
+Their source-table branch is `WHERE 0`: only metadata and the bounded response
+participate, with no local row scan, staging or new adapter method. See
+[SQLite compound SELECT comparison rules](https://www.sqlite.org/lang_select.html#compound_select_statements).
+
+This is a live view with ID-ascending paging only. No remote text search,
+arbitrary filters, custom sort, total count or simultaneous snapshot is
+provided. Keep tombstones identifiable: the route does not accept a null
+equality filter for active-only rows. Across a changing hub, clients must
+deduplicate repeated IDs before keyed rendering, replacing an earlier
+displayed row with the later response. That does not recover rows inserted
+before an earlier cursor or establish completeness; Refresh starts over.
+Hosts also discard late responses from a superseded workspace/request.
+
+One operation makes one request. HTTP failures and the usage cap's 429 return
+sanitized errors without retry or an alternate endpoint. The existing usage
+service can explain a cap while local browsing remains available. The cap
+still covers ID lookups and small pages. Transient pages must never be labeled
+as replicated rows or counted as the local CLI queue.
 
 Shared saved-view storage is an ordinary synced `views` table, with
 `name:text!`, `tbl:ref!` (to `catalog_tables`) and `definition:json!`, plus the

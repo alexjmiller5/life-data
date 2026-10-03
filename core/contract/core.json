@@ -1210,6 +1210,112 @@
         "writable",
         "reason"
       ]
+    },
+    "RemoteRecord": {
+      "type": "object",
+      "description": "Transient read-only hub row, including all locally known physical columns. deleted explicitly identifies tombstones. Never pass this record to the local writer or imply it is locally replicated.",
+      "properties": {
+        "record": {
+          "$ref": "#/$defs/Row"
+        },
+        "label": {
+          "type": "string"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "record",
+        "label",
+        "deleted"
+      ]
+    },
+    "RemoteRowsArgs": {
+      "type": "object",
+      "description": "One online page in source ID order; default limit 50, maximum 200. Pass nextCursor unchanged; omit cursor to refresh. No text search, arbitrary filters, sorting, count or snapshot guarantee.",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "table"
+      ]
+    },
+    "RemoteRowsPage": {
+      "type": "object",
+      "description": "Transient page including tombstones. A full page may require an empty terminal request. Across a changing hub, clients deduplicate repeated record IDs before keyed rendering, replacing the displayed record with the later response; this does not establish a snapshot.",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RemoteRecord"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rows",
+        "nextCursor"
+      ]
+    },
+    "RemoteRowArgs": {
+      "type": "object",
+      "description": "One online ID lookup using the source column collation; the returned ID retains its stored spelling.",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "table",
+        "id"
+      ]
+    },
+    "RemoteRowResult": {
+      "type": "object",
+      "properties": {
+        "row": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "row"
+      ]
     }
   },
   "operations": {
@@ -1345,6 +1451,24 @@
         "$ref": "#/$defs/Writeability"
       },
       "description": "Read-only advisory. Always use write for the transactionally rechecked mutation."
+    },
+    "remoteRows": {
+      "args": {
+        "$ref": "#/$defs/RemoteRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RemoteRowsPage"
+      },
+      "description": "One bounded hub pull with no local row, checkpoint, coverage or outbox writes. A matching durable endpoint binding and local schema are required. Remote results are read-only."
+    },
+    "remoteRow": {
+      "args": {
+        "$ref": "#/$defs/RemoteRowArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RemoteRowResult"
+      },
+      "description": "One bounded hub pull by ID; null means no matching row. Tombstones remain explicit. A matching durable endpoint binding and local schema are required."
     }
   }
 }
