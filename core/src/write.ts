@@ -342,6 +342,8 @@ export async function commitWrite(
           references.set(p.ref_table!, found);
         }
         const violations = validateRow(props, before, after, {
+          // Like the hub and Python writers, an edit only claims the cells it carries.
+          touched: before ? new Set(Object.keys(patch)) : null,
           refOk: (t, id) => references.get(t)?.has(id) ?? false,
           extraOptions: p => extra.get(p) ?? [],
         }).map(v => ({ ...v, tbl: table, row_id: rowId,

@@ -58,6 +58,18 @@ test('patch merges without overwriting omitted cells and each revision increases
   expect(await db.all('SELECT * FROM items')).toEqual([noop]);
 });
 
+test('a stored deprecated value is not this edit\'s claim, matching the hub and Python writers', async () => {
+  const db = await local();
+  await db.run('ALTER TABLE items ADD COLUMN legacy TEXT');
+  await property(db, 'legacy', { type: 'text', deprecated: 1 });
+  await db.run("INSERT INTO items(id,name,legacy,created_at,updated_at) VALUES ('old','Before','kept',?,?)", [T0, T0]);
+  const edited = await writeRow(db, 'items', { id: 'old', name: 'After' }, clock);
+  expect(edited).toMatchObject({ name: 'After', legacy: 'kept' });
+  await rejects(writeRow(db, 'items', { id: 'old', legacy: 'new' }, clock), 'deprecated', 'legacy');
+  await rejects(writeRow(db, 'items', { name: 'Fresh', legacy: 'x' }, { ...clock, id: () => 'fresh' }), 'deprecated', 'legacy');
+  expect(await db.all("SELECT id,name,legacy FROM items ORDER BY id")).toEqual([{ id: 'old', name: 'After', legacy: 'kept' }]);
+});
+
 test('validation rolls back the actual update and history, including merged required and derived fields', async () => {
   const db = await local();
   await writeRow(db, 'items', { name: 'Before', qty: 4 }, clock);
