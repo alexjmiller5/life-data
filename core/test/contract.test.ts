@@ -34,6 +34,11 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.swift).toContain('public typealias Response = [CoreWorkspaceRow]');
   expect(first.swift).toContain('public enum CoreFilterOp: String');
   expect(first.swift).toContain('case notEmpty = "not_empty"');
+  expect(first.typescript).toContain('undo: { args: UndoArgs; result: Row }');
+  expect(first.typescript).toContain('undoStatus: { args: EmptyArgs; result: UndoStatus }');
+  expect(first.swift).toContain('public init(receiptId: String)');
+  expect(first.swift).toContain('public init(action: CoreUndoAction?)');
+  expect(first.swift).toContain('try container.encode(action, forKey: .action)');
   expect(first.hash).toMatch(/^[a-f0-9]{64}$/);
   expect(first.typescript).toContain(first.hash);
   expect(first.swift).toContain(first.hash);

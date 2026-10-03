@@ -16,6 +16,29 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   together. Pass `expectedUpdatedAt` in write options from the opened record
   to reject stale edits. Components must not write raw SQL. `isReadOnlyTable`
   recognizes built-in system tables and catalog entries with `kind: system`.
+- Each `createCoreHandlers` instance holds one volatile undo receipt for its
+  last successful record `write`. `undoStatus({})` returns `{ action: null }`
+  or an action with `receiptId`, `table`, `rowId`, and `kind` (create, edit,
+  trash, restore). `undo({ receiptId })` returns the row from a fresh validated
+  inverse write: create becomes trash, edit restores changed fields, trash
+  restores, and restore creates a fresh tombstone. Combined field/tombstone
+  patches are inverted together. Old timestamps and history are never restored.
+  Capture occurs inside the existing writer transaction; publication follows
+  COMMIT. Undo requires the captured revision, table shape and stored values
+  (ignoring `hub_at` bookkeeping), and rechecks every normal writer guard.
+  Failure retains the receipt. Success consumes it, with no redo. New successful
+  record writes replace it; timestamp-only writes and successful saved-view
+  mutations clear it. Direct `writeRow` callers do not acquire a UI session.
+  Closing/replacing a workspace must discard its handler instance; reopening
+  starts empty even when history survives. No undo data is stored or synced.
+  The session queues writes, undo, saved-view mutations and undoStatus through
+  receipt publication; hosts still serialize other driver use and own locks.
+  Each autosave is separate: label the action **Undo last saved change**. Hosts
+  cancel debounce without flushing drafts, prevent saves during undo, and use
+  the displayed receipt handle. Preserve newer drafts and pause their autosave
+  until explicit review/save; otherwise they could immediately reapply the
+  undone text. Refresh unchanged editor fields from the returned row. Text
+  editor undo remains separate. Failure keeps both draft and core receipt.
 - Each successful `writeRow` also commits a `_core_pending` marker for that
   table, row and revision. Repeated edits coalesce into one pending row.
   An accepted sync receipt clears only markers at or below its submitted

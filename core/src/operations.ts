@@ -4,7 +4,8 @@ import type { ServiceHub } from './services.ts';
 import { readCatalog } from './catalog.ts';
 import { allowed } from './validate.ts';
 import { compileView, displayName } from './view.ts';
-import { isReadOnlyTable, writeRow, writeability } from './write.ts';
+import { isReadOnlyTable, writeability } from './write.ts';
+import { createWriteSession } from './undo.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
 import { prepareSearch, search } from './search.ts';
@@ -37,6 +38,7 @@ export async function readOptions(db: SqlDriver, { table, column }: OptionsArgs)
 
 /** Typed local dispatch, not a network protocol. Credentials stay in the host. */
 export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local'): CoreHandlers {
+  const writes = createWriteSession(db, origin);
   return {
     async catalog() {
       const catalog = await readCatalog(db);
@@ -47,10 +49,12 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
     listViews: args => listViews(db, args),
-    saveView: args => saveView(db, args, { origin }),
-    deleteView: args => deleteView(db, args, { origin }),
+    saveView: args => writes.otherMutation(args, input => saveView(db, input, { origin })),
+    deleteView: args => writes.otherMutation(args, input => deleteView(db, input, { origin })),
     options: args => readOptions(db, args),
-    write: args => writeRow(db, args.table, args.patch, { origin, expectedUpdatedAt: args.expectedUpdatedAt }),
+    write: writes.write,
+    undo: writes.undo,
+    undoStatus: writes.undoStatus,
     writeability: args => writeability(db, args),
     status: () => syncStatus(db),
     sync: args => sync(db, hub(args.endpoint), { maxRows: args.maxRows, tables: args.tables }),

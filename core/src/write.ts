@@ -184,8 +184,20 @@ export async function writeability(db: SqlDriver, args: WriteabilityArgs): Promi
  */
 export async function writeRow(
   db: SqlDriver, table: string, patch: Row,
-  options: { now?: () => Date; id?: () => string; origin?: string; expectedUpdatedAt?: string } = {},
+  options: WriteOptions = {},
 ): Promise<Row> {
+  return (await commitWrite(db, table, patch, options)).row;
+}
+
+type WriteOptions = { now?: () => Date; id?: () => string; origin?: string; expectedUpdatedAt?: string };
+/** Internal transaction result, never a client-supplied inverse or a wire DTO. */
+export type WriteCapture = { before: Row | null; after: Row; columns: string[]; shape: string; receiptId: string };
+/** One write implementation. Capture is returned only after transaction commit;
+ * the session publishes it afterwards, never via a callback inside the transaction. */
+export async function commitWrite(
+  db: SqlDriver, table: string, patch: Row, options: WriteOptions = {},
+  capture = false, expected?: Pick<WriteCapture, 'shape' | 'after'>,
+): Promise<{ row: Row; capture: WriteCapture | null }> {
   let rowId: string | null = null;
   const fail = (col: string, rule: string, message: string): never => {
     throw new ValidationError([{ tbl: table, row_id: rowId, col, rule, message }]);
@@ -222,6 +234,10 @@ export async function writeRow(
     }
     return await db.transaction(async () => {
       const { cols, props, rules } = await prepareWrite(db, table, fail);
+      const shape = capture || expected
+        ? String((await db.all("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?", [table]))[0]?.sql)
+        : '';
+      if (expected && shape !== expected.shape) fail('', 'conflict', 'Table shape changed since this edit; undo is unavailable.');
       const exists = async (name: string) => (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", [name])).length > 0;
       const byCol = new Map(props.map(p => [p.col, p]));
       const values: Record<string, Value> = Object.create(null);
@@ -257,6 +273,11 @@ export async function writeRow(
       if (editing && !before) fail('id', 'not_found', 'Row is absent from this replica; sync before editing. Omit id to create.');
       if (before && expectedUpdatedAt !== undefined && before.updated_at !== expectedUpdatedAt) {
         fail('updated_at', 'conflict', 'Row changed since it was selected; reload it and review your edit before retrying.');
+      }
+      // hub_at is receipt bookkeeping, not a new user revision. Other changes,
+      // including external writes without a revision bump, must never be undone.
+      if (expected && (!before || Object.keys(expected.after).some(c => c !== 'hub_at' && before[c] !== expected.after[c]))) {
+        fail('', 'conflict', 'Stored row changed since this edit; undo is unavailable.');
       }
       if (before && (!validEditTimestamp(before.updated_at) || Date.parse(String(before.updated_at)) - instant.getTime() > 300_000)) {
         fail('updated_at', 'clock', 'Stored revision is invalid or over five minutes ahead; sync and check device time.');
@@ -345,7 +366,10 @@ export async function writeRow(
       if (before || rules.length) await db.run('DROP TABLE temp._core_write_before');
       await initCore(db);
       await db.run('INSERT OR REPLACE INTO _core_pending(tbl,row_id,updated_at) VALUES (?,?,?)', [table, rowId, stamp]);
-      return after;
+      return { row: after, capture: capture ? {
+        before: before ? { ...before } : null, after: { ...after }, columns: cols, shape,
+        receiptId: String((await db.all('SELECT lower(hex(randomblob(16))) AS id'))[0]!.id),
+      } : null };
     });
   } catch (error) {
     if (error instanceof ValidationError) throw error;

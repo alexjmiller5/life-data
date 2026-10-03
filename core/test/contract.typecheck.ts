@@ -23,3 +23,8 @@ const privateView: CoreArgs<'saveView'> = { table: 'items', name: 'Example', def
 const unsafeDelete: CoreArgs<'deleteView'> = { id: 'view' };
 void [privateView, unsafeDelete];
 void [missingTable, wrongSort, wrongValue, wrongArgs, wrongFeed, missingHandlers, badSearch, incompleteHit];
+// @ts-expect-error undo accepts a receipt handle, never client-supplied inverse data
+const forgedUndo: CoreArgs<'undo'> = { receiptId: 'receipt', patch: { name: 'Forged' } };
+// @ts-expect-error an empty undo slot must be explicit null
+const absentUndo: CoreResult<'undoStatus'> = {};
+void [forgedUndo, absentUndo];

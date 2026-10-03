@@ -43,6 +43,13 @@ CLI.
   codecs; `--check` verifies reproducibility without writing. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
+- `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
+  Capture is inside the existing write transaction; receipts publish only
+  after COMMIT. Inverses use the same writer and captured revision/shape.
+  Session mutations/status are queued; host-wide serialization still applies.
+  Dispose handlers with the workspace. No undo persistence, history replay,
+  redo or autosave grouping. Hosts preserve newer drafts and pause autosave
+  during undo and until retained drafts are explicitly reviewed/saved.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one

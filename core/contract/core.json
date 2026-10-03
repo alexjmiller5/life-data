@@ -1324,6 +1324,68 @@
       "required": [
         "row"
       ]
+    },
+    "UndoKind": {
+      "type": "string",
+      "enum": [
+        "create",
+        "edit",
+        "trash",
+        "restore"
+      ]
+    },
+    "UndoAction": {
+      "type": "object",
+      "description": "One volatile last saved change in this opened workspace session. receiptId is opaque; clients never supply inverse data. Each autosave replaces the previous action.",
+      "properties": {
+        "receiptId": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/UndoKind"
+        }
+      },
+      "required": [
+        "receiptId",
+        "table",
+        "rowId",
+        "kind"
+      ]
+    },
+    "UndoStatus": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UndoAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "UndoArgs": {
+      "type": "object",
+      "properties": {
+        "receiptId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId"
+      ]
     }
   },
   "operations": {
@@ -1477,6 +1539,24 @@
         "$ref": "#/$defs/RemoteRowResult"
       },
       "description": "One bounded hub pull by ID; null means no matching row. Tombstones remain explicit. A matching durable endpoint binding and local schema are required."
+    },
+    "undoStatus": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/UndoStatus"
+      },
+      "description": "Read this handler instance's last saved change after queued session mutations settle. Closing the workspace discards the receipt. This is not a history query or a guarantee that undo will pass current validation."
+    },
+    "undo": {
+      "args": {
+        "$ref": "#/$defs/UndoArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
+      },
+      "description": "Undo last saved change through the ordinary validated writer, requiring the captured revision and shape. Success consumes the receipt; failure preserves it. No redo or timestamp restoration. Hosts pause autosave and preserve newer drafts for explicit review."
     }
   }
 }

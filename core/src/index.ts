@@ -4,7 +4,7 @@ export * from './sync.ts';
 export * from './view.ts';
 export * from './catalog.ts';
 export * from './http.ts';
-export * from './write.ts';
+export { writeRow, writeability, isReadOnlyTable, ValidationError } from './write.ts';
 export * from './status.ts';
 export * from './services.ts';
 export * from './contract.generated.ts';
