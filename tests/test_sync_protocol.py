@@ -90,7 +90,12 @@ console.log(JSON.stringify(await syncStatus(db))); db.db.close();
         )
         return json.loads(result.stdout)
 
-    pending = {"lastSuccessfulSync": None, "pendingUiEdits": 1, "rejected": 0}
+    pending = {
+        "lastSuccessfulSync": None,
+        "pendingUiEdits": 1,
+        "rejected": 0,
+        "skippedTables": [],
+    }
     assert ui_status("write") == pending
     execute_sql(path, "INSERT INTO items(id,name) VALUES ('cli','CLI edit')")
     assert sync(path, hub)["rejected"] == []

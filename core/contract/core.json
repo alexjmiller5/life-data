@@ -500,12 +500,20 @@
         },
         "rejected": {
           "$ref": "#/$defs/Count"
+        },
+        "skippedTables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables skipped in the last successful core sync. Empty when no skip history is stored; not a coverage or freshness certificate."
         }
       },
       "required": [
         "lastSuccessfulSync",
         "pendingUiEdits",
-        "rejected"
+        "rejected",
+        "skippedTables"
       ]
     },
     "UsagePeriod": {

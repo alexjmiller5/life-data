@@ -25,7 +25,7 @@ async function replica(path?: string) {
 test('syncStatus is exported and an empty replica has no UI work or successful sync', async () => {
   const db = new TestSql(); cleanup.push(() => db.db.close());
   expect(typeof core.syncStatus).toBe('function');
-  expect(await core.syncStatus(db)).toEqual({ lastSuccessfulSync: null, pendingUiEdits: 0, rejected: 0 });
+  expect(await core.syncStatus(db)).toEqual({ lastSuccessfulSync: null, pendingUiEdits: 0, rejected: 0, skippedTables: [] });
 });
 
 test('status and coalesced UI markers persist across reopening the database', async () => {
@@ -66,7 +66,7 @@ test.each(['offline', 'lost receipt', 'malformed receipt', 'rejection'])('pendin
   if (failure === 'rejection') await core.writeRow(db, 'items', { id: row.id, qty: 1 });
   const finished = new Date(Date.now() + 100);
   await core.sync(db, hub, { now: () => finished });
-  expect(await core.syncStatus(db)).toEqual({ lastSuccessfulSync: finished.toISOString(), pendingUiEdits: 0, rejected: 0 });
+  expect(await core.syncStatus(db)).toEqual({ lastSuccessfulSync: finished.toISOString(), pendingUiEdits: 0, rejected: 0, skippedTables: [] });
   expect(remote.db.query('SELECT name FROM items WHERE id=?').get(row.id)).toEqual({ name: 'Offline edit' });
 });
 
@@ -169,4 +169,65 @@ test('acknowledging one table never clears another table marker with the same ro
   expect(await db.all('SELECT * FROM _core_pending')).toEqual([{ tbl: 'peers', row_id: 'same', updated_at: other.updated_at }]);
   await core.sync(db, hub, { tables: { peers: true } });
   expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
+});
+
+test('last successful skipped tables survive reopening and clear after a complete backfill', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'life-skips-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'replica.db');
+  const { db, hub } = await replica(path);
+  const result = await core.sync(db, hub, { tables: { items: false, history: false } });
+  expect(result.skipped).toEqual(['history', 'items']);
+  const before = await core.syncStatus(db);
+  expect(before.skippedTables).toEqual(['history', 'items']);
+  expect(await db.all("SELECT value FROM _core_state WHERE key='skipped_tables'")).toEqual([{ value: '["history","items"]' }]);
+  db.db.close(); db.db = new Database(path);
+  expect(await core.syncStatus(db)).toEqual(before);
+  await core.sync(db, hub, { tables: { items: true, history: true } });
+  expect((await core.syncStatus(db)).skippedTables).toEqual([]);
+});
+
+test.each(['schema', 'rows', 'commit', 'rejection'])('failed next %s round retains last successful skips and time', async failure => {
+  const { db, hub, remote } = await replica();
+  await core.sync(db, hub, { tables: { history: false } });
+  if (failure === 'rejection') {
+    await core.writeRow(db, 'items', { name: 'Pending' });
+    remote.db.query("UPDATE catalog_properties SET required=1,updated_at=?,hub_at=? WHERE col='qty'").run(T1, new Date().toISOString());
+  }
+  const before = await core.syncStatus(db);
+  const transport: Hub = { ...hub, async post(route, body) {
+    if (failure === 'schema' && route === '/v1/schema/pull') throw new Error('schema offline');
+    if (failure === 'rows' && route === '/v1/rows/pull' && body.table === 'items') throw new Error('rows offline');
+    return hub.post(route, body);
+  } };
+  const transaction = db.transaction.bind(db);
+  if (failure === 'commit') db.transaction = body => transaction(async () => {
+    const result = await body();
+    const current = await db.all("SELECT value FROM _core_state WHERE key='coverage_phase'");
+    if (current[0]?.value === 'ready') throw new Error('commit failed');
+    return result;
+  });
+  const attempt = core.sync(db, transport);
+  if (failure === 'rejection') expect((await attempt).rejected.length).toBeGreaterThan(0);
+  else await expect(attempt).rejects.toThrow();
+  const after = await core.syncStatus(db);
+  expect(after.lastSuccessfulSync).toBe(before.lastSuccessfulSync);
+  expect(after.skippedTables).toEqual(['history']);
+});
+
+test('legacy web skipped_tables state is read without host certification or mutation', async () => {
+  const db = new TestSql(); cleanup.push(() => db.db.close());
+  await core.initCore(db);
+  await db.run("INSERT INTO _core_state(key,value) VALUES ('last_sync',?),('skipped_tables',?)", [T0, '["items"]']);
+  const before = await db.all('SELECT * FROM _core_state ORDER BY key');
+  expect(await core.syncStatus(db)).toEqual({ lastSuccessfulSync: T0, pendingUiEdits: 0, rejected: 0, skippedTables: ['items'] });
+  expect(await db.all('SELECT * FROM _core_state ORDER BY key')).toEqual(before);
+  expect(await db.all('SELECT * FROM _core_coverage')).toEqual([]);
+});
+
+test.each(['{bad', '{}', 'null', '[1]', '[""]', '["items","items"]'])('malformed skipped status is explicit, never silently complete: %s', async value => {
+  const db = new TestSql(); cleanup.push(() => db.db.close());
+  await core.initCore(db);
+  await db.run("INSERT INTO _core_state(key,value) VALUES ('skipped_tables',?)", [value]);
+  await expect(core.syncStatus(db)).rejects.toThrow('Invalid saved skipped-table status');
 });

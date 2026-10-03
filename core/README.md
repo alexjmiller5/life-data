@@ -20,11 +20,17 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   table, row and revision. Repeated edits coalesce into one pending row.
   An accepted sync receipt clears only markers at or below its submitted
   revision; newer concurrent edits, rejections and lost receipts stay pending.
-- `syncStatus(driver)` returns `{ lastSuccessfulSync, pendingUiEdits, rejected }`
+- `syncStatus(driver)` returns `{ lastSuccessfulSync, pendingUiEdits, rejected, skippedTables }`
   from local durable state. The timestamp is the last successful core round's
   checkpoint, or `null`. Counts are pending UI-written rows and rows in the
   rejection inbox. Pending UI edits await this core's own valid receipt even
   if Python has already pushed them; this is not the entire CLI sync queue.
+  `skippedTables` records the last successful round's exclusions in the existing
+  `_core_state.skipped_tables` JSON key, atomically with the timestamp. Failed
+  or rejected rounds preserve both. Missing history yields `[]`; malformed
+  stored lists fail explicitly. Hosts read this list after reopen rather than
+  writing their own copy. It is a warning about that round, not coverage or
+  freshness proof, and an empty list does not certify a complete replica.
 - `readCatalog` decodes properties. `compileView` produces parameterized,
   catalog-scoped SQL with filtering, sorting and bounded pages. `contains`
   remains a literal substring filter (or exact JSON array membership).
