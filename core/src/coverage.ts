@@ -14,7 +14,10 @@ export async function coverageSchema(db: SqlDriver): Promise<{ tables: string[];
   // Logged drop/recreate cycles can leave the same physical SQL. Internal
   // search/cache DDL is deliberately absent from both pieces of this identity.
   const log = await db.all('SELECT count(*) AS count,coalesce(max(id),0) AS last FROM main._schema_log');
-  return { tables: schema.filter(r => r.type === 'table').map(r => String(r.name)), signature: JSON.stringify([schema,log]) };
+  // Drivers may reconstruct row objects in any key order (including native
+  // JSON bridges). Only ordered SQL rows and explicit field tuples identify it.
+  return { tables: schema.filter(r => r.type === 'table').map(r => String(r.name)),
+    signature: JSON.stringify([schema.map(r => [r.type,r.name,r.tbl_name,r.sql]),[log[0].count,log[0].last]]) };
 }
 
 export function validCoverage(proof: Row | undefined, endpoint: string, signature: string, pull: unknown): boolean {

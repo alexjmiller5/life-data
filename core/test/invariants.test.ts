@@ -102,6 +102,30 @@ test('skipping even history invalidates prior proof; re-enabling requires full b
   expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
 });
 
+test.each(['schema', 'log'])('driver object key order does not change %s coverage identity', async part => {
+  const { db, hub, remote, requests } = fixture();
+  const all = db.all.bind(db);
+  let reads = 0;
+  db.all = async (sql, params) => {
+    const rows = await all(sql, params);
+    const selected = part === 'schema' ? sql.startsWith('SELECT type,name,tbl_name,sql')
+      : sql.startsWith('SELECT count(*) AS count,coalesce(max(id),0) AS last');
+    // Model native JSONSerialization rebuilding dictionaries in a different
+    // insertion order. SQL row order and every field value stay unchanged.
+    if (selected && ++reads % 2 === 0) return rows.map(row => Object.fromEntries(Object.entries(row).reverse()));
+    return rows;
+  };
+  expect((await core.sync(db, hub)).rejected).toEqual([]);
+  expect(await core.writeability(db, { table: 'items' })).toEqual({ writable: true, reason: null });
+  const previousPull = (await db.all("SELECT pull FROM _core_sync WHERE tbl='items'"))[0].pull;
+  await core.writeRow(db, 'items', { id: 'edited', name: 'Changed' });
+  requests.length = 0;
+  expect((await core.sync(db, hub)).rejected).toEqual([]);
+  expect(requests.find(r => r.route === '/v1/rows/pull' && r.body.table === 'items')!.body.since).toBe(previousPull);
+  expect(remote.db.query("SELECT name FROM items WHERE id='edited'").get()).toEqual({ name: 'Changed' });
+  expect(await core.writeability(db, { table: 'items' })).toEqual({ writable: true, reason: null });
+});
+
 test('a failed refresh blocks writes until successful recovery, without trusting partial pages', async () => {
   const { db, hub } = fixture();
   await core.sync(db, hub);
