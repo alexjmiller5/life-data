@@ -24,6 +24,8 @@ Narrow schema/replica requests return status 403 with exactly:
 Clients require explicit replica_sync=true and schema=full-ddl-v1 when capabilities
 are present. Only absent capabilities retain the legacy full-token default.
 Existing rejection of admin credentials in consumer enrollment remains in effect.
+When capabilities are present, row_api, files and subscriptions must also match
+their supported v1 shapes (subscriptions may be null for pre-delivery hubs).
 Malformed/unknown capability versions fail closed. Canonical fixtures and generated
 TS/Swift types must agree.
 
@@ -81,9 +83,12 @@ HTML viewers remain a separate future feature.
 Subscription capacity defaults to 100,000 pending events and 256 MiB of conservative
 encoded-event accounting. Admin creation may set max_pending_events (1..1,000,000)
 and max_pending_bytes (4096..1 GiB). A single event must leave 4096 bytes within the
-1 MiB delivery envelope. No automatic expiry frees capacity. Schema replay guards
-active/paused watched table definitions and exact recording trigger SQL in its D1
-transaction; structural changes require retiring affected subscriptions first.
+1 MiB delivery envelope. No automatic expiry frees capacity. Activation accepts canonical timestamp and exact subscription triggers only.
+The timestamp projection uses SQLite's statement-stable clock, so event revisions
+agree with the committed row regardless of AFTER-trigger creation order. Physical
+cleanup of an existing tombstone does not repeat its logical deletion.
+Schema replay guards active/paused watched table definitions and their entire
+trigger set, plus all internal outbox triggers, in its D1 transaction; structural changes require retiring affected subscriptions first.
 Unrelated schema changes remain available. Subscription retirement does not discard
 pending events.
 

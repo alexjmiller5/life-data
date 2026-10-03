@@ -55,7 +55,7 @@ test('malformed UTF16 label has URLSearchParams replacement semantics', () => {
 });
 
 test('session policy copies supported output and ignores unrelated future metadata', () => {
-  const value = { ...session, scopes: ['full'], secret: 'private-response', capabilities: { schema: 'full-ddl-v1', replica_sync: true, unrelated: true } };
+  const value = { ...session, scopes: ['full'], secret: 'private-response', capabilities: { row_api:'v1', files:'opaque-key-v1', subscriptions:null, schema: 'full-ddl-v1', replica_sync: true, unrelated: true } };
   const info = core.validateDeviceSession(value);
   value.scopes[0] = 'admin';
   expect(info).toEqual({ ...session, replica: { allowed: true, reason: null } });
@@ -146,6 +146,14 @@ test.each([{}, { unrelated: true }, { replica_sync: true }, { schema: 'full-ddl-
 });
 
 test('explicit full replica contract permits enrollment while legacy absent capabilities remain valid', () => {
-  expect(core.validateDeviceSession({ ...session, capabilities: { replica_sync: true, schema: 'full-ddl-v1' } }).replica.allowed).toBe(true);
+  expect(core.validateDeviceSession({ ...session, capabilities: { row_api:'v1', files:'opaque-key-v1', subscriptions:null, replica_sync: true, schema: 'full-ddl-v1' } }).replica.allowed).toBe(true);
   expect(core.validateDeviceSession(session).replica.allowed).toBe(true);
+});
+
+test.each([
+  {row_api:'v999'}, {row_api:null}, {files:[]}, {subscriptions:123},
+  {files:'unknown-v2'}, {subscriptions:'unknown-v2'},
+])('explicit unknown or malformed protocol fields cannot enable replicas %#', change => {
+  const capabilities={row_api:'v1',schema:'full-ddl-v1',replica_sync:true,files:'opaque-key-v1',subscriptions:'durable-pull-v1',...change};
+  expect(core.validateDeviceSession({...session,capabilities}).replica.allowed).toBe(false);
 });

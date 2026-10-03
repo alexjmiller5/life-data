@@ -1,6 +1,6 @@
 import { checkedReads, readGuards } from './write.js';
-import { scopedTable } from './scopes.js';
-import { subscriptionTriggers } from './subscription-triggers.js';
+import { scopedTable, timestampTrigger } from './scopes.js';
+import { subscriptionTriggers, trustedSubscriptionTrigger } from './subscription-triggers.js';
 
 const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const schema = [
@@ -43,9 +43,16 @@ export async function createSubscription(db,input) {
       if (!info || ['id','created_at','updated_at','deleted_at','hub_at'].includes(column)
         || !/CHAR|CLOB|TEXT/i.test(info.type)) throw new Error('invalid subscription column');
     }
+    const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (?, '_change_events', '_change_subscriptions') ORDER BY name").bind(source.table).all();
+    let hasClock=false;
+    for(const trigger of triggers) {
+      if (trigger.tbl_name!==source.table) throw new Error('invalid subscription triggers');
+      if (timestampTrigger(trigger)) hasClock=true;
+      else if (!await trustedSubscriptionTrigger(view,trigger)) throw new Error('invalid subscription triggers');
+    }
     seen.add(source.table);
     sources.push({table:source.table,columns:[...source.columns]});
-    triggerSources.push({...sources.at(-1),hasHubAt:columns.some(c=>c.name==='hub_at')});
+    triggerSources.push({...sources.at(-1),hasClock,hasHubAt:columns.some(c=>c.name==='hub_at')});
   }
   const id=crypto.randomUUID();
   await db.batch([
@@ -62,11 +69,11 @@ export async function applySubscriptionSchema(db,ddl) {
   const view=checkedReads(db);
   const exists=await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_change_subscriptions'").first();
   const active=exists ? (await view.prepare("SELECT id,trigger_sources_json FROM _change_subscriptions WHERE state IN ('active','paused') ORDER BY id").all()).results : [];
-  const names=new Set(),expectedTriggers=[];
-  if(exists) {names.add('_change_subscriptions');names.add('_change_events');}
+  const names=new Set(),watched=new Set(),expectedTriggers=[];
+  if(exists) {names.add('_change_subscriptions');names.add('_change_events');watched.add('_change_subscriptions');watched.add('_change_events');}
   for(const sub of active) {
     const sources=JSON.parse(sub.trigger_sources_json);
-    for(const source of sources) names.add(source.table);
+    for(const source of sources) {names.add(source.table);watched.add(source.table);}
     for(const trigger of subscriptionTriggers(sub.id,sources)) {names.add(trigger.name);expectedTriggers.push(trigger);}
   }
   const stable=checkedReads(db);
@@ -77,6 +84,7 @@ export async function applySubscriptionSchema(db,ddl) {
       throw Object.assign(new Error('subscription schema conflict'),{code:'subscription-schema-conflict'});
     }
   }
+  if(watched.size) await stable.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (SELECT value FROM json_each(?)) ORDER BY name").bind(JSON.stringify([...watched].sort())).all();
   try {
     await db.batch([...readGuards(db,view.reads),...readGuards(db,stable.reads),db.prepare(ddl),...readGuards(db,stable.reads)]);
   } catch(error) {

@@ -38,7 +38,9 @@ function denied(code: ReplicaIneligibilityCode, message: string): ReplicaEligibi
 function replicaEligibility(data: Record<string, unknown>, scopes: string[]): ReplicaEligibility {
   if (Object.hasOwn(data, 'capabilities')) {
     const caps = data.capabilities;
-    if (!record(caps) || typeof caps.schema !== 'string' || typeof caps.replica_sync !== 'boolean') {
+    if (!record(caps) || typeof caps.schema !== 'string' || typeof caps.replica_sync !== 'boolean'
+      || caps.row_api !== 'v1' || caps.files !== 'opaque-key-v1'
+      || (caps.subscriptions !== null && caps.subscriptions !== 'durable-pull-v1')) {
       return denied('invalid_capabilities', 'The hub returned invalid replica capabilities.');
     }
     if (caps.schema === 'none') return denied('schema_unavailable', 'This token does not allow replica schema access.');

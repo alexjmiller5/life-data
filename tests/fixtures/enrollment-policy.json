@@ -69,7 +69,7 @@
       "operation": "enrollmentApproval",
       "args": {
         "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "name": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+        "name": "\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80\ud83d\ude80"
       },
       "error": "invalid enrollment approval request"
     },
@@ -232,7 +232,10 @@
               ]
             },
             "schema": "full-ddl-v1",
-            "replica_sync": true
+            "replica_sync": true,
+            "row_api": "v1",
+            "files": "opaque-key-v1",
+            "subscriptions": null
           }
         }
       },
@@ -258,7 +261,10 @@
           ],
           "capabilities": {
             "schema": "none",
-            "replica_sync": true
+            "replica_sync": true,
+            "row_api": "v1",
+            "files": "opaque-key-v1",
+            "subscriptions": null
           }
         }
       },
@@ -287,7 +293,10 @@
           ],
           "capabilities": {
             "replica_sync": false,
-            "schema": "full-ddl-v1"
+            "schema": "full-ddl-v1",
+            "row_api": "v1",
+            "files": "opaque-key-v1",
+            "subscriptions": null
           }
         }
       },
@@ -316,7 +325,10 @@
           ],
           "capabilities": {
             "schema": "future-mode",
-            "replica_sync": true
+            "replica_sync": true,
+            "row_api": "v1",
+            "files": "opaque-key-v1",
+            "subscriptions": null
           }
         }
       },
@@ -459,7 +471,10 @@
             ],
             "capabilities": {
               "replica_sync": false,
-              "schema": "full-ddl-v1"
+              "schema": "full-ddl-v1",
+              "row_api": "v1",
+              "files": "opaque-key-v1",
+              "subscriptions": null
             }
           }
         },
@@ -850,7 +865,10 @@
           ],
           "capabilities": {
             "replica_sync": true,
-            "schema": "full-ddl-v1"
+            "schema": "full-ddl-v1",
+            "row_api": "v1",
+            "files": "opaque-key-v1",
+            "subscriptions": null
           }
         }
       },
@@ -933,6 +951,102 @@
           ],
           "capabilities": {
             "schema": "full-ddl-v1"
+          }
+        }
+      },
+      "want": {
+        "name": "consumer-fixture",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "unsupported explicit row_api",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "consumer-fixture",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "row_api": "v999",
+            "schema": "full-ddl-v1",
+            "replica_sync": true,
+            "files": "opaque-key-v1",
+            "subscriptions": "durable-pull-v1"
+          }
+        }
+      },
+      "want": {
+        "name": "consumer-fixture",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "unsupported explicit files",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "consumer-fixture",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "row_api": "v1",
+            "schema": "full-ddl-v1",
+            "replica_sync": true,
+            "files": [],
+            "subscriptions": "durable-pull-v1"
+          }
+        }
+      },
+      "want": {
+        "name": "consumer-fixture",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "unsupported explicit subscriptions",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "consumer-fixture",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "row_api": "v1",
+            "schema": "full-ddl-v1",
+            "replica_sync": true,
+            "files": "opaque-key-v1",
+            "subscriptions": 123
           }
         }
       },

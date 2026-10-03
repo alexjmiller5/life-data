@@ -657,8 +657,13 @@ mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
 writes create no event. Paused subscriptions keep recording; retired ones stop.
 Capacity and per-event size failures roll back the source mutation. Canonical
 shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
-Schema replay transactionally preserves active watched table definitions and trigger
-SQL; retire affected subscriptions before structural changes. Private operational
+Activation rejects custom source/outbox triggers; only canonical timestamp and
+exact generated recording triggers are supported. Timestamp revisions use the same
+statement-stable SQLite clock as the canonical timestamp trigger. Physical cleanup
+of tombstones emits no second logical delete. Narrow writes reject triggers on
+implicit outbox destination tables inside their checked policy read set.
+Schema replay transactionally preserves active watched table definitions and the
+entire source/outbox trigger set; retire affected subscriptions before structural changes. Private operational
 DDL never enters the replica schema log or catalog. `durable-pull-v1` delivers persisted offered batches through capped long polls
 and explicit ACK receipts. Consumers need the subscription grant plus read access
 to every source. Live auth is rechecked before release; GET never advances ACK.

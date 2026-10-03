@@ -324,3 +324,40 @@ test('held polls stay within D1 query budget and do not repeatedly write token a
   await pollEvents(await a.tenant(),a.sub.id,30,{now:()=>now,sleep:async ms=>{now+=ms;}});
   expect(queries).toBeLessThan(1000);expect(activityWrites).toBeLessThanOrEqual(1);
 });
+
+const canonicalClock = `CREATE TRIGGER "articles_updated_at" AFTER UPDATE ON "articles" FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE "articles" SET updated_at = (${time}) WHERE rowid = NEW.rowid; END`;
+for(const clockLast of [false,true]) test(`canonical clock revisions agree with the committed row in either trigger order: ${clockLast}`,async()=>{
+  const db=database();db.db.exec(canonicalClock);
+  const sub=await createSubscription(db,config);
+  if(clockLast) db.db.exec('DROP TRIGGER articles_updated_at;'+canonicalClock);
+  await write(db,change('a','https://example.test/a',1));
+  await db.prepare("UPDATE articles SET url='https://example.test/b' WHERE id='a'").run();
+  const events=rows(db,sub.id),actual=db.db.query("SELECT updated_at,hub_at FROM articles WHERE id='a'").get();
+  expect(events).toHaveLength(2);expect(events[1].source.after_revision).toEqual(actual);
+  expect(events[1].source.before_revision.updated_at).toBe('2026-10-03T00:00:01.000Z');
+});
+
+test('activation refuses custom source triggers and schema replay cannot add them later',async()=>{
+  const {applySubscriptionSchema}=await import('../src/subscriptions.js');
+  const custom="CREATE TRIGGER normalize_url AFTER UPDATE ON articles WHEN NEW.url='https://example.test/b' BEGIN UPDATE articles SET url='https://example.test/c' WHERE id=NEW.id; END";
+  const before=database();before.db.exec(custom);
+  await expect(createSubscription(before,config)).rejects.toThrow('invalid subscription');
+  const after=database();await createSubscription(after,config);
+  for(const ddl of [custom,canonicalClock,"CREATE TRIGGER outbox_override AFTER INSERT ON _change_events BEGIN DELETE FROM _change_events; END"]) {
+    await expect(applySubscriptionSchema(after,ddl)).rejects.toMatchObject({code:'subscription-schema-conflict'});
+  }
+  expect(after.db.query("SELECT name FROM sqlite_master WHERE name IN ('normalize_url','articles_updated_at','outbox_override')").all()).toEqual([]);
+});
+
+for(const ackFirst of [false,true]) test(`physical tombstone cleanup does not repeat a logical deletion, ACK first=${ackFirst}`,async()=>{
+  const a=await api();await write(a.env.DB,change('a','https://example.test/a',1));
+  await write(a.env.DB,change('a','https://example.test/a',2,{deleted_at:'2026-10-03T00:00:02.000Z'}));
+  expect(rows(a.env.DB,a.sub.id)).toHaveLength(2);
+  if(ackFirst) {
+    const batch=await (await a.call(a.path+'/events?wait=0',{token:a.token})).json();
+    await a.call(a.path+'/ack',{method:'POST',body:{delivery_id:batch.delivery_id},token:a.token});
+  }
+  await a.env.DB.prepare("DELETE FROM articles WHERE id='a'").run();
+  expect(rows(a.env.DB,a.sub.id)).toHaveLength(ackFirst?0:2);
+  expect(a.env.DB.db.query('SELECT last_seq FROM _change_subscriptions').get().last_seq).toBe(2);
+});

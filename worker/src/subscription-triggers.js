@@ -3,7 +3,7 @@ import { literal, qident } from './validate.js';
 export const MAX_DELIVERY_BYTES = 1_048_576;
 export const MAX_EVENT_BYTES = MAX_DELIVERY_BYTES - 4096;
 const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
-const revision = (alias, hasHubAt) => `json_object('updated_at',${alias}.updated_at,'hub_at',${hasHubAt ? `${alias}.hub_at` : 'NULL'})`;
+const revision = (alias, hasHubAt, updated=`${alias}.updated_at`) => `json_object('updated_at',${updated},'hub_at',${hasHubAt ? `${alias}.hub_at` : 'NULL'})`;
 
 // Persisted triggers use only literal selectors and OLD/NEW. They run in every
 // writing transaction, including derives, direct SQL and physical deletions.
@@ -11,7 +11,7 @@ export function subscriptionTriggers(id, sources) {
   return sources.flatMap((source, index) => ['INSERT','UPDATE','DELETE'].map(operation => {
     const row = operation === 'DELETE' ? 'OLD' : 'NEW';
     const oldValue = column => operation === 'INSERT' ? 'NULL'
-      : operation === 'UPDATE' ? `CASE WHEN OLD.deleted_at IS NULL THEN OLD.${qident(column)} END` : `OLD.${qident(column)}`;
+      : `CASE WHEN OLD.deleted_at IS NULL THEN OLD.${qident(column)} END`;
     const newValue = column => operation === 'DELETE' ? 'NULL' : `CASE WHEN NEW.deleted_at IS NULL THEN NEW.${qident(column)} END`;
     const changed = source.columns.map(column => `${oldValue(column)} IS NOT ${newValue(column)}`).join(' OR ');
     const changes = `(SELECT json_group_array(json(item)) FROM (${source.columns.map(column =>
@@ -19,7 +19,13 @@ export function subscriptionTriggers(id, sources) {
     ).join(' UNION ALL ')}))`;
     const kind = operation === 'UPDATE' ? "CASE WHEN NEW.deleted_at IS NOT NULL THEN 'delete' ELSE 'update' END" : literal(operation.toLowerCase());
     const before = operation === 'INSERT' ? 'NULL' : revision('OLD', source.hasHubAt);
-    const after = operation === 'DELETE' ? 'NULL' : `CASE WHEN NEW.deleted_at IS NULL THEN ${revision('NEW', source.hasHubAt)} END`;
+    // The canonical clock runs before or after this AFTER trigger. NEW remains
+    // the outer row image in either order. SQLite 'now' is stable for the entire
+    // sqlite3_step(), so project that clock's exact final value without changing
+    // source data or relying on undocumented trigger creation order.
+    const updated=operation==='UPDATE' && source.hasClock
+      ? `CASE WHEN NEW.updated_at=OLD.updated_at THEN ${now} ELSE NEW.updated_at END` : 'NEW.updated_at';
+    const after = operation === 'DELETE' ? 'NULL' : `CASE WHEN NEW.deleted_at IS NULL THEN ${revision('NEW', source.hasHubAt, updated)} END`;
     const payload = `json_object('operation',${kind},'source',json_object('table',${literal(source.table)},'row_id',CAST(${row}.id AS TEXT),'before_revision',${before},'after_revision',${after}),'changes',json(${changes}))`;
     // Conservatively account for ID/sequence/time fields and delivery punctuation.
     const bytes = `(length(CAST(${payload} AS BLOB)) + 256)`;

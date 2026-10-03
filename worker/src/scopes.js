@@ -33,7 +33,7 @@ export function authorizeTable(scopes, operation, table) {
 }
 
 // Exact server-owned DDL only. A familiar trigger name does not establish trust.
-function timestampTrigger(trigger) {
+export function timestampTrigger(trigger) {
   const table=trigger.tbl_name;
   if (!identifier(table)) return false;
   const canonical=`CREATE TRIGGER ${qident(`${table}_updated_at`)} AFTER UPDATE ON ${qident(table)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${qident(table)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
@@ -66,8 +66,11 @@ export async function scopedTable(view, table, write=false) {
     if (purges.length) deny();
   }
   if (columns.some(c=>!safeDefault(c.dflt_value))) deny();
-  const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN (?, 'history', 'provenance') ORDER BY name").bind(table).all();
-  for (const trigger of triggers) if (!timestampTrigger(trigger) && !await trustedSubscriptionTrigger(view,trigger)) deny();
+  const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (?, 'history', 'provenance', '_change_events', '_change_subscriptions') ORDER BY name").bind(table).all();
+  for (const trigger of triggers) {
+    if (['_change_events','_change_subscriptions'].includes(trigger.tbl_name.toLowerCase())) deny();
+    if (!timestampTrigger(trigger) && !await trustedSubscriptionTrigger(view,trigger)) deny();
+  }
   const {results:foreignKeys}=await view.prepare("SELECT m.name,f.id,f.seq FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f WHERE m.type='table' AND m.name NOT LIKE '_cf_%' ORDER BY m.name,f.id,f.seq").all();
   if (foreignKeys.length) deny();
   if (!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_properties'").first()) deny();

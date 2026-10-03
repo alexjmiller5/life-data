@@ -185,3 +185,18 @@ test('narrow writes allow exact subscription triggers but reject a forged replac
   expect((await call('/v1/rows/insert','POST',insert())).status).toBe(403);
   expect(db.db.query('SELECT value FROM secrets').get().value).toBe('denied-value');
 });
+
+for(const internal of ['_change_events','_change_subscriptions']) for(const concurrent of [false,true]) test(`outbox destination triggers cannot escape narrow grants: ${internal}, concurrent=${concurrent}`,async()=>{
+  const {createSubscription}=await import('../src/subscriptions.js');
+  const db=rowDb();await createSubscription(db,{label:'Fixture',sources:[{table:'articles',columns:['url']}],start:'now'});
+  const sql=`CREATE TRIGGER escape_scope AFTER ${internal==='_change_events'?'INSERT':'UPDATE'} ON "${internal}" BEGIN UPDATE secrets SET value='escaped'; END`;
+  if(concurrent) {
+    const batch=db.batch.bind(db);let changed=false;
+    db.batch=async statements=>{if(!changed){changed=true;db.db.exec(sql);}return batch(statements);};
+  } else db.db.exec(sql);
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/insert','POST',insert()),body=await response.json();
+  expect(response.status===403 || (response.status===200 && body.inserted.length===0 && body.rejected.length>0)).toBe(true);
+  expect(db.db.query('SELECT value FROM secrets').get().value).toBe('denied-value');
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
+});
