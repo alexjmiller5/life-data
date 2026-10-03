@@ -35,6 +35,12 @@ CLI.
   contracts and current boundaries. `worker/src/validate.js` re-exports the
   shared validator and adds hub-specific validation.
   `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
+- `core/src/references.ts` owns incoming catalog relations. `referenceSources`
+  lists metadata without scanning data; `referencedBy` reads one bounded local
+  group (20 default, 100 maximum). Identity comparisons use the target primary
+  key affinity/collation. Source tombstones are excluded, target tombstones stay
+  inspectable, and skipped source or target tables mark results incomplete.
+  Hosts load groups lazily and re-read selected rows through guarded navigation.
 - `core/src/services.ts` - typed usage/feed/read-state clients over `ServiceHub`.
   `tests/fixtures/hub-usage-contract.json` is the hub contract. Feed reads walk
   from zero each time; presentation checkpoints and permissions belong to hosts.

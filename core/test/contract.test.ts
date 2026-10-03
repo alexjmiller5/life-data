@@ -13,6 +13,9 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.typescript).toContain('export type View =');
   expect(first.typescript).toContain('export interface CoreOperations');
   expect(first.typescript).toContain('rows: { args: View; result: WorkspaceRow[] }');
+  expect(first.typescript).toContain('referenceSources: { args: ReferenceSourcesArgs; result: ReferenceSource[] }');
+  expect(first.typescript).toContain('referencedBy: { args: ReferencedByArgs; result: ReferencedByPage }');
+  expect(first.swift).toContain('public typealias Response = CoreReferencedByPage');
   expect(first.typescript).toContain('search: { args: SearchArgs; result: SearchHit[] }');
   expect(first.typescript).toContain('remoteRows: { args: RemoteRowsArgs; result: RemoteRowsPage }');
   expect(first.typescript).toContain('remoteRow: { args: RemoteRowArgs; result: RemoteRowResult }');

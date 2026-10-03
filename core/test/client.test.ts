@@ -38,7 +38,7 @@ test('typed handlers execute the same core reads, writes, receipts and service m
     requests.push(route); return { data: route === '/v1/usage' ? usage.usage : usage.notifications };
   }, async post(route, body) { requests.push([route, body]); return { data: usage.mark_read }; } };
   const handlers = core.createCoreHandlers(db, endpoint => { expect(endpoint).toBe(hub.endpoint); return hub; }, 'fixture');
-  expect(Object.keys(handlers).sort()).toEqual(['catalog', 'rows', 'remoteRows', 'remoteRow', 'search', 'listViews', 'saveView', 'deleteView', 'options', 'write', 'undo', 'undoStatus', 'writeability', 'status', 'sync', 'serviceUsage', 'serviceNotifications', 'markNotificationsRead', 'notificationPresentation', 'enrollmentApproval', 'validateDeviceSession', 'enrollmentPollResult', 'sessionRevocationResult'].sort());
+  expect(Object.keys(handlers).sort()).toEqual(['catalog', 'rows', 'referenceSources', 'referencedBy', 'remoteRows', 'remoteRow', 'search', 'listViews', 'saveView', 'deleteView', 'options', 'write', 'undo', 'undoStatus', 'writeability', 'status', 'sync', 'serviceUsage', 'serviceNotifications', 'markNotificationsRead', 'notificationPresentation', 'enrollmentApproval', 'validateDeviceSession', 'enrollmentPollResult', 'sessionRevocationResult'].sort());
   expect(await handlers.writeability({ table: 'items' })).toEqual({ writable: true, reason: null });
   expect((await handlers.search({ text: 'item', table: 'items', limit: 2 })).map(r => r.id)).toEqual(['1', '2']);
   expect((await handlers.catalog({})).tables[0].readOnly).toBe(false);

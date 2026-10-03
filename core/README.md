@@ -520,3 +520,29 @@ results/errors for browser/JSC host conformance. Core also exercises real Worker
 approval, session and revocation responses with isolated SQLite auth storage.
 Python login production behavior is not changed, and no extra Python policy
 implementation is introduced.
+
+## Incoming references
+
+`referenceSources({table})` returns each current incoming `ref` or `multi_ref`
+column, its display label and an incompleteness flag. The metadata read does not
+scan source records. Live deprecated columns remain relationships until their
+catalog definition is deleted.
+
+`referencedBy({table,rowId,sourceTable,column,limit?,offset?})` reads one group
+locally. Pages default to 20 rows and reject limits above 100. `nextOffset` is
+null at the end; returned rows contain the full record and its catalog display
+label. Host panels should request groups on demand, discard stale responses and
+use their existing fresh-row navigation path when a result is selected.
+
+Comparisons follow the target primary key's affinity and collation, including
+case-insensitive IDs. Repeated multi-reference values produce one source row;
+malformed or non-array legacy JSON produces no match. Source tombstones are
+excluded, while a target in Trash remains inspectable. Missing targets produce
+no links. Skipped source or target tables mark the group incomplete, including
+an empty result, so absence in a partial replica is not presented as certainty.
+
+Reads use one local transaction and never fetch remote data or mutate user rows,
+history, search indexes, sync cursors or pending edits. The ordinary core status
+initialization may create missing internal state tables. Catalog/query failures
+remain errors for the requested group. Pagination is bounded but is not a stable
+snapshot across separate requests when another client edits records.

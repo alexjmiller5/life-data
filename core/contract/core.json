@@ -1616,6 +1616,106 @@
         "state"
       ],
       "description": "Unauthorized is not proof that an unregistered approval URL has been cancelled; a later browser approval remains possible."
+    },
+    "ReferenceSourcesArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "ReferenceSource": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "ref",
+            "multi_ref"
+          ]
+        },
+        "incomplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "label",
+        "type",
+        "incomplete"
+      ]
+    },
+    "ReferencedByArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "sourceTable": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "table",
+        "rowId",
+        "sourceTable",
+        "column"
+      ]
+    },
+    "ReferencedByPage": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/ReferenceSource"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRow"
+          }
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "rows",
+        "nextOffset"
+      ]
     }
   },
   "operations": {
@@ -1823,6 +1923,27 @@
         "$ref": "#/$defs/SessionRevocationResult"
       },
       "description": "Pure classification of session POST. Only 200 with logged_out true confirms revocation; 401 is separately unauthorized, never proof that future approval is impossible."
+    },
+    "referenceSources": {
+      "args": {
+        "$ref": "#/$defs/ReferenceSourcesArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ReferenceSource"
+        }
+      },
+      "description": "Incoming live catalog ref/multi_ref definitions and persisted skipped-source warnings; no source row scans. Hosts load groups lazily."
+    },
+    "referencedBy": {
+      "args": {
+        "$ref": "#/$defs/ReferencedByArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ReferencedByPage"
+      },
+      "description": "One bounded local incoming-reference group. Default 20 rows, maximum 100, live sources only. Target identity uses its primary-key collation, including trashed targets. Hosts ignore stale replies and re-read a row before opening it."
     }
   }
 }

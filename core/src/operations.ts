@@ -2,6 +2,7 @@ import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.g
 import type { SqlDriver } from './driver.ts';
 import type { ServiceHub } from './services.ts';
 import { readCatalog } from './catalog.ts';
+import { referenceSources, referencedBy } from './references.ts';
 import { allowed } from './validate.ts';
 import { compileView, displayName } from './view.ts';
 import { isReadOnlyTable, writeability } from './write.ts';
@@ -50,6 +51,8 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
     },
     rows: view => readRows(db, view),
+    referenceSources: args => referenceSources(db, args),
+    referencedBy: args => referencedBy(db, args),
     remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
