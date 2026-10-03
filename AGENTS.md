@@ -97,6 +97,13 @@ CLI.
   `last_sync` advances only without rejections. Hosts consume this
   warning after reopen; they do not persist exclusions or certify coverage.
   The existing `_core_state.skipped_tables` JSON key remains compatible.
+- `core/src/rejections.ts` owns durable inbox reads through the generated
+  `rejections` operation. Bounded offset pages preserve exact IDs, submitted
+  snapshots and raw hub error objects. Reads never initialize or modify storage;
+  malformed entries fail the page without cleanup or payload-bearing errors.
+  Hosts use this operation instead of decoding `_core_rejected` themselves,
+  restart pagination after sync, and fetch a current full row before repair.
+  Correction saves use the normal writer; only accepted sync clears rejection.
 - `core/src/write.ts` shares table guards with advisory `writeability` and runs
   deterministic table invariants with one-row SQLite `before`/`changed` contexts
   and a captured `now.ts`. Custom triggers, estate enforcement and all declared

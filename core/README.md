@@ -56,6 +56,26 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   stored lists fail explicitly. Hosts read this list after reopen rather than
   writing their own copy. It is a warning about that round, not coverage or
   freshness proof, and an empty list does not certify a complete replica.
+- `readRejections(driver, { limit?, offset? })`, or the generated `rejections`
+  operation, reads the durable inbox without initialization, DDL or mutation.
+  It returns `{ rejections: [{ table, rowID, submitted, errors }], nextOffset }`.
+  The default limit is 100, maximum 200, and default offset is zero. One extra
+  row detects the end exactly, including a full final page; `nextOffset` is
+  then `null`. Pages use binary table/row-ID ordering. Restart from zero after
+  sync changes the inbox; separate pages do not share a snapshot.
+  IDs are nonempty strings preserved exactly, including Unicode and whitespace.
+  `submitted` is the saved push snapshot. `errors` preserves the hub's complete
+  rejection objects and unknown JSON fields, without classifying or flattening
+  them. Each error and the snapshot must identify that same exact row ID.
+  Missing storage returns an empty page. Malformed stored data, including a
+  malformed lookahead entry, throws a payload-free error for the whole page;
+  nothing is skipped, erased or repaired. Hosts show that error and keep the
+  retry offset. Do not log or include submitted values in telemetry.
+  Repair requires a fresh full local row and its `updated_at`, using the normal
+  validated writer. Retain newer drafts and review rejected values explicitly;
+  this snapshot is not a replacement row. Saving a correction does not clear
+  the inbox; an accepted sync receipt does. Refresh after failed sync as well,
+  because earlier receipts in that round may already have committed.
 - `readCatalog` decodes properties. `compileView` produces parameterized,
   catalog-scoped SQL with filtering, sorting and bounded pages. `contains`
   remains a literal substring filter (or exact JSON array membership).

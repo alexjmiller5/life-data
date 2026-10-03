@@ -1716,6 +1716,71 @@
         "rows",
         "nextOffset"
       ]
+    },
+    "RejectedEdit": {
+      "description": "Durable submitted snapshot and unchanged hub rejection objects, not the current local row. IDs preserve exact string bytes. Re-read a full local row and use its current revision before repair; only accepted sync receipts clear the inbox.",
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rowID": {
+          "type": "string"
+        },
+        "submitted": {
+          "$ref": "#/$defs/Row"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "table",
+        "rowID",
+        "submitted",
+        "errors"
+      ]
+    },
+    "RejectionsArgs": {
+      "description": "Offset pagination over the current local inbox, ordered by binary table and row ID. Default limit 100, maximum 200; default offset 0. Restart at offset 0 after sync changes the inbox; pages are not a cross-request snapshot.",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": []
+    },
+    "RejectionsPage": {
+      "type": "object",
+      "properties": {
+        "rejections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RejectedEdit"
+          }
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rejections",
+        "nextOffset"
+      ]
     }
   },
   "operations": {
@@ -1944,6 +2009,15 @@
         "$ref": "#/$defs/ReferencedByPage"
       },
       "description": "One bounded local incoming-reference group. Default 20 rows, maximum 100, live sources only. Target identity uses its primary-key collation, including trashed targets. Hosts ignore stale replies and re-read a row before opening it."
+    },
+    "rejections": {
+      "description": "Read the durable local rejection inbox without initialization or mutation. Missing storage is empty; malformed persisted data fails the whole page without skipping or deleting entries. An unchanged inbox has exact terminal detection, including a full final page.",
+      "args": {
+        "$ref": "#/$defs/RejectionsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RejectionsPage"
+      }
     }
   }
 }

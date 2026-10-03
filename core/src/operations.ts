@@ -10,6 +10,7 @@ import { createWriteSession } from './undo.ts';
 import { enrollmentApproval, validateDeviceSession, enrollmentPollResult, sessionRevocationResult } from './enrollment.ts';
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
+import { readRejections } from './rejections.ts';
 import { prepareSearch, search } from './search.ts';
 import { readRemoteRows, readRemoteRow } from './remote.ts';
 import { listViews, saveView, deleteView } from './saved-views.ts';
@@ -65,6 +66,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     undoStatus: writes.undoStatus,
     writeability: args => writeability(db, args),
     status: () => syncStatus(db),
+    rejections: args => readRejections(db, args),
     sync: args => sync(db, hub(args.endpoint), { maxRows: args.maxRows, tables: args.tables }),
     serviceUsage: args => readUsage(hub(args.endpoint)),
     serviceNotifications: args => readNotifications(hub(args.endpoint)),

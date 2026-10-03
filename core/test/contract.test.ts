@@ -39,6 +39,10 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.swift).toContain('case notEmpty = "not_empty"');
   expect(first.typescript).toContain('undo: { args: UndoArgs; result: Row }');
   expect(first.typescript).toContain('undoStatus: { args: EmptyArgs; result: UndoStatus }');
+  expect(first.typescript).toContain('rejections: { args: RejectionsArgs; result: RejectionsPage }');
+  expect(first.swift).toContain('public init(table: String, rowID: String, submitted: CoreRow, errors: [CoreRow])');
+  expect(first.swift).toContain('public init(rejections: [CoreRejectedEdit], nextOffset: CoreCount?)');
+  expect(first.swift).toContain('public typealias Response = CoreRejectionsPage');
   expect(first.swift).toContain('public init(receiptId: String)');
   expect(first.swift).toContain('public init(action: CoreUndoAction?)');
   expect(first.swift).toContain('try container.encode(action, forKey: .action)');

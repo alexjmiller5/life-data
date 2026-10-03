@@ -35,3 +35,10 @@ const unboundApproval: CoreArgs<'enrollmentPollResult'> = { reply: { status: 200
 // @ts-expect-error a null pending session is required in the generated shape
 const ambiguousPoll: CoreResult<'enrollmentPollResult'> = { state: 'pending', retryAfterSeconds: 5 };
 void [stringStatus, unboundApproval, ambiguousPoll];
+// @ts-expect-error pagination is numeric; IDs are returned unchanged, never supplied as SQL
+const invalidRejections: CoreArgs<'rejections'> = { limit: '100' };
+// @ts-expect-error callers must handle an explicit null terminal offset
+const incompleteRejections: CoreResult<'rejections'> = { rejections: [] };
+// @ts-expect-error stored sync errors are whole rejection objects, not flattened messages
+const flattenedRejection: CoreResult<'rejections'> = { rejections: [{ table: 'items', rowID: 'a', submitted: { id: 'a' }, errors: ['Denied'] }], nextOffset: null };
+void [invalidRejections, incompleteRejections, flattenedRejection];

@@ -6,6 +6,7 @@ export * from './catalog.ts';
 export * from './http.ts';
 export { writeRow, writeability, isReadOnlyTable, ValidationError } from './write.ts';
 export * from './status.ts';
+export * from './rejections.ts';
 export * from './services.ts';
 export * from './contract.generated.ts';
 export * from './operations.ts';
