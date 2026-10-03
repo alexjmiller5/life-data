@@ -195,13 +195,16 @@ def create_table(path: Path, name: str, columns: list[str]) -> None:
     as-is; `!` marks the column required; `(a|b|c)` sets select/multi_select
     options.
     """
-    specs = _parse_specs(columns)
     ddl, trigger = table_ddl(name, columns)
     execute_sql(path, ddl)
     execute_sql(path, trigger)
     if name in catalog.ENGINE_TABLES:
         return
-    for i, s in enumerate(specs):
+    _catalog_columns(path, name, columns)
+
+
+def _catalog_columns(path: Path, name: str, columns: list[str]) -> None:
+    for i, s in enumerate(_parse_specs(columns)):
         t = s["type"].lower()
         storage = catalog.STORAGE.get(t, s["type"].upper())
         cat_type = t if t in catalog.TYPES else _STORAGE_TO_CATALOG_TYPE.get(storage, "text")
@@ -443,6 +446,43 @@ def apply_purges(conn: sqlite3.Connection, markers: list[dict]) -> None:
             )
 
 
+def _ensure_purges(path: Path) -> None:
+    """Every step checks for itself, so a setup interrupted midway (a locked
+    database) is completed by the next purge. The DDL is logged: it replays."""
+    ddl, trigger = table_ddl(PURGES, PURGE_COLUMNS)
+    with connect(path) as conn:
+        has_table = catalog._table_exists(conn, PURGES)
+        has_trigger = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+            (f"{PURGES}_updated_at",),
+        ).fetchone()
+        cataloged = catalog._table_exists(conn, "catalog_properties") and conn.execute(
+            "SELECT count(*) FROM catalog_properties WHERE tbl = ? AND deleted_at IS NULL",
+            (PURGES,),
+        ).fetchone()[0] == len(PURGE_COLUMNS)
+        documented = (
+            catalog._table_exists(conn, "catalog_tables")
+            and conn.execute(
+                "SELECT 1 FROM catalog_tables WHERE id = ? AND deleted_at IS NULL", (PURGES,)
+            ).fetchone()
+        )
+    if not has_table:
+        execute_sql(path, ddl)
+    if not has_trigger:
+        execute_sql(path, trigger)
+    if not cataloged:
+        _catalog_columns(path, PURGES, PURGE_COLUMNS)
+    if not documented:
+        catalog.set_table(
+            path,
+            PURGES,
+            purpose="Purge markers: each names a row (col empty) or one column's history "
+            "that the hub and every replica hard-delete, never the content itself.",
+            id_semantics="JSON array [table, row_id, col]; purging again updates purged_at.",
+            owner="life purge",
+        )
+
+
 def purge(path: Path, table: str, row_id: str, cols: list[str] | None = None) -> dict:
     """Remove a row, or its listed columns' history, here and - through sync -
     on the hub and every replica. Redact a column's live value with a normal
@@ -457,17 +497,7 @@ def purge(path: Path, table: str, row_id: str, cols: list[str] | None = None) ->
         missing = [c for c in cols or [] if c not in names]
         if missing:
             raise ValueError(f"no such column: {table}.{missing[0]}")
-        has_purges = catalog._table_exists(conn, PURGES)
-    if not has_purges:
-        create_table(path, PURGES, PURGE_COLUMNS)  # logged DDL: replays everywhere
-        catalog.set_table(
-            path,
-            PURGES,
-            purpose="Purge markers: each names a row (col empty) or one column's history "
-            "that the hub and every replica hard-delete, never the content itself.",
-            id_semantics="JSON array [table, row_id, col]; purging again updates purged_at.",
-            owner="life purge",
-        )
+    _ensure_purges(path)
     written = 0
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")

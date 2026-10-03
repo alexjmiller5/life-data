@@ -249,3 +249,16 @@ def test_the_hub_drops_covered_history_attached_to_a_newer_push(pair):
         history=[event],
     )
     assert not execute_sql(hub.path, "SELECT * FROM history WHERE id = 'e-old'")
+
+
+def test_purge_repairs_an_interrupted_setup(db):
+    # a first purge stopped after CREATE TABLE (e.g. the database was locked)
+    ddl, trigger = life.table_ddl("purges", life.PURGE_COLUMNS)
+    execute_sql(db, ddl)
+    purge(db, "items", "r1")
+    names = {r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master")}
+    assert "purges_updated_at" in names
+    logged = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
+    assert trigger in logged, "the trigger must replay to the hub and replicas"
+    assert execute_sql(db, "SELECT 1 FROM catalog_tables WHERE id = 'purges'")
+    assert len(execute_sql(db, "SELECT 1 FROM catalog_properties WHERE tbl = 'purges'")) == 4
