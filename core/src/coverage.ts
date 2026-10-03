@@ -26,20 +26,27 @@ export function validCoverage(proof: Row | undefined, endpoint: string, signatur
 }
 
 /** Read-only, transaction-scoped check. Missing metadata never grants trust. */
-export async function coverageProblem(db: SqlDriver): Promise<string | null> {
+export async function coverageProblem(db: SqlDriver, required?: readonly string[]): Promise<string | null> {
+  const scope = required ? 'the tables used by validation' : 'every table, including history and provenance';
   const names = new Set((await db.all("SELECT name FROM main.sqlite_master WHERE type='table'")).map(r => r.name));
   if (['_core_state','_sync_state','_core_sync','_core_coverage','_schema_log'].some(t => !names.has(t))) {
-    return 'Global schema coverage is unverified. Complete an unfiltered sync of every table, including history and provenance, or use the CLI writer.';
+    return `Replication coverage is unverified. Complete an unfiltered sync of ${scope}, or use the CLI writer.`;
   }
   const state = new Map((await db.all('SELECT key,value FROM main._core_state')).map(r => [r.key,r.value]));
   const endpoint = state.get('hub');
   const cli = (await db.all("SELECT value FROM main._sync_state WHERE key='hub_url'"))[0]?.value;
   if (typeof endpoint !== 'string' || !endpoint || cli !== endpoint || state.get('coverage_phase') !== 'ready') {
-    return 'Global schema coverage is unverified or a sync is incomplete. Finish a full sync of every table before invariant-checked writes, or use the CLI writer; unbound/imported files are not assumed complete.';
+    return `Replication coverage is unverified or a sync is incomplete. Finish a full sync of ${scope} before editing, or use the CLI writer; unbound/imported files are not assumed complete.`;
   }
   const { tables, signature } = await coverageSchema(db);
+  if (required?.some(t => !tables.includes(t))) {
+    return 'Validation dependencies include an unknown or unsupported table. Sync its schema or use the CLI writer.';
+  }
+  // Catalog completeness establishes the active rules/properties, including
+  // estate guards. History/provenance need proof only when validation reads them.
+  const checked = required ? tables.filter(t => /^catalog_/i.test(t) || required.includes(t)) : tables;
   const proofs = new Map((await db.all('SELECT * FROM main._core_coverage')).map(r => [r.tbl,r]));
   const cursors = new Map((await db.all('SELECT tbl,pull FROM main._core_sync')).map(r => [r.tbl,r.pull]));
-  const missing = tables.filter(t => !validCoverage(proofs.get(t),endpoint,signature,cursors.get(t)));
-  return missing.length ? `Invariant checks require full coverage of every global schema table, including history/provenance. Include and fully sync: ${missing.join(', ')}. Coverage is not a current or simultaneous remote snapshot.` : null;
+  const missing = checked.filter(t => !validCoverage(proofs.get(t),endpoint,signature,cursors.get(t)));
+  return missing.length ? `Invariant checks require full coverage of ${scope}. Include and fully sync: ${missing.join(', ')}. Coverage is not a current or simultaneous remote snapshot.` : null;
 }

@@ -69,10 +69,17 @@ CLI.
   Adapters must allow read-only `main/temp.foreign_key_list` introspection.
   `core/src/coverage.ts` owns local `_core_coverage` certificates: successful
   full pulls and certified incrementals only, endpoint/schema/cursor/version
-  bound, with interrupted refreshes blocked. Invariants require every global
-  schema table, including history/provenance; coverage is neither freshness
-  nor a simultaneous remote snapshot. Legacy cursors and unbound files grant
-  no proof. Certificates/refresh state never sync or enter logged DDL.
+  bound, with interrupted refreshes blocked. The optional driver
+  `readDependencies(statements, { ownedTempTables })` uses SQLite compiler
+  metadata, without execution, to narrow invariant coverage to target/catalog,
+  reference and SQL validation reads. Null/unexplained metadata fails closed;
+  an absent method retains full-global coverage, including history/provenance.
+  Ordinary tables without enforced invariants keep their existing behavior.
+  `tests/fixtures/read-dependencies.json` owns host conformance cases. Core owns
+  temporary snapshot creation/cleanup, bounds preparation, and never caches
+  dependency sets persistently. Coverage is neither freshness nor a simultaneous
+  remote snapshot. Legacy cursors and unbound files grant no proof.
+  Certificates/refresh state never sync or enter logged DDL.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`

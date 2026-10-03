@@ -1,4 +1,5 @@
-import type { SqlDriver, Value } from './driver.ts';
+import type { SqlDriver, SqlReadStatement, Value } from './driver.ts';
+import { READ_DEPENDENCY_LIMITS } from './driver.ts';
 import { decodeProperty } from './catalog.ts';
 import { initCore } from './sync.ts';
 import { coverageProblem } from './coverage.ts';
@@ -27,20 +28,76 @@ export function isReadOnlyTable(table: string, catalogEntry?: Row): boolean {
 }
 
 type Fail = (col: string, rule: string, message: string) => never;
+const beforeTable = '_core_write_before';
+function invariantSql(table: string, sql: string): string {
+  return `WITH changed AS (
+    SELECT * FROM main.${qident(table)} WHERE id=? EXCEPT SELECT * FROM temp._core_write_before
+  ), before AS (SELECT * FROM temp._core_write_before WHERE id IN (SELECT id FROM changed)), now AS (SELECT ? AS ts)
+  SELECT * FROM (${sql}) LIMIT 1`;
+}
+async function unusedWriteContext(db: SqlDriver, fail: Fail): Promise<void> {
+  if ((await db.all('SELECT 1 FROM temp.sqlite_master WHERE name=? COLLATE NOCASE', [beforeTable])).length) {
+    fail('', 'context', 'A temporary write context is already in use. Close and reopen this workspace before editing.');
+  }
+}
+
+async function prepareInvariants(db: SqlDriver, table: string, props: Property[], rules: Row[], fail: Fail): Promise<void> {
+  if (!rules.length) return;
+  // Own this name only after a successful CREATE. Never drop/adopt an object
+  // supplied by the caller, an imported TEMP schema, or a concurrent operation.
+  await db.run(`CREATE TEMP TABLE temp._core_write_before AS SELECT * FROM main.${qident(table)} WHERE 0`);
+  try {
+    const statements: SqlReadStatement[] = rules.map(rule => ({ sql: invariantSql(table, String(rule.sql)), params: [null, '2000-01-01T00:00:00.000Z'] }));
+    let required: string[] | undefined;
+    if (db.readDependencies === undefined) {
+      for (const [index, statement] of statements.entries()) {
+        try { await db.all(`SELECT * FROM (${statement.sql}) LIMIT 0`, statement.params); }
+        catch { fail(String(rules[index].col ?? ''), 'invariant', `Enforced invariant ${rules[index].id} cannot compile with the portable before/changed/now contexts.`); }
+      }
+    } else {
+      for (const p of props) {
+        if (p.options_sql) statements.push({ sql: `SELECT * FROM (${p.options_sql})` });
+        if (typeof p.default_value === 'string' && p.default_value.startsWith('sql:')) {
+          statements.push({ sql: `SELECT (${p.default_value.slice(4)}) AS value` });
+        }
+      }
+      const unavailable = () => fail('', 'coverage', 'Validation dependencies cannot be verified on this device. Use the CLI writer.');
+      // Bound adapter work, without row scans or a persistent dependency cache.
+      if (statements.length > READ_DEPENDENCY_LIMITS.statements
+        || statements.reduce((n, s) => n + s.sql.length, 0) > READ_DEPENDENCY_LIMITS.sqlLength) unavailable();
+      let result: unknown;
+      try { result = await db.readDependencies(statements, { ownedTempTables: [beforeTable] }); }
+      catch { unavailable(); }
+      if (!plain(result) || Object.keys(result).length !== 1 || !Array.isArray(result.tables)
+        || result.tables.length > READ_DEPENDENCY_LIMITS.tables || result.tables.some(t => typeof t !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*$/.test(t))) unavailable();
+      required = [table, ...(result as { tables: string[] }).tables];
+      for (const p of props) {
+        if (['ref','multi_ref'].includes(p.type ?? '')) {
+          if (typeof p.ref_table !== 'string' || !p.ref_table) fail(p.col, 'catalog', 'Reference property has no ref_table; repair the catalog.');
+          required.push(p.ref_table!);
+        }
+      }
+    }
+    const problem = await coverageProblem(db, required);
+    if (problem) fail('', 'coverage', problem);
+  } finally {
+    await db.run('DROP TABLE temp._core_write_before');
+  }
+}
 async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   const quote = (name: string): string => {
     try { return qident(name); } catch { return fail(name, 'identifier', 'Invalid SQL identifier.'); }
   };
   if (typeof table !== 'string') fail('', 'input', 'table must be a string.');
   quote(table);
-  if (isReadOnlyTable(table)) fail('', 'read_only', 'System tables are read-only through writeRow.');
+  if (isReadOnlyTable(table)) fail('', 'read_only', 'This table is read-only.');
   const exists = async (name: string) => (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", [name])).length > 0;
   for (const name of [table, 'catalog_properties', 'catalog_rules', 'history']) {
     if (!await exists(name)) fail('', 'schema', `Missing ${name} in this replica; sync its schema before writing.`);
   }
   if (await exists('catalog_tables')) {
     const entry = (await db.all('SELECT * FROM main.catalog_tables WHERE id=? AND deleted_at IS NULL', [table]))[0];
-    if (isReadOnlyTable(table, entry)) fail('', 'read_only', 'Catalog system tables are read-only through writeRow.');
+    if (isReadOnlyTable(table, entry)) fail('', 'read_only', 'This table is read-only.');
   }
   // ponytail: no complete trigger journal yet. Inspect the whole database,
   // including history and TEMP triggers, before any mutation. Names alone
@@ -51,7 +108,7 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
     const t = String(trigger.tbl_name);
     const canonical = `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
     if (trigger.temporary || String(trigger.sql).replace(/\s+/g, ' ').trim() !== canonical) {
-      fail('', 'trigger', `Unsupported trigger ${trigger.name} on ${t}; this database needs a writer that validates and journals all trigger effects before writeRow can edit it.`);
+      fail('', 'trigger', `Unsupported trigger ${trigger.name} on ${t}. Use the CLI writer to validate and record all trigger effects.`);
     }
   }
   const physicalTables = await db.all("SELECT name,'main' AS db FROM main.sqlite_master WHERE type='table' UNION ALL SELECT name,'temp' AS db FROM temp.sqlite_master WHERE type='table'");
@@ -63,10 +120,10 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   }
   const info = await db.all(`PRAGMA main.table_info(${quote(table)})`);
   const cols = info.map(r => String(r.name));
-  if (info.filter(c => Number(c.pk) > 0).length !== 1 || !info.some(c => c.name === 'id' && c.pk === 1)) fail('id', 'schema', 'writeRow requires id as the single primary key.');
+  if (info.filter(c => Number(c.pk) > 0).length !== 1 || !info.some(c => c.name === 'id' && c.pk === 1)) fail('id', 'schema', 'Editing requires id as the single primary key.');
   for (const col of cols) quote(col);
   if (['id', 'created_at', 'updated_at', 'deleted_at'].some(c => !cols.includes(c))) {
-    fail('', 'schema', 'Table lacks the sync columns required by writeRow.');
+    fail('', 'schema', 'This table lacks the sync columns required for editing.');
   }
   const props = (await db.all('SELECT * FROM main.catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY sort,col', [table])).map(row => {
     try { return decodeProperty(row); }
@@ -88,16 +145,9 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
       || !supportedRuleSql(rule.sql)) {
       fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} uses unsupported SQL. Use a table SELECT without clock, date/time, randomness or connection-state functions; compare or slice now.ts directly.`);
     }
-    try {
-      await db.all(`WITH changed AS (SELECT * FROM main.${quote(table)} WHERE 0),
-        before AS (SELECT * FROM main.${quote(table)} WHERE 0), now AS (SELECT '2000-01-01T00:00:00.000Z' AS ts)
-        SELECT * FROM (${rule.sql}) LIMIT 0`);
-    } catch { fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} cannot compile with the portable before/changed/now contexts.`); }
   }
-  if (rules.length) {
-    const problem = await coverageProblem(db);
-    if (problem) fail('', 'coverage', problem);
-  }
+  await unusedWriteContext(db, fail);
+  await prepareInvariants(db, table, props, rules, fail);
   return { cols, props, rules };
 }
 
@@ -124,7 +174,8 @@ export async function writeability(db: SqlDriver, args: WriteabilityArgs): Promi
  * deleted_at:true requests deletion at the new revision; null restores.
  * now/id are host/test seams; id generates row IDs only. History IDs always
  * come from SQLite. No caller may supply created_at, updated_at or hub_at.
- * Table invariants require verified global schema coverage. The one-row
+ * Table invariants require verified dependency coverage (global without a
+ * compiler metadata adapter). The one-row
  * before/changed contexts preserve SQLite values; custom effects stay closed.
  * Custom triggers anywhere in main/temp block writes. Exact main timestamp
  * triggers and queue-only search triggers are supported.
@@ -146,7 +197,7 @@ export async function writeRow(
     if (typeof table !== 'string') fail('', 'input', 'table must be a string.');
     const target = `main.${quote(table)}`;
     if (isReadOnlyTable(table)) {
-      fail('', 'read_only', 'System tables are read-only through writeRow.');
+      fail('', 'read_only', 'This table is read-only.');
     }
     if (!plain(patch) || Reflect.ownKeys(patch).some(k => typeof k !== 'string'
       || !Object.getOwnPropertyDescriptor(patch, k)?.enumerable
@@ -277,10 +328,7 @@ export async function writeRow(
         if (violations.length) throw new ValidationError(violations);
       }
       for (const rule of rules) {
-        const hits = await db.all(`WITH changed AS (
-          SELECT * FROM ${target} WHERE id=? EXCEPT SELECT * FROM temp._core_write_before
-        ), before AS (SELECT * FROM temp._core_write_before WHERE id IN (SELECT id FROM changed)), now AS (SELECT ? AS ts)
-        SELECT * FROM (${rule.sql}) LIMIT 1`, [rowId, instant.toISOString()]);
+        const hits = await db.all(invariantSql(table, String(rule.sql)), [rowId, instant.toISOString()]);
         if (hits.length) throw new ValidationError([{ tbl: table, row_id: typeof hits[0]!.id === 'string' ? hits[0]!.id : null,
           col: String(rule.col ?? ''), rule: String(rule.id), message: String(rule.text ?? 'Enforced invariant rejected the write.') }]);
       }

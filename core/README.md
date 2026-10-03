@@ -153,18 +153,100 @@ their proof. A durable refresh flag blocks invariant writes across failures
 and restarts until recovery completes. Certificates and readiness commit with
 sync checkpoints; none of this local metadata is logged or synced.
 
-Because rule SQL can read other tables, this stage conservatively requires
-coverage of **every table in the global schema, including history/provenance**.
+Invariant-checked writes require coverage of the target, validation catalogs,
+declared reference tables and all compiler-reported rule/options/default reads.
+History/provenance need proof when validation reads them, not just because the
+writer appends history. Ordinary tables without enforced invariants keep their
+existing write behavior; references alone do not activate this coverage gate.
+Adapters without `readDependencies` conservatively require coverage of
+**every table in the global schema, including history/provenance**.
 Unbound or externally imported files are not assumed complete. Coverage is
 not freshness, a simultaneous remote snapshot, or a guarantee of hub acceptance.
 The hub rechecks its own state; rejection retains the local pending edit and
 history. There are no scoped replication assumptions or new hub endpoints.
 
 `writeability(db, { table })` returns `{ writable, reason: WriteViolation | null }`.
-It is a read-only advisory over the same table guards as `writeRow`; a successful
+It is an advisory over the same table guards as `writeRow`, with no persistent
+changes; a successful
 answer does not approve a patch or selected revision. The writer rechecks
 inside its transaction. Reasons include `coverage`, `trigger`, `foreign_key`,
-`invariant`, `schema` and `read_only`; UI can display `reason.message` directly.
+`invariant`, `context`, `schema` and `read_only`; UI can display `reason.message` directly.
+
+### Compiler read metadata
+
+The optional `SqlDriver` method is a trusted host seam, not a client RPC:
+
+```ts
+readDependencies?(
+  statements: readonly SqlReadStatement[], // { sql: string; params?: Value[] }
+  context: SqlReadContext,                // { ownedTempTables: readonly string[] }
+): Promise<{ tables: string[] } | null>;
+```
+
+Prepare each input as a fresh single read-only statement on the transaction's
+actual connection, without stepping it. Return a conservative union of ordinary
+`main` table names, using canonical schema spelling and expanding SQL views to
+their underlying reads. Use SQLite compiler read metadata, never SQL text parsing
+or a persistent dependency cache. `null` means the complete set cannot be
+established and blocks the write even if global coverage exists. Preparation
+errors and malformed results also block; they never mean an empty read set.
+An absent method retains the global gate. Only a verified empty read set returns
+`{ tables: [] }`; core still requires target/catalog/reference proofs.
+
+Core calls this method only for invariant-checked tables, within their existing
+transaction. The batch contains every applicable invariant's actual runtime SQL
+wrapper plus all SQL defaults/options for that table, even when an individual
+patch might not use one. Invariant parameters are inspection placeholders; they
+must not be evaluated. The same wrapper builds the executed `changed`/`before`
+SQLite snapshot/EXCEPT contexts and captured `now.ts`.
+
+Core first rejects any pre-existing TEMP object named `_core_write_before`, then
+creates its own empty schema-shaped `temp._core_write_before`. Only after CREATE
+succeeds does it pass `ownedTempTables: ['_core_write_before']`. The supplied list
+is a trusted ownership assertion, never permission inferred from a SQL name.
+The adapter verifies that the claimed TEMP tables exist as ordinary tables and
+that there are no unrelated TEMP objects or conflicting main names. Core drops
+only its owned snapshot in a finally block. Transaction rollback also removes
+it on failure. The actual mutation later takes its separate selected-row snapshot;
+advisory preparation never copies or changes user rows. Neither snapshot is logged
+or persisted. Physical TEMP tables named `changed`, `before` or `now` are not
+engine contexts and must not be trusted.
+
+For wa-sqlite, collect `SQLITE_READ` inside the existing authorizer without
+weakening its read-only policy. Count/EXISTS reads can have an empty database
+qualifier: resolve them only against a verified unambiguous schema inventory.
+For GRDB, retain its authorizer and use `Statement.databaseRegion` plus public
+region membership/union/equality APIs. GRDB drops database qualifiers; reject
+attached schemas and unowned TEMP objects before narrowing. Account for every
+region element, not just matches found while enumerating known tables. Never
+parse `DatabaseRegion.description` or inspect its private dictionary.
+
+Known engine CTE pseudo-reads (`changed`, `before`, `now`) and built-in
+`json_each`/`json_tree` iterators can be nonpersistent. Their underlying ordinary
+table reads still count. A real main table with one of those names must not be
+exempted. Unexplained CTE reads, virtual/shadow table dependencies, introspection
+table functions, engine bookkeeping reads and ambiguous namespaces return null.
+Reject unsupported dependencies, not merely the existence of unrelated virtual
+tables such as the local FTS cache. A host with custom functions/modules that
+perform opaque database reads cannot certify this capability until those reads
+are accounted for; extension loading stays prohibited.
+
+Core enforces `READ_DEPENDENCY_LIMITS`: 128 statements, 524,288 UTF-16 code units
+of total SQL (`String.length`, Swift `utf16.count`), and 4,096 returned tables.
+Hosts may rely on those trusted-caller limits. Discovery must prepare SQL and
+read schema metadata only, never scan user rows. Dependency sets are recomputed
+inside each advisory/write transaction. Durable proof, endpoint, schema and
+refresh invalidations remain owned by `_core_coverage` and sync.
+
+`tests/fixtures/read-dependencies.json` is the shared host conformance fixture:
+fresh synthetic setup per case, then case setup, statements and ownership context.
+Compare sorted table sets, null for unsupported inputs, or a thrown error for
+invalid/non-read-only inputs. Its expression-error case must succeed at inspection
+without executing the expression. Core tests inject the host metadata seam while
+preparing real SQL; Python checks supported fixture sets with SQLite's authorizer.
+Browser and native tests must run the fixture on their actual shipped adapters.
+Bun's SQLite adapter lacks a public compiler-read hook and exercises the legacy
+global fallback; no private Bun API or second vendored WASM is required.
 
 Custom triggers and enforced estate rules remain blocked. Only the CLI's exact
 timestamp triggers and core queue-only search triggers are supported. Every
