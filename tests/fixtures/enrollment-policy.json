@@ -1,0 +1,863 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "trim and encode approval label",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "  Example device & browser  "
+      },
+      "want": {
+        "path": "/login?key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&name=Example%20device%20%26%20browser",
+        "approvalCode": "aaaaaaaa",
+        "deviceName": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "pollIntervalSeconds": 5,
+          "timeoutSeconds": 300,
+          "maxResponseBytes": 65536
+        }
+      }
+    },
+    {
+      "name": "uppercase hash",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "name": "Example"
+      },
+      "error": "invalid enrollment approval request"
+    },
+    {
+      "name": "short hash",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "Example"
+      },
+      "error": "invalid enrollment approval request"
+    },
+    {
+      "name": "hash with newline",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "name": "Example"
+      },
+      "error": "invalid enrollment approval request"
+    },
+    {
+      "name": "empty label",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "   "
+      },
+      "error": "invalid enrollment approval request"
+    },
+    {
+      "name": "label controls before trim",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "\tExample\n"
+      },
+      "error": "invalid enrollment approval request"
+    },
+    {
+      "name": "oversized UTF16 label",
+      "operation": "enrollmentApproval",
+      "args": {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+      },
+      "error": "invalid enrollment approval request"
+    },
+    {
+      "name": "current full session",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ]
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": true,
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "manual nonadmin name and extra scope",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "dedicated-client",
+          "scopes": [
+            "full",
+            "future:permission"
+          ]
+        }
+      },
+      "want": {
+        "name": "dedicated-client",
+        "scopes": [
+          "full",
+          "future:permission"
+        ],
+        "replica": {
+          "allowed": true,
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "identity valid but replica requires full",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "dedicated-reader",
+          "scopes": [
+            "tables:read"
+          ]
+        }
+      },
+      "want": {
+        "name": "dedicated-reader",
+        "scopes": [
+          "tables:read"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "full_scope_required",
+            "message": "Replica sync requires a full device token."
+          }
+        }
+      }
+    },
+    {
+      "name": "null session",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": null
+      },
+      "error": "invalid device session"
+    },
+    {
+      "name": "missing scopes",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "x"
+        }
+      },
+      "error": "invalid device session"
+    },
+    {
+      "name": "nonstring scope",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "x",
+          "scopes": [
+            1
+          ]
+        }
+      },
+      "error": "invalid device session"
+    },
+    {
+      "name": "empty name",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "",
+          "scopes": [
+            "full"
+          ]
+        }
+      },
+      "error": "invalid device session"
+    },
+    {
+      "name": "admin name",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "admin",
+          "scopes": [
+            "full"
+          ]
+        }
+      },
+      "error": "admin tokens cannot be used as device credentials"
+    },
+    {
+      "name": "admin scope",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "manual",
+          "scopes": [
+            "full",
+            "admin"
+          ]
+        }
+      },
+      "error": "admin tokens cannot be used as device credentials"
+    },
+    {
+      "name": "unrelated capability fields",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "future": {
+              "any": [
+                "shape",
+                null
+              ]
+            }
+          }
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": true,
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "schema explicitly unavailable",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "schema": "none"
+          }
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "schema_unavailable",
+            "message": "This token does not allow replica schema access."
+          }
+        }
+      }
+    },
+    {
+      "name": "replica explicitly disabled",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "replica_sync": false
+          }
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "replica_sync_disabled",
+            "message": "This token does not allow replica sync."
+          }
+        }
+      }
+    },
+    {
+      "name": "recognized nonrestricting values",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "schema": "future-mode",
+            "replica_sync": true
+          }
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": true,
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "invalid capabilities container",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": null
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid schema type",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "schema": false
+          }
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid replica flag type",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "replica_sync": "false"
+          }
+        }
+      },
+      "want": {
+        "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "approved candidate identity",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 200,
+          "data": {
+            "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              "full"
+            ]
+          }
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "approved",
+        "session": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "replica": {
+            "allowed": true,
+            "reason": null
+          }
+        },
+        "retryAfterSeconds": null
+      }
+    },
+    {
+      "name": "approved identity with restricted replica capabilities",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 200,
+          "data": {
+            "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scopes": [
+              "full"
+            ],
+            "capabilities": {
+              "replica_sync": false
+            }
+          }
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "approved",
+        "session": {
+          "name": "device:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "scopes": [
+            "full"
+          ],
+          "replica": {
+            "allowed": false,
+            "reason": {
+              "code": "replica_sync_disabled",
+              "message": "This token does not allow replica sync."
+            }
+          }
+        },
+        "retryAfterSeconds": null
+      }
+    },
+    {
+      "name": "wrong candidate",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 200,
+          "data": {
+            "name": "device:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scopes": [
+              "full"
+            ]
+          }
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "device approval identity does not match"
+    },
+    {
+      "name": "manual name during approval",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 200,
+          "data": {
+            "name": "dedicated-client",
+            "scopes": [
+              "full",
+              "future:permission"
+            ]
+          }
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "device approval identity does not match"
+    },
+    {
+      "name": "pending HTTP 401",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 401,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "pending HTTP 403",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 403,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "pending HTTP 429",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 429,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "pending HTTP 500",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 500,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "pending HTTP 503",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 503,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "pending HTTP 599",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 599,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "retry delay 429 30",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 429,
+          "data": null,
+          "retryAfterSeconds": 30
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 30
+      }
+    },
+    {
+      "name": "retry delay 503 900",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 503,
+          "data": null,
+          "retryAfterSeconds": 900
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 900
+      }
+    },
+    {
+      "name": "retry delay 429 0",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 429,
+          "data": null,
+          "retryAfterSeconds": 0
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "retry delay 401 30",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 401,
+          "data": null,
+          "retryAfterSeconds": 30
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "want": {
+        "state": "pending",
+        "session": null,
+        "retryAfterSeconds": 5
+      }
+    },
+    {
+      "name": "stop HTTP 201",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 201,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "hub returned HTTP 201 while checking approval"
+    },
+    {
+      "name": "stop HTTP 204",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 204,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "hub returned HTTP 204 while checking approval"
+    },
+    {
+      "name": "stop HTTP 302",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 302,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "hub returned HTTP 302 while checking approval"
+    },
+    {
+      "name": "stop HTTP 400",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 400,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "hub returned HTTP 400 while checking approval"
+    },
+    {
+      "name": "stop HTTP 404",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 404,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "hub returned HTTP 404 while checking approval"
+    },
+    {
+      "name": "stop HTTP 499",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 499,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "hub returned HTTP 499 while checking approval"
+    },
+    {
+      "name": "stop HTTP 600",
+      "operation": "enrollmentPollResult",
+      "args": {
+        "reply": {
+          "status": 600,
+          "data": null
+        },
+        "expectedFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "error": "invalid session reply"
+    },
+    {
+      "name": "revocation confirmed",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 200,
+        "data": {
+          "logged_out": true
+        }
+      },
+      "want": {
+        "state": "revoked"
+      }
+    },
+    {
+      "name": "unauthorized does not cancel future approval",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 401,
+        "data": null
+      },
+      "want": {
+        "state": "unauthorized"
+      }
+    },
+    {
+      "name": "unconfirmed logout 200 {'logged_out': False}",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 200,
+        "data": {
+          "logged_out": false
+        }
+      },
+      "error": "hub did not revoke the device (HTTP 200)"
+    },
+    {
+      "name": "unconfirmed logout 200 {'logged_out': 1}",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 200,
+        "data": {
+          "logged_out": 1
+        }
+      },
+      "error": "hub did not revoke the device (HTTP 200)"
+    },
+    {
+      "name": "unconfirmed logout 204 None",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 204,
+        "data": null
+      },
+      "error": "hub did not revoke the device (HTTP 204)"
+    },
+    {
+      "name": "unconfirmed logout 403 None",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 403,
+        "data": null
+      },
+      "error": "hub did not revoke the device (HTTP 403)"
+    },
+    {
+      "name": "unconfirmed logout 503 None",
+      "operation": "sessionRevocationResult",
+      "args": {
+        "status": 503,
+        "data": null
+      },
+      "error": "hub did not revoke the device (HTTP 503)"
+    },
+    {
+      "name": "capability metadata never grants missing full scope",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "dedicated-reader",
+          "scopes": [
+            "tables:read"
+          ],
+          "capabilities": {
+            "replica_sync": true
+          }
+        }
+      },
+      "want": {
+        "name": "dedicated-reader",
+        "scopes": [
+          "tables:read"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "full_scope_required",
+            "message": "Replica sync requires a full device token."
+          }
+        }
+      }
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 // Keep preflight honest with read-set assertions inside the same batch.
 import { historyPlan, historyStatements } from './history.js';
 import { literal, qident, validatePush } from './validate.js';
+import { supportedRuleSql } from '../../core/src/rule-sql.ts';
 
 const quoteColumn = (v) => '"' + v.replaceAll('"', '""') + '"';
 
@@ -73,7 +74,7 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   if (rules.length || expected.length) for (const event of ['INSERT', 'UPDATE']) {
     const trigger = key + '_' + event.toLowerCase();
     let checks = rules.map((rule, i) => {
-      if (!/^\s*SELECT\b/i.test(rule.sql) || /random\s*\(|localtime|'now'/i.test(rule.sql)) throw new Error('invalid invariant SELECT');
+      if (!supportedRuleSql(rule.sql)) throw new Error('invalid invariant SELECT');
       const before = event === 'UPDATE' ? `SELECT ${context('OLD')}` : `SELECT ${context('NEW')} WHERE 0`;
       return `SELECT RAISE(ABORT, 'life_invariant_${i}') WHERE EXISTS (
         WITH changed AS (SELECT ${context('NEW')}), before AS (${before}), now AS (SELECT ${literal(now)} AS ts)

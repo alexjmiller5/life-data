@@ -30,8 +30,101 @@ CLI.
   separate auth registry and `worker/src/login.js` owns the Access-gated
   browser flow. `worker/wrangler.jsonc` declares the main data D1, auth D1,
   R2 bindings and backup cron (those declarations ARE the provisioning).
-- `worker/src/validate.js` - the hub-side mirror of the row validator;
-  `tests/fixtures/validation-cases.json` is the contract both run.
+- `core/src/` - shared TypeScript validator, sync, write path, catalog, HTTP
+  adapter and view compiler for UI clients. `core/README.md` documents adapter
+  contracts and current boundaries. `worker/src/validate.js` re-exports the
+  shared validator and adds hub-specific validation.
+  `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
+- `core/src/references.ts` owns incoming catalog relations. `referenceSources`
+  lists metadata without scanning data; `referencedBy` reads one bounded local
+  group (20 default, 100 maximum). Identity comparisons use the target primary
+  key affinity/collation. Source tombstones are excluded, target tombstones stay
+  inspectable, and skipped source or target tables mark results incomplete.
+  Hosts load groups lazily and re-read selected rows through guarded navigation.
+- `core/src/services.ts` - typed usage/feed/read-state clients over `ServiceHub`.
+  `tests/fixtures/hub-usage-contract.json` is the hub contract. Feed reads walk
+  from zero each time; presentation checkpoints and permissions belong to hosts.
+- `core/src/enrollment.ts` owns four pure enrollment/session policy operations.
+  `tests/fixtures/enrollment-policy.json` is portable host conformance data,
+  checked against actual Worker approval/session responses in core tests.
+  Relative approval paths carry only a fingerprint; hosts own endpoint validation,
+  crypto, typed HTTP replies, deadlines, cancellation and credential storage.
+  A validated identity is not replica permission: require `session.replica.allowed`.
+  A 401 cleanup result is unauthorized, not proof that later approval is cancelled.
+  Python login behavior and hub routes are independent of these pure UI operations.
+- `core/contract/core.json` owns the client JSON shapes and current operation
+  pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
+  codecs; `--check` verifies reproducibility without writing. Edit the contract,
+  never generated files. `createCoreHandlers` keeps local dispatch behavior in
+  TypeScript; hosts inject credentials, transport, locking and storage.
+- `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
+  Capture is inside the existing write transaction; receipts publish only
+  after COMMIT. Inverses use the same writer and captured revision/shape.
+  Session mutations/status are queued; host-wide serialization still applies.
+  Dispose handlers with the workspace. No undo persistence, history replay,
+  redo or autosave grouping. Hosts preserve newer drafts and pause autosave
+  during undo and until retained drafts are explicitly reviewed/saved.
+- `core/src/search.ts` owns local FTS5/unicode61 search and its durable
+  `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
+  including independent Python edits; index draining and searching share one
+  driver transaction. Cache DDL never enters `_schema_log`. `View.search`
+  uses literal word prefixes; `contains` retains substring semantics. Raw
+  Markdown is indexed, with conservative plain-text display cleanup only.
+  Results list read-only system tables (`isReadOnlyTable`) after user tables,
+  then order by relevance.
+- `core/src/remote.ts` provides transient read-only `remoteRows`/`remoteRow`
+  operations through the existing paginated rows/pull API, one request each.
+  Durable endpoint binding and known local table schema are checked before
+  HTTP and again before returning rows; nothing is initialized or merged.
+  Opaque cursors bind endpoint/table/schema. Full known columns, core labels
+  and explicit tombstones are returned; SQLite checks ID order/equality with
+  the actual column collation and no source-row scan. Hosts keep remote mode
+  separate from local edits/search and deduplicate IDs across changing pages.
+  No coverage, count or snapshot guarantee follows from browsing; usage caps
+  still apply and core never retries. The bridge contract owns both operations.
+- `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
+  `views` storage from the canonical DDL/catalog manifest
+  `core/schema/saved-views.json`, also checked against the Python operator CLI.
+  Clients vendor the same manifest with their bundle; it contains no definitions.
+  `views.definition` has the catalog marker
+  `source=life-core`, `source_ref=saved-views/v1`; all actual definitions live
+  in table rows. Never auto-adopt a name collision or provision in the client.
+  Saved edits/deletes use the normal write path and require selected revisions.
+  The Python rename path updates recognized `views.tbl` in its transaction,
+  advancing each affected revision beyond its previous value and at least to
+  database time so LWW and push discovery retain the rename under clock skew.
+  Returned view columns are SQL projection: clients need full rows to edit.
+- `syncStatus` includes durable `skippedTables` from the last completed pull
+  round, stored in the final ready transaction even when pushes are rejected.
+  `last_sync` advances only without rejections. Hosts consume this
+  warning after reopen; they do not persist exclusions or certify coverage.
+  The existing `_core_state.skipped_tables` JSON key remains compatible.
+- `core/src/rejections.ts` owns durable inbox reads through the generated
+  `rejections` operation. Bounded offset pages preserve exact IDs, submitted
+  snapshots and raw hub error objects. Reads never initialize or modify storage;
+  malformed entries fail the page without cleanup or payload-bearing errors.
+  Hosts use this operation instead of decoding `_core_rejected` themselves,
+  restart pagination after sync, and fetch a current full row before repair.
+  Correction saves use the normal writer; only accepted sync clears rejection.
+- `core/src/write.ts` shares table guards with advisory `writeability` and runs
+  deterministic table invariants with one-row SQLite `before`/`changed` contexts
+  and a captured `now.ts`. Custom triggers, estate enforcement and all declared
+  SQLite FKs remain blocked, including NO ACTION/RESTRICT and disabled FKs;
+  catalog references keep their ordinary validation.
+  Adapters must allow read-only `main/temp.foreign_key_list` introspection.
+  `core/src/coverage.ts` owns local `_core_coverage` certificates: successful
+  full pulls and certified incrementals only, endpoint/schema/cursor/version
+  bound, with interrupted refreshes blocked. The optional driver
+  `readDependencies(statements, { ownedTempTables })` uses SQLite compiler
+  metadata, without execution, to narrow invariant coverage to target/catalog,
+  reference and SQL validation reads. Null/unexplained metadata fails closed;
+  an absent method retains full-global coverage, including history/provenance.
+  Ordinary tables without enforced invariants keep their existing behavior.
+  `tests/fixtures/read-dependencies.json` owns host conformance cases. Core owns
+  temporary snapshot creation/cleanup, bounds preparation, and never caches
+  dependency sets persistently. Coverage is neither freshness nor a simultaneous
+  remote snapshot. Legacy cursors and unbound files grant no proof.
+  Certificates/refresh state never sync or enter logged DDL.
 - `scripts/cf-r2-lifecycle.py` - idempotent source of truth for backup
   retention tiers.
 - `tests/test_core.py` - pytest: CLI, sync engine, hubs. `tests/test_catalog.py`
@@ -111,9 +204,14 @@ CLI.
   work in failed; subsequent calls/sweeps resume. SQL text is bounded at D1's 100KB limit. Ordinary 500-row writes use bulk
   upserts. Budget exhaustion is retryable per row; sync leaves its push cursor
   unchanged whenever any row rejects.
-- **Checks are pure; producers may touch the world.** Invariant SQL is one
-  SELECT with no `random()`, `localtime`, or `'now'` (use `(SELECT ts FROM
-  now)`; `changed`/`before` are temp tables the engine provides). Audits run
+- **Checks must be pure; producers may touch the world.** Invariant SQL is one
+  SELECT. Core/Worker share `core/src/rule-sql.ts`; Python mirrors its fixture.
+  The conservative text screen rejects date/time functions (even explicit-input
+  forms), CURRENT_DATE/TIME/TIMESTAMP, randomness, connection-state functions,
+  `localtime` and `'now'`. Compare or slice `(SELECT ts FROM now)` directly;
+  `changed`/`before` are engine contexts. This is not a parser or proof of
+  determinism through views/custom functions; rule authors must keep those
+  dependencies deterministic. Defaults are separate from invariant SQL. Audits run
   via `life audit`. **Derivations are `http:<name>` and run on the hub only**:
   a client never writes a derived column (any write that changes one is
   rejected locally and again at the hub), and the hub verifies
@@ -215,8 +313,8 @@ CLI.
   DDL in `DB` cannot alter token state. `LOGIN_ACCESS_AUD` must equal the
   provisioned Access application's audience. `/login` never trusts identity
   headers and no login route accepts a bearer token in the browser URL.
-- `just test` runs pytest AND `bun test` in `worker/`.
-  The deploy workflow gates deployment on both suites.
+- `just test` runs pytest AND `bun test` in `worker/` and `core/`.
+  The deploy workflow gates deployment on all three suites.
 
 ## Sync internals
 

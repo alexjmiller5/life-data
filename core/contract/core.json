@@ -1,0 +1,2023 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Life Core JSON boundary",
+  "description": "Owned by life-data. Wire shapes and current operations only; platform dependencies and sync policy are implemented in TypeScript.",
+  "$defs": {
+    "JSONValue": true,
+    "Row": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/JSONValue"
+      }
+    },
+    "Count": {
+      "type": "integer"
+    },
+    "FilterOp": {
+      "type": "string",
+      "enum": [
+        "eq",
+        "ne",
+        "contains",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "empty",
+        "not_empty"
+      ]
+    },
+    "FilterValue": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "SortDirection": {
+      "type": "string",
+      "enum": [
+        "asc",
+        "desc"
+      ]
+    },
+    "Sort": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/SortDirection"
+        }
+      },
+      "required": [
+        "column",
+        "direction"
+      ]
+    },
+    "Filter": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/FilterOp"
+        },
+        "value": {
+          "$ref": "#/$defs/FilterValue"
+        }
+      },
+      "required": [
+        "column",
+        "op"
+      ]
+    },
+    "View": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filter"
+          }
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Sort"
+          }
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        },
+        "trash": {
+          "type": "boolean"
+        },
+        "search": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "OptionDef": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string"
+        },
+        "d": {
+          "type": "string"
+        },
+        "sort": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "v"
+      ]
+    },
+    "PropertyFlag": {
+      "type": [
+        "number",
+        "boolean"
+      ]
+    },
+    "Property": {
+      "type": "object",
+      "properties": {
+        "tbl": {
+          "type": "string"
+        },
+        "col": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PropertyFlag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OptionDef"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options_sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "min_items": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_items": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ref_table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "derived_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "immutable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PropertyFlag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deprecated": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PropertyFlag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "col"
+      ]
+    },
+    "Violation": {
+      "type": "object",
+      "properties": {
+        "col": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "col",
+        "rule",
+        "message"
+      ]
+    },
+    "WriteViolation": {
+      "type": "object",
+      "properties": {
+        "col": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "row_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "col",
+        "rule",
+        "message",
+        "tbl",
+        "row_id"
+      ]
+    },
+    "Catalog": {
+      "type": "object",
+      "properties": {
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Property"
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "tables",
+        "properties",
+        "rules"
+      ]
+    },
+    "WorkspaceRow": {
+      "type": "object",
+      "properties": {
+        "record": {
+          "$ref": "#/$defs/Row"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "record",
+        "label"
+      ]
+    },
+    "SyncSettings": {
+      "type": "object",
+      "properties": {
+        "maxRows": {
+          "$ref": "#/$defs/Count"
+        },
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      },
+      "required": []
+    },
+    "SyncResult": {
+      "type": "object",
+      "properties": {
+        "pulled": {
+          "$ref": "#/$defs/Count"
+        },
+        "pushed": {
+          "$ref": "#/$defs/Count"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "pulled",
+        "pushed",
+        "skipped",
+        "rejected"
+      ]
+    },
+    "SyncStatus": {
+      "type": "object",
+      "properties": {
+        "lastSuccessfulSync": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingUiEdits": {
+          "$ref": "#/$defs/Count"
+        },
+        "rejected": {
+          "$ref": "#/$defs/Count"
+        },
+        "skippedTables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tables skipped in the last completed pull round, including rounds with rejected pushes. Empty when no skip history is stored; not a coverage or freshness certificate."
+        }
+      },
+      "required": [
+        "lastSuccessfulSync",
+        "pendingUiEdits",
+        "rejected",
+        "skippedTables"
+      ]
+    },
+    "UsagePeriod": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        },
+        "anchor_day": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "anchor_day"
+      ]
+    },
+    "UsageMetricKind": {
+      "type": "string",
+      "enum": [
+        "cumulative",
+        "gauge"
+      ]
+    },
+    "UsageMetric": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/UsageMetricKind"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "used": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cap": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alert_at": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "measured_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "unit",
+        "used",
+        "allowance",
+        "cap",
+        "alert_at",
+        "measured_at"
+      ]
+    },
+    "UsageCap": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "used": {
+          "type": "number"
+        },
+        "cap": {
+          "type": "number"
+        },
+        "resets_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric",
+        "used",
+        "cap",
+        "resets_at"
+      ]
+    },
+    "UsagePrincipal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "rows_read": {
+          "type": "number"
+        },
+        "rows_written": {
+          "type": "number"
+        },
+        "requests": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "rows_read",
+        "rows_written",
+        "requests"
+      ]
+    },
+    "UsageSummary": {
+      "type": "object",
+      "properties": {
+        "period": {
+          "$ref": "#/$defs/UsagePeriod"
+        },
+        "measured_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capped": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageCap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/UsageMetric"
+          }
+        },
+        "by_principal": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UsagePrincipal"
+          }
+        }
+      },
+      "required": [
+        "period",
+        "measured_at",
+        "capped",
+        "metrics",
+        "by_principal"
+      ]
+    },
+    "HubNotification": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "$ref": "#/$defs/Count"
+        },
+        "id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "producer": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/JSONValue"
+        },
+        "read_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "seq",
+        "id",
+        "created_at",
+        "producer",
+        "type",
+        "severity",
+        "title",
+        "body",
+        "data",
+        "read_at"
+      ]
+    },
+    "NotificationFeed": {
+      "type": "object",
+      "properties": {
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HubNotification"
+          }
+        },
+        "next_cursor": {
+          "type": "null"
+        },
+        "latest_cursor": {
+          "$ref": "#/$defs/Count"
+        },
+        "unread_count": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "notifications",
+        "next_cursor",
+        "latest_cursor",
+        "unread_count"
+      ]
+    },
+    "NotificationPresentation": {
+      "type": "object",
+      "properties": {
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HubNotification"
+          }
+        },
+        "baseline": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "notifications",
+        "baseline"
+      ]
+    },
+    "NotificationReadSelector": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "through": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": []
+    },
+    "NotificationReadResult": {
+      "type": "object",
+      "properties": {
+        "unread_count": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "unread_count"
+      ]
+    },
+    "EmptyArgs": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "EndpointArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint"
+      ]
+    },
+    "SyncArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "maxRows": {
+          "$ref": "#/$defs/Count"
+        },
+        "tables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      },
+      "required": [
+        "endpoint"
+      ]
+    },
+    "OptionsArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "column"
+      ]
+    },
+    "WriteArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "patch": {
+          "$ref": "#/$defs/Row"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "patch"
+      ]
+    },
+    "NotificationReadArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "selector": {
+          "$ref": "#/$defs/NotificationReadSelector"
+        }
+      },
+      "required": [
+        "endpoint",
+        "selector"
+      ]
+    },
+    "NotificationPresentationArgs": {
+      "type": "object",
+      "properties": {
+        "feed": {
+          "$ref": "#/$defs/NotificationFeed"
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "feed",
+        "baseline"
+      ]
+    },
+    "SearchArgs": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "SearchHit": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "excerpt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "label",
+        "excerpt"
+      ]
+    },
+    "SavedViewDefinition": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/Count"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filter"
+          }
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Sort"
+          }
+        },
+        "search": {
+          "type": "string"
+        },
+        "trash": {
+          "type": "boolean"
+        },
+        "widths": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "description": "columns is SQL projection and may omit id, updated_at and hidden fields; fetch a full row before editing. For visible layout only, omit columns when querying rows."
+    },
+    "SavedViewRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavedViewDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/View"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "tbl",
+        "updated_at",
+        "deleted_at",
+        "definition",
+        "view",
+        "unavailable"
+      ]
+    },
+    "SavedViewList": {
+      "type": "object",
+      "properties": {
+        "views": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SavedViewRecord"
+          }
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "views",
+        "unavailable"
+      ]
+    },
+    "ListViewsArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "trash": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "SaveViewArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "definition": {
+          "$ref": "#/$defs/SavedViewDefinition"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "name",
+        "definition"
+      ],
+      "description": "expectedUpdatedAt is required when id is supplied; omit both to create a new view."
+    },
+    "DeleteViewArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedUpdatedAt"
+      ]
+    },
+    "WriteabilityArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "Writeability": {
+      "type": "object",
+      "description": "Advisory table guards only. writeRow rechecks under its writer transaction; coverage is not a simultaneous or current remote snapshot.",
+      "properties": {
+        "writable": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriteViolation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "writable",
+        "reason"
+      ]
+    },
+    "RemoteRecord": {
+      "type": "object",
+      "description": "Transient read-only hub row, including all locally known physical columns. deleted explicitly identifies tombstones. Never pass this record to the local writer or imply it is locally replicated.",
+      "properties": {
+        "record": {
+          "$ref": "#/$defs/Row"
+        },
+        "label": {
+          "type": "string"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "record",
+        "label",
+        "deleted"
+      ]
+    },
+    "RemoteRowsArgs": {
+      "type": "object",
+      "description": "One online page in source ID order; default limit 50, maximum 200. Pass nextCursor unchanged; omit cursor to refresh. No text search, arbitrary filters, sorting, count or snapshot guarantee.",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "table"
+      ]
+    },
+    "RemoteRowsPage": {
+      "type": "object",
+      "description": "Transient page including tombstones. A full page may require an empty terminal request. Across a changing hub, clients deduplicate repeated record IDs before keyed rendering, replacing the displayed record with the later response; this does not establish a snapshot.",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RemoteRecord"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rows",
+        "nextCursor"
+      ]
+    },
+    "RemoteRowArgs": {
+      "type": "object",
+      "description": "One online ID lookup using the source column collation; the returned ID retains its stored spelling.",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "table",
+        "id"
+      ]
+    },
+    "RemoteRowResult": {
+      "type": "object",
+      "properties": {
+        "row": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "row"
+      ]
+    },
+    "UndoKind": {
+      "type": "string",
+      "enum": [
+        "create",
+        "edit",
+        "trash",
+        "restore"
+      ]
+    },
+    "UndoAction": {
+      "type": "object",
+      "description": "One volatile last saved change in this opened workspace session. receiptId is opaque; clients never supply inverse data. Each autosave replaces the previous action.",
+      "properties": {
+        "receiptId": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/UndoKind"
+        }
+      },
+      "required": [
+        "receiptId",
+        "table",
+        "rowId",
+        "kind"
+      ]
+    },
+    "UndoStatus": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UndoAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "UndoArgs": {
+      "type": "object",
+      "properties": {
+        "receiptId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "receiptId"
+      ]
+    },
+    "EnrollmentApprovalArgs": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "name"
+      ]
+    },
+    "EnrollmentPolicy": {
+      "type": "object",
+      "properties": {
+        "pollIntervalSeconds": {
+          "$ref": "#/$defs/Count"
+        },
+        "timeoutSeconds": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxResponseBytes": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "pollIntervalSeconds",
+        "timeoutSeconds",
+        "maxResponseBytes"
+      ]
+    },
+    "EnrollmentApproval": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "approvalCode": {
+          "type": "string"
+        },
+        "deviceName": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/EnrollmentPolicy"
+        }
+      },
+      "required": [
+        "path",
+        "approvalCode",
+        "deviceName",
+        "policy"
+      ]
+    },
+    "ReplicaIneligibilityCode": {
+      "type": "string",
+      "enum": [
+        "full_scope_required",
+        "invalid_capabilities",
+        "schema_unavailable",
+        "replica_sync_disabled"
+      ]
+    },
+    "ReplicaIneligibility": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ReplicaIneligibilityCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ReplicaEligibility": {
+      "type": "object",
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReplicaIneligibility"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "allowed",
+        "reason"
+      ]
+    },
+    "SessionInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "replica": {
+          "$ref": "#/$defs/ReplicaEligibility"
+        }
+      },
+      "required": [
+        "name",
+        "scopes",
+        "replica"
+      ]
+    },
+    "SessionDataArgs": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/JSONValue"
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "SessionReply": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/Count"
+        },
+        "data": {
+          "$ref": "#/$defs/JSONValue"
+        },
+        "retryAfterSeconds": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "status",
+        "data"
+      ],
+      "description": "Host supplies HTTP status, bounded parsed JSON on 200 or null otherwise. Never derive status from error strings. Optional Retry-After delay is parsed by the host without platform clocks in core."
+    },
+    "EnrollmentPollArgs": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "$ref": "#/$defs/SessionReply"
+        },
+        "expectedFingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reply",
+        "expectedFingerprint"
+      ]
+    },
+    "EnrollmentPollState": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved"
+      ]
+    },
+    "EnrollmentPollResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/EnrollmentPollState"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryAfterSeconds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "session",
+        "retryAfterSeconds"
+      ],
+      "description": "Approved means the candidate identity was authenticated. Hosts must also require session.replica.allowed before installing it for replica use. Pending never distinguishes an unapproved token from a revoked one."
+    },
+    "SessionRevocationState": {
+      "type": "string",
+      "enum": [
+        "revoked",
+        "unauthorized"
+      ]
+    },
+    "SessionRevocationResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/SessionRevocationState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "description": "Unauthorized is not proof that an unregistered approval URL has been cancelled; a later browser approval remains possible."
+    },
+    "ReferenceSourcesArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "ReferenceSource": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "ref",
+            "multi_ref"
+          ]
+        },
+        "incomplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "label",
+        "type",
+        "incomplete"
+      ]
+    },
+    "ReferencedByArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "sourceTable": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "table",
+        "rowId",
+        "sourceTable",
+        "column"
+      ]
+    },
+    "ReferencedByPage": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/ReferenceSource"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRow"
+          }
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "rows",
+        "nextOffset"
+      ]
+    },
+    "RejectedEdit": {
+      "description": "Durable submitted snapshot and unchanged hub rejection objects, not the current local row. IDs preserve exact string bytes. Re-read a full local row and use its current revision before repair; only accepted sync receipts clear the inbox.",
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rowID": {
+          "type": "string"
+        },
+        "submitted": {
+          "$ref": "#/$defs/Row"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "table",
+        "rowID",
+        "submitted",
+        "errors"
+      ]
+    },
+    "RejectionsArgs": {
+      "description": "Offset pagination over the current local inbox, ordered by binary table and row ID. Default limit 100, maximum 200; default offset 0. Restart at offset 0 after sync changes the inbox; pages are not a cross-request snapshot.",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": []
+    },
+    "RejectionsPage": {
+      "type": "object",
+      "properties": {
+        "rejections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RejectedEdit"
+          }
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rejections",
+        "nextOffset"
+      ]
+    }
+  },
+  "operations": {
+    "catalog": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Catalog"
+      }
+    },
+    "rows": {
+      "args": {
+        "$ref": "#/$defs/View"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/WorkspaceRow"
+        }
+      },
+      "description": "columns is SQL projection and may omit id, updated_at and hidden fields; fetch a full row before editing. For visible layout only, omit columns when querying rows."
+    },
+    "options": {
+      "args": {
+        "$ref": "#/$defs/OptionsArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "write": {
+      "args": {
+        "$ref": "#/$defs/WriteArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
+      }
+    },
+    "status": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SyncStatus"
+      }
+    },
+    "sync": {
+      "args": {
+        "$ref": "#/$defs/SyncArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SyncResult"
+      }
+    },
+    "serviceUsage": {
+      "args": {
+        "$ref": "#/$defs/EndpointArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/UsageSummary"
+      }
+    },
+    "serviceNotifications": {
+      "args": {
+        "$ref": "#/$defs/EndpointArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/NotificationFeed"
+      }
+    },
+    "markNotificationsRead": {
+      "args": {
+        "$ref": "#/$defs/NotificationReadArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/NotificationReadResult"
+      }
+    },
+    "notificationPresentation": {
+      "args": {
+        "$ref": "#/$defs/NotificationPresentationArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/NotificationPresentation"
+      }
+    },
+    "search": {
+      "args": {
+        "$ref": "#/$defs/SearchArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/SearchHit"
+        }
+      }
+    },
+    "listViews": {
+      "args": {
+        "$ref": "#/$defs/ListViewsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SavedViewList"
+      },
+      "description": "columns is SQL projection and may omit id, updated_at and hidden fields; fetch a full row before editing. For visible layout only, omit columns when querying rows."
+    },
+    "saveView": {
+      "args": {
+        "$ref": "#/$defs/SaveViewArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SavedViewRecord"
+      },
+      "description": "expectedUpdatedAt is required when id is supplied; omit both to create a new view."
+    },
+    "deleteView": {
+      "args": {
+        "$ref": "#/$defs/DeleteViewArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SavedViewRecord"
+      }
+    },
+    "writeability": {
+      "args": {
+        "$ref": "#/$defs/WriteabilityArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Writeability"
+      },
+      "description": "Read-only advisory. Always use write for the transactionally rechecked mutation."
+    },
+    "remoteRows": {
+      "args": {
+        "$ref": "#/$defs/RemoteRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RemoteRowsPage"
+      },
+      "description": "One bounded hub pull with no local row, checkpoint, coverage or outbox writes. A matching durable endpoint binding and local schema are required. Remote results are read-only."
+    },
+    "remoteRow": {
+      "args": {
+        "$ref": "#/$defs/RemoteRowArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RemoteRowResult"
+      },
+      "description": "One bounded hub pull by ID; null means no matching row. Tombstones remain explicit. A matching durable endpoint binding and local schema are required."
+    },
+    "undoStatus": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/UndoStatus"
+      },
+      "description": "Read this handler instance's last saved change after queued session mutations settle. Closing the workspace discards the receipt. This is not a history query or a guarantee that undo will pass current validation."
+    },
+    "undo": {
+      "args": {
+        "$ref": "#/$defs/UndoArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
+      },
+      "description": "Undo last saved change through the ordinary validated writer, requiring the captured revision and shape. Success consumes the receipt; failure preserves it. No redo or timestamp restoration. Hosts pause autosave and preserve newer drafts for explicit review."
+    },
+    "enrollmentApproval": {
+      "args": {
+        "$ref": "#/$defs/EnrollmentApprovalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/EnrollmentApproval"
+      },
+      "description": "Pure relative approval path and public fingerprint code. Hosts validate/canonicalize the endpoint and generate/hash the candidate token; core never receives it."
+    },
+    "validateDeviceSession": {
+      "args": {
+        "$ref": "#/$defs/SessionDataArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionInfo"
+      },
+      "description": "Pure nonadmin identity validation and current full-scope replica eligibility. Dedicated manual names are allowed. No network or storage."
+    },
+    "enrollmentPollResult": {
+      "args": {
+        "$ref": "#/$defs/EnrollmentPollArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/EnrollmentPollResult"
+      },
+      "description": "Pure classification of one bounded session response, matching device:<fingerprint> only on approval. Hosts own deadline/cancellation and cap the returned retry delay to remaining time; never poll after the deadline."
+    },
+    "sessionRevocationResult": {
+      "args": {
+        "$ref": "#/$defs/SessionReply"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionRevocationResult"
+      },
+      "description": "Pure classification of session POST. Only 200 with logged_out true confirms revocation; 401 is separately unauthorized, never proof that future approval is impossible."
+    },
+    "referenceSources": {
+      "args": {
+        "$ref": "#/$defs/ReferenceSourcesArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ReferenceSource"
+        }
+      },
+      "description": "Incoming live catalog ref/multi_ref definitions and persisted skipped-source warnings; no source row scans. Hosts load groups lazily."
+    },
+    "referencedBy": {
+      "args": {
+        "$ref": "#/$defs/ReferencedByArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ReferencedByPage"
+      },
+      "description": "One bounded local incoming-reference group. Default 20 rows, maximum 100, live sources only. Target identity uses its primary-key collation, including trashed targets. Hosts ignore stale replies and re-read a row before opening it."
+    },
+    "rejections": {
+      "description": "Read the durable local rejection inbox without initialization or mutation. Missing storage is empty; malformed persisted data fails the whole page without skipping or deleting entries. An unchanged inbox has exact terminal detection, including a full final page.",
+      "args": {
+        "$ref": "#/$defs/RejectionsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RejectionsPage"
+      }
+    }
+  }
+}

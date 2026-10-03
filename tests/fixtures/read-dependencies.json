@@ -1,0 +1,471 @@
+{
+  "version": 1,
+  "description": "Each case uses a fresh in-memory database. Execute setup then case setup; pass statements and context to readDependencies. Compare sorted tables, null for unsupported, or a thrown error when error is true. The adapter must not execute supplied statements or modify persistent data. Context asserts TEMP tables created by trusted core, never schema names inferred from user SQL.",
+  "setup": [
+    "CREATE TABLE items(id TEXT PRIMARY KEY, parent_id TEXT, body TEXT)",
+    "CREATE TABLE parents(id TEXT PRIMARY KEY, enabled INTEGER)",
+    "CREATE TABLE history(id TEXT PRIMARY KEY)",
+    "CREATE TABLE provenance(id TEXT PRIMARY KEY)",
+    "CREATE VIEW enabled_parents AS SELECT id FROM parents WHERE enabled=1",
+    "INSERT INTO items(id,body) VALUES ('one','[]')",
+    "CREATE TEMP TABLE _core_write_before AS SELECT * FROM main.items WHERE 0"
+  ],
+  "context": {
+    "ownedTempTables": [
+      "_core_write_before"
+    ]
+  },
+  "cases": [
+    {
+      "name": "constant",
+      "statements": [
+        {
+          "sql": "SELECT 1"
+        }
+      ],
+      "expected": {
+        "tables": []
+      }
+    },
+    {
+      "name": "ordinary table",
+      "statements": [
+        {
+          "sql": "SELECT id FROM main.items"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "quoted names and misleading comments",
+      "statements": [
+        {
+          "sql": "SELECT id FROM \"items\" WHERE body != 'history' /* provenance */"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "join",
+      "statements": [
+        {
+          "sql": "SELECT items.id FROM items JOIN parents ON parents.id=items.parent_id"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items",
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "columnless count",
+      "statements": [
+        {
+          "sql": "SELECT count(*) FROM parents"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "columnless exists",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items WHERE EXISTS(SELECT 1 FROM parents)"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items",
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "nested query",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items WHERE parent_id IN (SELECT id FROM parents WHERE enabled>0)"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items",
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "view expansion",
+      "statements": [
+        {
+          "sql": "SELECT id FROM enabled_parents"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "view columnless count",
+      "statements": [
+        {
+          "sql": "SELECT count(*) FROM enabled_parents"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "batch union",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items"
+        },
+        {
+          "sql": "SELECT count(*) FROM parents"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items",
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "history is a real dependency",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items WHERE EXISTS(SELECT 1 FROM history)"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items",
+          "history"
+        ]
+      }
+    },
+    {
+      "name": "JSON iterator input dependencies",
+      "statements": [
+        {
+          "sql": "SELECT i.id FROM items i,json_each(i.body) j WHERE j.value IN (SELECT id FROM parents)"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items",
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "JSON tree is nonpersistent",
+      "statements": [
+        {
+          "sql": "SELECT value FROM json_tree('[1]')"
+        }
+      ],
+      "expected": {
+        "tables": []
+      }
+    },
+    {
+      "name": "physical JSON name is not an iterator exemption",
+      "statements": [
+        {
+          "sql": "SELECT id FROM json_each"
+        }
+      ],
+      "setup": [
+        "CREATE TABLE json_each(id TEXT PRIMARY KEY)"
+      ],
+      "expected": {
+        "tables": [
+          "json_each"
+        ]
+      }
+    },
+    {
+      "name": "ordinary CTE resolves base table",
+      "statements": [
+        {
+          "sql": "WITH selected AS (SELECT id FROM parents) SELECT id FROM selected"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "parents"
+        ]
+      }
+    },
+    {
+      "name": "unexplained aggregate CTE",
+      "statements": [
+        {
+          "sql": "WITH unknown_context AS (VALUES(1),(2)) SELECT count(*) FROM unknown_context"
+        }
+      ],
+      "expected": null
+    },
+    {
+      "name": "engine context wrapper",
+      "statements": [
+        {
+          "sql": "WITH changed AS (SELECT * FROM main.items WHERE id=? EXCEPT SELECT * FROM temp._core_write_before), before AS (SELECT * FROM temp._core_write_before WHERE id IN (SELECT id FROM changed)), now AS (SELECT ? AS ts) SELECT * FROM (SELECT id FROM changed WHERE (SELECT count(*) FROM before)>1 OR (SELECT count(*) FROM changed)>1 OR (SELECT count(*) FROM now)!=1) LIMIT 1",
+          "params": [
+            null,
+            "2000-01-01T00:00:00.000Z"
+          ]
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "physical context name is not an exemption",
+      "statements": [
+        {
+          "sql": "SELECT id FROM main.before"
+        }
+      ],
+      "setup": [
+        "CREATE TABLE main.before(id TEXT PRIMARY KEY)"
+      ],
+      "expected": {
+        "tables": [
+          "before"
+        ]
+      }
+    },
+    {
+      "name": "unowned TEMP object",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items"
+        }
+      ],
+      "setup": [
+        "CREATE TEMP TABLE unrelated(id TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "spoofed physical changed",
+      "statements": [
+        {
+          "sql": "SELECT id FROM changed"
+        }
+      ],
+      "setup": [
+        "CREATE TEMP TABLE changed(id TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "spoofed physical before",
+      "statements": [
+        {
+          "sql": "SELECT id FROM before"
+        }
+      ],
+      "setup": [
+        "CREATE TEMP VIEW before AS SELECT id FROM parents"
+      ],
+      "expected": null
+    },
+    {
+      "name": "main and owned TEMP collision",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items"
+        }
+      ],
+      "setup": [
+        "CREATE TABLE main._core_write_before(id TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "attached schema",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items"
+        }
+      ],
+      "setup": [
+        "ATTACH ':memory:' AS other",
+        "CREATE TABLE other.rows(id TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "introspection table function",
+      "statements": [
+        {
+          "sql": "SELECT name FROM pragma_table_info('items')"
+        }
+      ],
+      "expected": null
+    },
+    {
+      "name": "local bookkeeping",
+      "statements": [
+        {
+          "sql": "SELECT value FROM _core_state"
+        }
+      ],
+      "setup": [
+        "CREATE TABLE _core_state(key TEXT,value TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "sync bookkeeping",
+      "statements": [
+        {
+          "sql": "SELECT value FROM _sync_state"
+        }
+      ],
+      "setup": [
+        "DROP TABLE IF EXISTS main._sync_state",
+        "CREATE TABLE main._sync_state(key TEXT PRIMARY KEY,value TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "schema bookkeeping",
+      "statements": [
+        {
+          "sql": "SELECT ddl FROM _schema_log"
+        }
+      ],
+      "setup": [
+        "DROP TABLE IF EXISTS main._schema_log",
+        "CREATE TABLE main._schema_log(id INTEGER PRIMARY KEY,ddl TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "missing owned snapshot",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items"
+        }
+      ],
+      "setup": [
+        "DROP TABLE temp._core_write_before"
+      ],
+      "expected": null
+    },
+    {
+      "name": "owned name is not a view",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items"
+        }
+      ],
+      "setup": [
+        "DROP TABLE temp._core_write_before",
+        "CREATE TEMP VIEW _core_write_before AS SELECT * FROM items"
+      ],
+      "expected": null
+    },
+    {
+      "name": "never step inspected SQL",
+      "statements": [
+        {
+          "sql": "SELECT json('not-json') FROM items"
+        }
+      ],
+      "expected": {
+        "tables": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "extra statement",
+      "statements": [
+        {
+          "sql": "SELECT id FROM items; DELETE FROM items"
+        }
+      ],
+      "error": true
+    },
+    {
+      "name": "write statement",
+      "statements": [
+        {
+          "sql": "DELETE FROM items"
+        }
+      ],
+      "error": true
+    },
+    {
+      "name": "connection mutation",
+      "statements": [
+        {
+          "sql": "PRAGMA user_version=42"
+        }
+      ],
+      "error": true
+    },
+    {
+      "name": "invalid SQL",
+      "statements": [
+        {
+          "sql": "SELECT FROM items"
+        }
+      ],
+      "error": true
+    },
+    {
+      "name": "virtual table",
+      "setup": [
+        "CREATE VIRTUAL TABLE docs USING fts5(body)"
+      ],
+      "statements": [
+        {
+          "sql": "SELECT body FROM docs"
+        }
+      ],
+      "expected": null
+    },
+    {
+      "name": "shadow table",
+      "setup": [
+        "CREATE VIRTUAL TABLE docs USING fts5(body)"
+      ],
+      "statements": [
+        {
+          "sql": "SELECT * FROM docs_data"
+        }
+      ],
+      "expected": null
+    }
+  ]
+}

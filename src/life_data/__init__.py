@@ -1261,7 +1261,16 @@ def main(argv: list[str] | None = None) -> int:
     t_rename.add_argument("new")
     t_set = t_sub.add_parser("set", help="describe a table in the catalog")
     t_set.add_argument("name")
-    for f in ("kind", "purpose", "id_semantics", "provenance", "owner", "consumers", "description"):
+    for f in (
+        "kind",
+        "purpose",
+        "id_semantics",
+        "provenance",
+        "owner",
+        "consumers",
+        "description",
+        "display",
+    ):
         t_set.add_argument(f"--{f.replace('_', '-')}", dest=f)
     p_prop = sub.add_parser("property", help="catalog properties (the per-column contract)")
     pr_sub = p_prop.add_subparsers(dest="property_command", required=True)
@@ -1458,6 +1467,7 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
                     "owner",
                     "consumers",
                     "description",
+                    "display",
                 )
                 and v is not None
             }

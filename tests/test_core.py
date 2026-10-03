@@ -832,7 +832,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/rows/pull":
             out = {"rows": h.rows_pull(body["table"], body["columns"], body["since"])}
         elif self.path == "/v1/rows/push":
-            out = h.rows_push(body["table"], body["columns"], body["rows"])
+            out = h.rows_push(
+                body["table"], body["columns"], body["rows"], history=body.get("history")
+            )
         elif self.path == "/v1/cursor":
             out = {"max_hub_at": h.cursor(body["tables"])}
         else:

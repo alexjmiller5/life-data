@@ -3,7 +3,8 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths: ["worker/**", ".github/workflows/deploy.yml"]
+    # core/ is in here because the hub bundles life-core's validator.
+    paths: ["worker/**", "core/**", "scripts/generate-core-contract.ts", ".github/workflows/deploy.yml"]
   workflow_dispatch:
 
 jobs:
@@ -18,6 +19,8 @@ jobs:
       - run: uv run ruff check .
       - working-directory: worker
         run: bun test
+      - working-directory: core
+        run: bun install --frozen-lockfile && bun test && bun run check
 
   deploy:
     needs: test

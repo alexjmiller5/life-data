@@ -178,6 +178,10 @@ returned by `scripts/cf-login.py`. If the existing hub has `_tokens`, run
 worker. The Access application protects `<domain>/login` and its children
 with email OTP; `/v1` remains bearer-token authenticated.
 
+Browser clients (a web app on its own origin) need that origin listed in the
+non-secret `CORS_ORIGINS` variable, comma-separated exact origins. Only listed
+origins can read API responses; the `/login` pages never answer CORS.
+
 Point clients at it with `hub_url`, and you own the whole loop.
 
 ### Backups

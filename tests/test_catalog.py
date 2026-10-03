@@ -380,6 +380,40 @@ def test_rule_sql_rejects_nondeterminism():
     check_rule_sql("SELECT id FROM t WHERE x > (SELECT ts FROM now)")
 
 
+@pytest.mark.parametrize(
+    "case",
+    json.loads((Path(__file__).parent / "fixtures/rule-sql-cases.json").read_text()),
+    ids=lambda case: case["sql"],
+)
+def test_supported_rule_sql_contract(case):
+    if case["allowed"]:
+        check_rule_sql(case["sql"])
+    else:
+        with pytest.raises(ValueError):
+            check_rule_sql(case["sql"])
+
+
+def test_existing_ambient_rule_rolls_back_the_python_write(db):
+    create_table(db, "items", ["name:text"])
+    insert_rows(db, "items", [{"id": "item-1", "name": "Before"}])
+    with connect(db) as conn:
+        conn.execute(
+            "INSERT INTO catalog_rules (id,tbl,kind,enforce,sql,text) VALUES (?,?,?,?,?,?)",
+            (
+                "clock-rule",
+                "items",
+                "invariant",
+                1,
+                "SELECT id FROM changed WHERE CURRENT_DATE IS NULL",
+                "Unsupported rule",
+            ),
+        )
+    with pytest.raises(ValueError, match="rule sql may not"):
+        execute_sql(db, "UPDATE items SET name='After' WHERE id='item-1'")
+    assert execute_sql(db, "SELECT name FROM items") == [{"name": "Before"}]
+    assert execute_sql(db, "SELECT * FROM history WHERE tbl='items'") == []
+
+
 def test_set_rule_compiles_invariant(db):
     with pytest.raises(ValueError, match="no such table"):
         set_rule(
@@ -1104,3 +1138,49 @@ def test_history_table_appears_lazily_on_an_estate_that_predates_it(db):
     assert [(r["old"], r["new"]) for r in _hist(db)] == [("a", "b")]
     ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
     assert len([d for d in ddls if 'CREATE TABLE "history"' in d]) == 2, "re-created via logged DDL"
+
+
+def test_markdown_type_stores_text_and_keeps_numeric_looking_bodies_as_text(db):
+    create_table(db, "notes", ["title:text!", "body:markdown"])
+    cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(notes)")}
+    assert cols["body"] == "TEXT"
+    insert_rows(db, "notes", [{"id": "n1", "title": "t", "body": "123"}])
+    row = execute_sql(db, "SELECT typeof(body) AS t FROM notes WHERE id = 'n1'")[0]
+    assert row["t"] == "text"
+    (prop,) = [p for p in properties(connect(db), "notes") if p["col"] == "body"]
+    assert prop["type"] == "markdown"
+
+
+def test_markdown_property_type_is_accepted_by_property_set(db):
+    create_table(db, "notes", ["title:text!", "body:text"])
+    set_property(db, "notes", "body", type="markdown")
+    (prop,) = [p for p in properties(connect(db), "notes") if p["col"] == "body"]
+    assert prop["type"] == "markdown"
+
+
+def test_set_table_display_names_the_column_that_titles_a_row(db):
+    create_table(db, "places", ["name:text!", "city:text"])
+    set_table(db, "places", display="name")
+    t = execute_sql(db, "SELECT display FROM catalog_tables WHERE id='places'")[0]
+    assert t["display"] == "name"
+    with connect(db) as conn:
+        assert "- **Row title:** `name`" in doc(conn, "places")
+
+
+def test_set_table_display_rejects_a_column_the_table_does_not_have(db):
+    create_table(db, "places", ["name:text!"])
+    with pytest.raises(ValueError, match="no column"):
+        set_table(db, "places", display="title")
+
+
+def test_an_estate_without_the_display_column_gains_it_through_logged_ddl(db):
+    create_table(db, "places", ["name:text!"])
+    ensure_catalog(db)
+    with connect(db) as conn:
+        conn.execute("ALTER TABLE catalog_tables DROP COLUMN display")
+        conn.execute("DELETE FROM _schema_log WHERE ddl LIKE '%display%'")
+    set_table(db, "places", display="name")
+    cols = [r["name"] for r in execute_sql(db, "PRAGMA table_info(catalog_tables)")]
+    assert "display" in cols
+    ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
+    assert any("ADD COLUMN" in d and "display" in d for d in ddls)

@@ -24,6 +24,8 @@ CATALOG_TABLES = {
         "owner:text",
         "consumers:text",
         "description:text",
+        # the column whose value titles a row in a UI (pickers, search, links)
+        "display:text",
     ],
     "catalog_properties": [
         "tbl:text",
@@ -171,6 +173,7 @@ PROVENANCE_PROPERTIES = {
 
 TYPES = {
     "text",
+    "markdown",
     "number",
     "int",
     "bool",
@@ -187,6 +190,7 @@ TYPES = {
 }
 STORAGE = {
     "text": "TEXT",
+    "markdown": "TEXT",
     "number": "REAL",
     "int": "INTEGER",
     "bool": "INTEGER",
@@ -253,6 +257,16 @@ def _ensure_catalog(path: Path) -> None:
         missing = [t for t in CATALOG_TABLES if not _table_exists(conn, t)]
     for t in missing:
         pkg.create_table(path, t, CATALOG_TABLES[t])
+    # Columns added to an engine table after estates existed: logged DDL, so the
+    # first replica to upgrade carries them to the hub and every other replica
+    # (a second replica's duplicate ALTER is skipped on replay).
+    for t, specs in CATALOG_TABLES.items():
+        have = {r["name"] for r in pkg.execute_sql(path, f"PRAGMA table_info({qi(t)})")}
+        for spec in specs:
+            col, typ = spec.split(":", 1)
+            if col not in have:
+                storage = STORAGE.get(typ.rstrip("!").split("(", 1)[0], typ.upper())
+                pkg.execute_sql(path, f"ALTER TABLE {qi(t)} ADD COLUMN {qi(col)} {storage}")
     if "provenance" in missing:
         for col, fields in PROVENANCE_PROPERTIES.items():
             set_property(path, "provenance", col, **fields)
@@ -406,6 +420,11 @@ def rm_rule(path: Path, rule_id: str) -> None:
 
 
 def set_table(path: Path, table_id: str, **fields) -> dict:
+    if fields.get("display"):
+        with _pkg().connect(path) as conn:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({qi(table_id)})")}
+        if fields["display"] not in cols:
+            raise ValueError(f"{table_id} has no column {fields['display']!r} to title its rows")
     return _upsert(path, "catalog_tables", table_id, fields)
 
 
@@ -799,6 +818,39 @@ def _rekey(conn, table: str, old_id: str, new_id: str, **changes) -> None:
     conn.execute(f"UPDATE {qi(table)} SET deleted_at = updated_at WHERE id = ?", (old_id,))
 
 
+def _has_shared_views(conn) -> bool:
+    """Recognize operator-provisioned v1 storage; never adopt by table name alone."""
+    schema = conn.execute(
+        "SELECT sql FROM main.sqlite_master WHERE (type='table' AND name='views') "
+        "OR (type='trigger' AND name='views_updated_at') ORDER BY type"
+    ).fetchall()
+    expected = _pkg().table_ddl("views", ["name:text!", "tbl:ref!", "definition:json!"])
+    if [re.sub(r"\s+", " ", r["sql"]).strip() for r in schema] != [
+        re.sub(r"\s+", " ", sql).strip() for sql in expected
+    ]:
+        return False
+    entry = conn.execute(
+        "SELECT kind,display FROM catalog_tables WHERE id='views' AND deleted_at IS NULL"
+    ).fetchone()
+    props = conn.execute(
+        "SELECT * FROM catalog_properties WHERE tbl='views' AND deleted_at IS NULL"
+    ).fetchall()
+    required = {"name": "text", "tbl": "ref", "definition": "json"}
+    if not entry or dict(entry) != {"kind": "table", "display": "name"} or len(props) != 3:
+        return False
+    by_col = {p["col"]: p for p in props}
+    if set(by_col) != set(required) or any(
+        p["id"] != f"views.{col}" or p["type"] != required[col] or p["required"] != 1
+        for col, p in by_col.items()
+    ):
+        return False
+    return (
+        by_col["tbl"]["ref_table"] == "catalog_tables"
+        and by_col["definition"]["source"] == "life-core"
+        and by_col["definition"]["source_ref"] == "saved-views/v1"
+    )
+
+
 def rename_refs(conn, old: str, new: str) -> None:
     """Point every catalog, provenance and history reference at the new name.
     Runs inside the rename's transaction; the caller has already renamed the
@@ -823,6 +875,17 @@ def rename_refs(conn, old: str, new: str) -> None:
         )
     if conn.execute("SELECT 1 FROM catalog_tables WHERE id = ?", (old,)).fetchone():
         _rekey(conn, "catalog_tables", old, new)
+    if _has_shared_views(conn):
+        # Definitions contain layout/query state, never a repeated table name.
+        # Keep tombstones pointed at the renamed target for later restoration.
+        # catalog.write validates and journals this with the rest of the rename.
+        # A synced revision can be ahead of this device's clock. The timestamp
+        # trigger alone could lower it, causing LWW to discard the rename.
+        conn.execute(
+            f"UPDATE views SET tbl = ?, updated_at = max({_pkg().NOW}, "
+            "strftime('%Y-%m-%dT%H:%M:%fZ',updated_at,'+0.001 seconds')) WHERE tbl = ?",
+            (new, old),
+        )
     conn.execute(
         "UPDATE catalog_rules SET tbl = ? WHERE tbl = ? AND deleted_at IS NULL", (new, old)
     )
@@ -849,15 +912,27 @@ def rename_refs(conn, old: str, new: str) -> None:
 
 # --- invariants --------------------------------------------------------------
 
-FORBIDDEN = re.compile(r"random\s*\(|localtime|'now'", re.IGNORECASE)
+# Mirror core/src/rule-sql.ts; shared rule-sql-cases.json is the contract.
+# This conservative text screen is not a parser or a transitive purity proof.
+_RULE_FUNCTIONS = (
+    "random|randomblob|date|time|datetime|julianday|unixepoch|strftime|timediff|"
+    "changes|total_changes|last_insert_rowid|sqlite_version|sqlite_source_id"
+)
+_RULE_TRIVIA = r"(?:\s|/\*[\s\S]*?\*/|--[^\n]*(?:\n|$))*"
+FORBIDDEN = re.compile(
+    rf"\b(?:{_RULE_FUNCTIONS})[\"'`\]]?{_RULE_TRIVIA}\("
+    r"|\bcurrent_(?:timestamp|date|time)\b|localtime|'now'",
+    re.IGNORECASE,
+)
 
 
 def check_rule_sql(sql: str) -> None:
-    if not sql or _first(sql) != "SELECT":
+    if not sql or not re.match(r"^\s*SELECT\b", sql, re.IGNORECASE):
         raise ValueError("rule sql must be a single SELECT")
     if FORBIDDEN.search(sql):
         raise ValueError(
-            "rule sql may not use random(), localtime, or 'now' (use (SELECT ts FROM now))"
+            "rule sql may not use clock, date/time, randomness or connection-state "
+            "functions (compare or slice (SELECT ts FROM now) directly)"
         )
 
 
@@ -936,6 +1011,9 @@ def compile_sql(conn: sqlite3.Connection, sql: str, tbl: str | None = None) -> N
 
 
 def run_invariant(conn, rule: dict, changed_ids=None, now=None) -> list[dict]:
+    # Existing/synced catalog rows also pass the boundary, not only set_rule.
+    check_rule_sql(rule["sql"])
+
     def cleanup():
         pass
 
@@ -1520,6 +1598,8 @@ def doc(conn: sqlite3.Connection, tbl: str | None = None) -> str:
                 lines.append(f"- **{label}:** {meta[k]}")
         if meta.get("consumers"):
             lines.append(f"- **Read by:** {', '.join(json.loads(meta['consumers']))}")
+        if meta.get("display"):
+            lines.append(f"- **Row title:** `{meta['display']}`")
         if meta.get("description"):
             lines += ["", meta["description"]]
         props = properties(conn, t)
