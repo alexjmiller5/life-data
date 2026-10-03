@@ -50,7 +50,10 @@ CLI.
   uses literal word prefixes; `contains` retains substring semantics. Raw
   Markdown is indexed, with conservative plain-text display cleanup only.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
-  `views` storage. `views.definition` has the catalog marker
+  `views` storage from the canonical DDL/catalog manifest
+  `core/schema/saved-views.json`, also checked against the Python operator CLI.
+  Clients vendor the same manifest with their bundle; it contains no definitions.
+  `views.definition` has the catalog marker
   `source=life-core`, `source_ref=saved-views/v1`; all actual definitions live
   in table rows. Never auto-adopt a name collision or provision in the client.
   Saved edits/deletes use the normal write path and require selected revisions.

@@ -1,7 +1,10 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import * as core from '../src/index.ts';
-import fixture from '../../tests/fixtures/saved-views.json';
+import fixture from '../schema/saved-views.json';
 import { schema, setup, TestSql, T0, T1 } from './support.ts';
 
 const databases: Database[] = [];
@@ -16,7 +19,8 @@ async function local(provision = true) {
   await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('items.name','items','name','text'),('items.qty','items','qty','int')");
   if (provision) {
     for (const ddl of fixture.ddl) await db.run(ddl);
-    await db.run('INSERT INTO catalog_tables(id,kind,display) VALUES (?,?,?)', ['views','table','name']);
+    const table = fixture.table;
+    await db.run('INSERT INTO catalog_tables(id,kind,display) VALUES (?,?,?)', [table.id, table.kind, table.display]);
     for (const p of fixture.properties) {
       const keys = Object.keys(p);
       await db.run(`INSERT INTO catalog_properties(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, Object.values(p) as core.Value[]);
@@ -37,6 +41,60 @@ async function remove(db: core.SqlDriver, args: unknown) {
 async function insert(db: TestSql, id: string, value: unknown, name = id) {
   await db.run('INSERT INTO views(id,name,tbl,definition,updated_at) VALUES (?,?,?,?,?)', [id,name,'items',typeof value === 'string' ? value : JSON.stringify(value),T0]);
 }
+
+test.each(['canonical', 'ddl', 'metadata'])('a standalone browser bundle recognizes its packaged saved-view manifest: %s', async variant => {
+  const temp = await mkdtemp(join(tmpdir(), 'core-manifest-'));
+  try {
+    const pack = Bun.spawn(['bun', 'pm', 'pack', '--ignore-scripts', '--filename', join(temp, 'core.tgz')], {
+      cwd: resolve(import.meta.dir, '..'), stdout: 'pipe', stderr: 'pipe',
+    });
+    expect(await pack.exited).toBe(0);
+    const modules = join(temp, 'node_modules');
+    const pkg = join(modules, 'life-core');
+    await mkdir(pkg, { recursive: true });
+    const unpack = Bun.spawn(['tar', '-xzf', join(temp, 'core.tgz'), '-C', pkg, '--strip-components=1'], { stdout: 'pipe', stderr: 'pipe' });
+    expect(await unpack.exited).toBe(0);
+    const entry = join(temp, 'consumer.ts');
+    await writeFile(entry, `export { listViews } from 'life-core';\nexport { default as manifest } from 'life-core/schema/saved-views.json';\n`);
+    if (variant !== 'canonical') {
+      // Change only the packaged manifest. A second DDL/metadata literal in
+      // production would reject the corresponding schema seeded below.
+      const path = join(pkg, 'schema/saved-views.json');
+      const manifest: typeof fixture = JSON.parse(await readFile(path, 'utf8'));
+      if (variant === 'ddl') manifest.ddl[0] = manifest.ddl[0].replace('"name" TEXT', '"name" TEXT COLLATE BINARY');
+      else {
+        manifest.table.display = 'tbl';
+        manifest.properties[0].type = 'markdown';
+        manifest.properties[2].source_ref = 'saved-views/fixture';
+      }
+      await writeFile(path, JSON.stringify(manifest));
+    }
+    const build = await Bun.build({ entrypoints: [entry], outdir: join(temp, 'bundle'), target: 'browser', format: 'esm' });
+    expect(build.logs).toEqual([]);
+    expect(build.success).toBe(true);
+    await rm(modules, { recursive: true });
+    const bundled: { manifest: typeof fixture; listViews: typeof core.listViews } = await import(join(temp, 'bundle/consumer.js'));
+    const db = await local(false);
+    for (const ddl of bundled.manifest.ddl) await db.run(ddl);
+    const table = bundled.manifest.table;
+    await db.run('INSERT INTO catalog_tables(id,kind,display) VALUES (?,?,?)', [table.id, table.kind, table.display]);
+    for (const p of bundled.manifest.properties) {
+      const keys = Object.keys(p);
+      await db.run(`INSERT INTO catalog_properties(${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, Object.values(p) as core.Value[]);
+    }
+    await insert(db, 'shared', { version: 1 });
+    const result = await bundled.listViews(db, { table: 'items' });
+    expect(result.unavailable).toBeNull();
+    expect(result.views.map(v => v.id)).toEqual(['shared']);
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});
+
+test('property ordering is presentation metadata, not a storage identity requirement', async () => {
+  const db = await local();
+  await db.run("UPDATE catalog_properties SET sort=100-sort WHERE tbl='views'");
+  const saved = await save(db, { table: 'items', name: 'Example', definition });
+  expect((await list(db)).views.map(v => v.id)).toEqual([saved.id]);
+});
 
 test('missing saved-view storage is unavailable without provisioning or logging local DDL', async () => {
   const db = await local(false);
@@ -107,9 +165,16 @@ test('delete permits unknown definitions where core permits it and retains revis
 
 test.each([
   "UPDATE catalog_properties SET source_ref=NULL WHERE id='views.definition'",
+  "UPDATE catalog_properties SET source='foreign' WHERE id='views.definition'",
   "UPDATE catalog_properties SET type='text' WHERE id='views.definition'",
   "UPDATE catalog_properties SET ref_table='items' WHERE id='views.tbl'",
+  "UPDATE catalog_properties SET required=0 WHERE id='views.name'",
+  "UPDATE catalog_properties SET col='other' WHERE id='views.name'",
+  "UPDATE catalog_properties SET id='foreign.name' WHERE id='views.name'",
+  "INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('views.extra','views','extra','text')",
+  "UPDATE catalog_properties SET deleted_at='2025-01-01T00:00:00.000Z' WHERE id='views.name'",
   "UPDATE catalog_tables SET kind='system' WHERE id='views'",
+  "UPDATE catalog_tables SET display='tbl' WHERE id='views'",
   "DROP TRIGGER views_updated_at",
   "ALTER TABLE views ADD COLUMN owner_id TEXT",
 ])('schema collisions are read-only setup errors: %s', async sql => {
@@ -239,7 +304,7 @@ test('shared views round-trip through the real hub with history, own receipts an
     remote.db.exec(sql);
     remote.db.query('INSERT INTO _schema_log(applied_at,ddl) VALUES (?,?)').run(T0, sql);
   }
-  for (const table of ['items','views']) remote.db.query('INSERT INTO catalog_tables(id,kind,display,updated_at,hub_at) VALUES (?,?,?,?,?)').run(table,'table','name',T0,T1);
+  for (const table of [{ id: 'items', kind: 'table', display: 'name' }, fixture.table]) remote.db.query('INSERT INTO catalog_tables(id,kind,display,updated_at,hub_at) VALUES (?,?,?,?,?)').run(table.id,table.kind,table.display,T0,T1);
   for (const p of [...fixture.properties, { id: 'items.name', tbl: 'items', col: 'name', type: 'text' }]) {
     const row = { ...p, updated_at: T0, hub_at: T1 };
     const keys = Object.keys(row);

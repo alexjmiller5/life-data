@@ -164,8 +164,28 @@ This does not imply that every referenced target table is fully replicated.
 `life table rename` updates `views.tbl` only for the exact recognized schema
 and marker, with ordinary validation/history in the rename transaction.
 Column renames/removals leave affected definitions unavailable for explicit
-repair; unknown JSON versions are never rewritten. The shared fixture
-`tests/fixtures/saved-views.json` is checked against Python's canonical DDL.
+repair; unknown JSON versions are never rewritten.
+
+`schema/saved-views.json` is the canonical storage manifest: ordered `ddl`, one
+`table` catalog seed, and `properties` catalog seeds. Core recognition reads
+the DDL and identity metadata from this file; property `sort` values are seed
+defaults, not recognition requirements. Python parity tests compare the same
+manifest with the operator CLI's DDL and catalog output.
+
+Consumers can import `life-core/schema/saved-views.json` or vendor that exact
+file alongside the core bundle. Keep the vendored JSON and runtime from the
+same source revision and hash the JSON separately from the unchanged bridge
+contract. The source package includes `schema/`; browser/JavaScriptCore bundles
+inline the JSON and need no filesystem loader. There is no separate core
+`dist` build. Consumers compiling an unbundled distribution must also ship the
+JSON at the relative path expected by the emitted import.
+
+Treat the manifest as immutable. Only an explicitly app-owned local/demo
+initializer may use it to create absent storage; check for partial/foreign
+schema and catalog collisions before any creation, and never adopt or repair
+them automatically. Ordinary synced replicas still receive existing logged
+DDL only. Core exports no provisioning operation, and the manifest contains
+no actual view definitions or default selection.
 
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases

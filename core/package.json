@@ -5,8 +5,10 @@
   "type": "module",
   "description": "The shared core every life-data client runs: catalog validation, sync, the write path and the view model, with platform adapters injected.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./schema/saved-views.json": "./schema/saved-views.json"
   },
+  "files": ["src", "schema", "contract", "generated"],
   "scripts": {
     "test": "bun test",
     "check": "bun ../scripts/generate-core-contract.ts --check && tsc --noEmit"

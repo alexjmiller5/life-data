@@ -4,40 +4,24 @@ import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { compileView } from './view.ts';
 import { writeRow } from './write.ts';
+import storage from '../schema/saved-views.json';
 
 // Recognition only. Ordinary replicas receive these statements via logged DDL;
 // core never creates, adopts or repairs a table named views.
-const storageDDL = [
-  `CREATE TABLE "views" (
-    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-    "name" TEXT,
-    "tbl" TEXT,
-    "definition" TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    deleted_at TEXT,
-    hub_at TEXT
-  )`,
-  `CREATE TRIGGER "views_updated_at" AFTER UPDATE ON "views" FOR EACH ROW
-  WHEN NEW.updated_at = OLD.updated_at
-  BEGIN
-    UPDATE "views" SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid;
-  END`,
-];
 const normalizeDDL = (sql: unknown) => String(sql).replace(/\s+/g, ' ').trim();
+const matchesMetadata = (row: Row | undefined, expected: object) =>
+  row !== undefined && Object.entries(expected).every(([key, value]) => row[key] === value);
 
 async function storageProblem(db: SqlDriver, catalog: Catalog): Promise<string | null> {
   const schema = await db.all("SELECT name,sql FROM main.sqlite_master WHERE (type='table' AND name='views') OR (type='trigger' AND name='views_updated_at') ORDER BY type");
   if (!schema.length) return 'Saved views need operator provisioning; sync the views schema and catalog first.';
-  const entry = catalog.tables.find(t => t.id === 'views');
-  const props = catalog.properties.filter(p => p.tbl === 'views');
-  const required = [['name', 'text'], ['tbl', 'ref'], ['definition', 'json']];
-  const marked = props.find(p => p.id === 'views.definition');
-  if (schema.length !== 2 || schema.some((s, i) => normalizeDDL(s.sql) !== normalizeDDL(storageDDL[i]))
-    || entry?.kind !== 'table' || entry.display !== 'name' || props.length !== 3
-    || required.some(([col, type]) => !props.some(p => p.id === `views.${col}` && p.col === col && p.type === type && p.required === 1))
-    || props.find(p => p.col === 'tbl')?.ref_table !== 'catalog_tables'
-    || marked?.source !== 'life-core' || marked.source_ref !== 'saved-views/v1') {
+  const entry = catalog.tables.find(t => t.id === storage.table.id);
+  const props = catalog.properties.filter(p => p.tbl === storage.table.id);
+  if (schema.length !== storage.ddl.length || schema.some((s, i) => normalizeDDL(s.sql) !== normalizeDDL(storage.ddl[i]))
+    || !matchesMetadata(entry, storage.table) || props.length !== storage.properties.length
+    || storage.properties.some(({ sort: _sort, ...identity }) =>
+      // Sort is a seed default; users can change presentation order.
+      !matchesMetadata(props.find(p => p.id === identity.id), identity))) {
     return 'Saved-view schema or marker does not match saved-views/v1; operator review is required.';
   }
   return null;

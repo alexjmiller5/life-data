@@ -23,7 +23,7 @@ from life_data import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = json.loads((ROOT / "tests/fixtures/saved-views.json").read_text())
+MANIFEST = json.loads((ROOT / "core/schema/saved-views.json").read_text())
 
 
 @pytest.fixture()
@@ -72,11 +72,13 @@ finally { db.db.close(); }
     return json.loads(result.stdout)
 
 
-def test_fixture_is_exact_operator_schema_and_core_reads_it(db):
-    assert FIXTURE["ddl"] == table_ddl("views", ["name:text!", "tbl:ref!", "definition:json!"])
+def test_manifest_is_exact_operator_schema_and_core_reads_it(db):
+    assert MANIFEST["ddl"] == table_ddl("views", ["name:text!", "tbl:ref!", "definition:json!"])
     with connect(db) as conn:
+        table = dict(conn.execute("SELECT * FROM catalog_tables WHERE id='views'").fetchone())
+        assert {key: table[key] for key in MANIFEST["table"]} == MANIFEST["table"]
         props = {p["id"]: p for p in catalog.properties(conn, "views")}
-        for expected in FIXTURE["properties"]:
+        for expected in MANIFEST["properties"]:
             assert {key: props[expected["id"]][key] for key in expected} == expected
     result = client(db, "listViews", {"table": "items"})
     assert result["unavailable"] is None
