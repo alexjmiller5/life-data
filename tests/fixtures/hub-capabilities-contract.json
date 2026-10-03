@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sessions": [
+    {"scopes": ["full"], "capabilities": {"row_api":"v1","schema":"full-ddl-v1","replica_sync":true,"subscriptions":null,"files":"opaque-key-v1"}},
+    {"scopes": ["admin"], "capabilities": {"row_api":"v1","schema":"full-ddl-v1","replica_sync":true,"subscriptions":null,"files":"opaque-key-v1"}},
+    {"scopes": ["tables:read"], "capabilities": {"row_api":"v1","schema":"full-ddl-v1","replica_sync":false,"subscriptions":null,"files":"opaque-key-v1"}},
+    {"scopes": ["tables:read:articles","tables:write:captures","files:read:captures/"], "capabilities": {"row_api":"v1","schema":"none","replica_sync":false,"subscriptions":null,"files":"opaque-key-v1"}},
+    {"scopes": ["files:read:captures/"], "capabilities": {"row_api":"v1","schema":"none","replica_sync":false,"subscriptions":null,"files":"opaque-key-v1"}}
+  ],
+  "scoped_replica_unsupported": {
+    "status":403,
+    "body":{"error":"scoped_replica_unsupported","message":"This credential supports direct API access only; replica synchronization requires broader table access."}
+  }
+}

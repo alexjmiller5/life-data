@@ -230,7 +230,9 @@
                 "shape",
                 null
               ]
-            }
+            },
+            "schema": "full-ddl-v1",
+            "replica_sync": true
           }
         }
       },
@@ -255,7 +257,8 @@
             "full"
           ],
           "capabilities": {
-            "schema": "none"
+            "schema": "none",
+            "replica_sync": true
           }
         }
       },
@@ -283,7 +286,8 @@
             "full"
           ],
           "capabilities": {
-            "replica_sync": false
+            "replica_sync": false,
+            "schema": "full-ddl-v1"
           }
         }
       },
@@ -302,7 +306,7 @@
       }
     },
     {
-      "name": "recognized nonrestricting values",
+      "name": "unsupported schema version fails closed",
       "operation": "validateDeviceSession",
       "args": {
         "data": {
@@ -322,8 +326,11 @@
           "full"
         ],
         "replica": {
-          "allowed": true,
-          "reason": null
+          "allowed": false,
+          "reason": {
+            "code": "schema_unavailable",
+            "message": "This token does not allow replica schema access."
+          }
         }
       }
     },
@@ -451,7 +458,8 @@
               "full"
             ],
             "capabilities": {
-              "replica_sync": false
+              "replica_sync": false,
+              "schema": "full-ddl-v1"
             }
           }
         },
@@ -841,7 +849,8 @@
             "tables:read"
           ],
           "capabilities": {
-            "replica_sync": true
+            "replica_sync": true,
+            "schema": "full-ddl-v1"
           }
         }
       },
@@ -855,6 +864,88 @@
           "reason": {
             "code": "full_scope_required",
             "message": "Replica sync requires a full device token."
+          }
+        }
+      }
+    },
+    {
+      "name": "empty capabilities",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "consumer-fixture",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {}
+        }
+      },
+      "want": {
+        "name": "consumer-fixture",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "missing schema",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "consumer-fixture",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "replica_sync": true
+          }
+        }
+      },
+      "want": {
+        "name": "consumer-fixture",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
+          }
+        }
+      }
+    },
+    {
+      "name": "missing replica flag",
+      "operation": "validateDeviceSession",
+      "args": {
+        "data": {
+          "name": "consumer-fixture",
+          "scopes": [
+            "full"
+          ],
+          "capabilities": {
+            "schema": "full-ddl-v1"
+          }
+        }
+      },
+      "want": {
+        "name": "consumer-fixture",
+        "scopes": [
+          "full"
+        ],
+        "replica": {
+          "allowed": false,
+          "reason": {
+            "code": "invalid_capabilities",
+            "message": "The hub returned invalid replica capabilities."
           }
         }
       }

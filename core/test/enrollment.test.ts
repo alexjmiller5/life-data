@@ -55,7 +55,7 @@ test('malformed UTF16 label has URLSearchParams replacement semantics', () => {
 });
 
 test('session policy copies supported output and ignores unrelated future metadata', () => {
-  const value = { ...session, scopes: ['full'], secret: 'private-response', capabilities: { unrelated: true } };
+  const value = { ...session, scopes: ['full'], secret: 'private-response', capabilities: { schema: 'full-ddl-v1', replica_sync: true, unrelated: true } };
   const info = core.validateDeviceSession(value);
   value.scopes[0] = 'admin';
   expect(info).toEqual({ ...session, replica: { allowed: true, reason: null } });
@@ -128,7 +128,7 @@ test('real Worker approval/session/logout match core and late approval remains p
     });
     expect(approved.status).toBe(200);
     const reply = await requestSession('GET');
-    expect(reply.data).toEqual({ name: `device:${hash}`, scopes: ['full'] });
+    expect(reply.data).toEqual({ name: `device:${hash}`, scopes: ['full'], capabilities: { row_api: 'v1', schema: 'full-ddl-v1', replica_sync: true, subscriptions: null, files: 'opaque-key-v1' } });
     expect(core.enrollmentPollResult(reply, hash)).toMatchObject({ state: 'approved', session: { replica: { allowed: true, reason: null } } });
     const admin = await requestSession('GET', 'operator-fixture');
     expect(() => core.validateDeviceSession(admin.data)).toThrow(/admin tokens/);
@@ -139,4 +139,13 @@ test('real Worker approval/session/logout match core and late approval remains p
     });
     expect(revokedApproval.status).toBe(409);
   } finally { env.DB.db.close(); env.AUTH_DB.db.close(); }
+});
+
+test.each([{}, { unrelated: true }, { replica_sync: true }, { schema: 'full-ddl-v1' }, { replica_sync: true, schema: 'unknown-v2' }])('explicit incomplete/unsupported capabilities deny replicas %#', capabilities => {
+  expect(core.validateDeviceSession({ ...session, capabilities }).replica.allowed).toBe(false);
+});
+
+test('explicit full replica contract permits enrollment while legacy absent capabilities remain valid', () => {
+  expect(core.validateDeviceSession({ ...session, capabilities: { replica_sync: true, schema: 'full-ddl-v1' } }).replica.allowed).toBe(true);
+  expect(core.validateDeviceSession(session).replica.allowed).toBe(true);
 });

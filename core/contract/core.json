@@ -1781,6 +1781,94 @@
         "rejections",
         "nextOffset"
       ]
+    },
+    "HubCapabilities": {
+      "type": "object",
+      "properties": {
+        "row_api": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ]
+        },
+        "schema": {
+          "type": "string",
+          "enum": [
+            "none",
+            "full-ddl-v1"
+          ]
+        },
+        "replica_sync": {
+          "type": "boolean"
+        },
+        "subscriptions": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "durable-pull-v1"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "files": {
+          "type": "string",
+          "enum": [
+            "opaque-key-v1"
+          ]
+        }
+      },
+      "required": [
+        "row_api",
+        "schema",
+        "replica_sync",
+        "subscriptions",
+        "files"
+      ]
+    },
+    "HubSession": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/$defs/HubCapabilities"
+        }
+      },
+      "required": [
+        "name",
+        "scopes"
+      ],
+      "description": "Wire session identity. Absent capabilities are legacy only; explicit capabilities require schema full-ddl-v1 and replica_sync true before replica enrollment. Consumer enrollment still rejects admin credentials."
+    },
+    "ScopedReplicaUnsupported": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string",
+          "enum": [
+            "scoped_replica_unsupported"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error",
+        "message"
+      ],
+      "description": "HTTP 403. Canonical message and response fixture: tests/fixtures/hub-capabilities-contract.json."
     }
   },
   "operations": {

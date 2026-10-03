@@ -433,6 +433,15 @@ as a task and is a client-side change only.
 
 ## Hub service
 
+`GET /v1/session` includes explicit protocol capabilities and uses no-store.
+`tests/fixtures/hub-capabilities-contract.json` owns the response and the exact
+403 `scoped_replica_unsupported` error for credentials without broad schema
+access. Core enrollment requires advertised schema `full-ddl-v1` and
+`replica_sync: true`; only entirely absent capabilities use the legacy full-token
+default. Consumer enrollment still rejects operator/admin credentials. Capabilities
+never broaden route scopes. The generated contract includes the wire types.
+Subscriptions are advertised as null until durable pull routes are implemented.
+
 `authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth

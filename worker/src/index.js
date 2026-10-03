@@ -12,6 +12,7 @@ import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
 import { handleLogin, loginPath } from "./login.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -476,7 +477,11 @@ const json = (obj, status = 200) =>
   });
 
 async function handleSession(request, tenant) {
-  if (request.method === "GET") return json({ name: tenant.name, scopes: tenant.scopes });
+  if (request.method === "GET") {
+    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities: sessionCapabilities(tenant.scopes) });
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  }
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   if (tenant.admin) return json({ error: "admin token cannot self-revoke" }, 403);
   await ensureAuthReady(tenant.authDb);
@@ -778,6 +783,9 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant);
+  if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
+    return json(scopedReplicaUnsupported, 403);
+  }
   if (!allowed(url.pathname, request.method, tenant.scopes)) {
     return json({ error: "insufficient scope" }, 403);
   }
