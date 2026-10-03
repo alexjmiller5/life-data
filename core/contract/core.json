@@ -506,7 +506,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Tables skipped in the last successful core sync. Empty when no skip history is stored; not a coverage or freshness certificate."
+          "description": "Tables skipped in the last completed pull round, including rounds with rejected pushes. Empty when no skip history is stored; not a coverage or freshness certificate."
         }
       },
       "required": [

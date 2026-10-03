@@ -25,9 +25,11 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   checkpoint, or `null`. Counts are pending UI-written rows and rows in the
   rejection inbox. Pending UI edits await this core's own valid receipt even
   if Python has already pushed them; this is not the entire CLI sync queue.
-  `skippedTables` records the last successful round's exclusions in the existing
-  `_core_state.skipped_tables` JSON key, atomically with the timestamp. Failed
-  or rejected rounds preserve both. Missing history yields `[]`; malformed
+  `skippedTables` records the last completed pull round's exclusions in the
+  existing `_core_state.skipped_tables` JSON key, in the final ready transaction.
+  Rejected pushes still publish the completed pulls' exclusions, while the
+  successful-sync timestamp stays unchanged. HTTP or transaction failure
+  preserves both previous values. Missing history yields `[]`; malformed
   stored lists fail explicitly. Hosts read this list after reopen rather than
   writing their own copy. It is a warning about that round, not coverage or
   freshness proof, and an empty list does not certify a complete replica.

@@ -165,9 +165,8 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,marks.tables[table],COVERAGE_VERSION]);
     }
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','ready')");
-    if(!result.rejected.length) {
-      await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('last_sync',?),('skipped_tables',?)",[checkpoint,JSON.stringify(result.skipped)]);
-    }
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('skipped_tables',?)",[JSON.stringify(result.skipped)]);
+    if(!result.rejected.length) await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('last_sync',?)",[checkpoint]);
   });
   return result;
 }

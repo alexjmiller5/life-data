@@ -71,8 +71,9 @@ CLI.
   advancing each affected revision beyond its previous value and at least to
   database time so LWW and push discovery retain the rename under clock skew.
   Returned view columns are SQL projection: clients need full rows to edit.
-- `syncStatus` includes durable `skippedTables` from the last successful core
-  sync, stored with `last_sync` in the final transaction. Hosts consume this
+- `syncStatus` includes durable `skippedTables` from the last completed pull
+  round, stored in the final ready transaction even when pushes are rejected.
+  `last_sync` advances only without rejections. Hosts consume this
   warning after reopen; they do not persist exclusions or certify coverage.
   The existing `_core_state.skipped_tables` JSON key remains compatible.
 - `core/src/write.ts` shares table guards with advisory `writeability` and runs

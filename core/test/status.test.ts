@@ -171,7 +171,7 @@ test('acknowledging one table never clears another table marker with the same ro
   expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
 });
 
-test('last successful skipped tables survive reopening and clear after a complete backfill', async () => {
+test('last completed round skipped tables survive reopening and clear after a complete backfill', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'life-skips-'));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, 'replica.db');
@@ -187,13 +187,9 @@ test('last successful skipped tables survive reopening and clear after a complet
   expect((await core.syncStatus(db)).skippedTables).toEqual([]);
 });
 
-test.each(['schema', 'rows', 'commit', 'rejection'])('failed next %s round retains last successful skips and time', async failure => {
+test.each(['schema', 'rows', 'commit'])('failed next %s round retains previous skips and time', async failure => {
   const { db, hub, remote } = await replica();
   await core.sync(db, hub, { tables: { history: false } });
-  if (failure === 'rejection') {
-    await core.writeRow(db, 'items', { name: 'Pending' });
-    remote.db.query("UPDATE catalog_properties SET required=1,updated_at=?,hub_at=? WHERE col='qty'").run(T1, new Date().toISOString());
-  }
   const before = await core.syncStatus(db);
   const transport: Hub = { ...hub, async post(route, body) {
     if (failure === 'schema' && route === '/v1/schema/pull') throw new Error('schema offline');
@@ -208,8 +204,7 @@ test.each(['schema', 'rows', 'commit', 'rejection'])('failed next %s round retai
     return result;
   });
   const attempt = core.sync(db, transport);
-  if (failure === 'rejection') expect((await attempt).rejected.length).toBeGreaterThan(0);
-  else await expect(attempt).rejects.toThrow();
+  await expect(attempt).rejects.toThrow();
   const after = await core.syncStatus(db);
   expect(after.lastSuccessfulSync).toBe(before.lastSuccessfulSync);
   expect(after.skippedTables).toEqual(['history']);
@@ -230,4 +225,28 @@ test.each(['{bad', '{}', 'null', '[1]', '[""]', '["items","items"]'])('malformed
   await core.initCore(db);
   await db.run("INSERT INTO _core_state(key,value) VALUES ('skipped_tables',?)", [value]);
   await expect(core.syncStatus(db)).rejects.toThrow('Invalid saved skipped-table status');
+});
+
+test.each([false, true])('completed pulls publish changed skips despite a rejected push; prior success=%s', async previousSuccess => {
+  const fixture = setup();
+  const { db, remote, hub } = fixture;
+  cleanup.push(() => db.db.close(), () => remote.db.close());
+  for (const ddl of schema) await db.run(ddl);
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type,required) VALUES ('items.name','items','name','text',1),('items.qty','items','qty','int',0)");
+  // The hub already requires qty; a skipped initial pull must not make the UI
+  // marker disappear. The next round receives this rule and rejects the edit.
+  for (const [col, type] of [['name','text'],['qty','int']]) {
+    remote.db.query('INSERT INTO catalog_properties(id,tbl,col,type,required,updated_at,hub_at) VALUES (?,?,?,?,?,?,?)').run(`items.${col}`,'items',col,type,1,T0,T1);
+  }
+  if (previousSuccess) await core.sync(db, hub, { tables: { items: false } });
+  await db.run("UPDATE catalog_properties SET required=0 WHERE col='qty'");
+  await core.writeRow(db, 'items', { name: 'Missing qty' });
+  const before = await core.syncStatus(db);
+  const result = await core.sync(db, hub, { tables: { history: false } });
+  expect(result.rejected.length).toBeGreaterThan(0);
+  expect(result.skipped).toEqual(['history']);
+  const after = await core.syncStatus(db);
+  expect(after.lastSuccessfulSync).toBe(before.lastSuccessfulSync);
+  expect(after.skippedTables).toEqual(['history']);
+  expect(await db.all("SELECT value FROM _core_state WHERE key='skipped_tables'")).toEqual([{ value: '["history"]' }]);
 });
