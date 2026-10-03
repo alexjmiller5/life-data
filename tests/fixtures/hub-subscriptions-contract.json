@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "protocol": "durable-pull-v1",
+  "limits": {"wait_seconds":30,"check_interval_seconds":1,"events_per_delivery":100,"delivery_bytes":1048576,"default_pending_events":100000,"default_pending_bytes":268435456},
+  "create": {"label":"Capture fixture","sources":[{"table":"articles","columns":["url"]}],"start":"now"},
+  "empty": {"subscription_id":"11111111-1111-4111-8111-111111111111","delivery_id":null,"through_seq":"0","events":[]},
+  "event": {
+    "id":"22222222222242228222222222222222","seq":"42","operation":"update","recorded_at":"2026-10-03T00:00:00.000Z",
+    "source":{"table":"articles","row_id":"row-fixture","before_revision":{"updated_at":"2026-10-02T00:00:00.000Z","hub_at":null},"after_revision":{"updated_at":"2026-10-03T00:00:00.000Z","hub_at":"2026-10-03T00:00:00.000Z"}},
+    "changes":[{"column":"url","old_value":"https://example.test/a","new_value":"https://example.test/b"}]
+  },
+  "ack_request":{"delivery_id":"33333333-3333-4333-8333-333333333333"},
+  "ack_response":{"acked_seq":"42"},
+  "scope_denial":{"status":403,"body":{"error":"insufficient scope"}},
+  "ack_conflict":{"status":409,"body":{"error":"delivery_conflict"}},
+  "schema_conflict":{"status":409,"body":{"error":"subscription_schema_conflict","message":"Retire affected subscriptions before changing watched schema."}}
+}

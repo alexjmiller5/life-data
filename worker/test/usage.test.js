@@ -426,3 +426,21 @@ test("a restricted token's cap error carries no deployment usage numbers", async
   expect(JSON.stringify(body)).not.toMatch(/1234|1\.2K|\b7\b/);
   expect(Number(res.headers.get("Retry-After"))).toBe(body.retry_after);
 });
+
+
+test("subscription consumption, ACK and admin routes stay capped without leaking totals", async () => {
+  const env = environment({USAGE_LIMITS:JSON.stringify({d1_rows_read:{cap:1}}),CORS_ORIGINS:"https://client.test"});
+  await seedUsage(env,{rows_read:5});
+  const token=await addToken(env,"narrow-capture","subscriptions:consume:11111111-1111-4111-8111-111111111111,tables:read:articles");
+  const path="/v1/subscriptions/11111111-1111-4111-8111-111111111111";
+  for(const [target,method,body] of [[path+"/events?wait=0","GET"],[path+"/ack","POST",{delivery_id:"unknown"}],[path,"PATCH",{state:"paused"}],["/v1/subscriptions","GET"]]) {
+    const response=await call(env,target,{token,method,body});
+    expect(response.status).toBe(429);sameShape(await response.json(),contract.cap_error_restricted);
+    expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect((await call(env,target,{method,body})).status).toBe(429);
+  }
+  expect((await call(env,"/v1/session",{token})).status).toBe(200);
+  const response=await worker.fetch(new Request(`https://hub.test${path}`,{method:"OPTIONS",headers:{Origin:"https://client.test","Access-Control-Request-Method":"PATCH"}}),env,context());
+  expect(response.status).toBe(204);
+  expect(response.headers.get("Access-Control-Allow-Methods")).toContain("PATCH");
+});
