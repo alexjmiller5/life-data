@@ -12,7 +12,7 @@ import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
 import { handleLogin, loginPath } from "./login.js";
-import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities } from "./scopes.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -337,22 +337,22 @@ const ROUTES = {
     return { rows, next_cursor };
   },
 
-  "/v1/rows/push": async (body, db, env, ctx) => {
+  "/v1/rows/push": async (body, db, env, ctx, policy) => {
     const table = ident(body.table); // before any SQL is built from it
     const columns = body.columns.map(ident);
     // The same sparse payload must reach validation and SQL: unlisted keys
     // are not writes, and an omitted listed key is not an explicit NULL.
-    const purged = await purgeIndex(db);
+    const purged = policy ? new Map() : await purgeIndex(db);
     const rows = uncovered(purged, table, (body.rows ?? []).map((row) => Object.fromEntries(
       columns.filter((col) => Object.hasOwn(row, col)).map((col) => [col, row[col]])
     )));
     const stamping = await hasHubAt(db, table);
     const { accepted, rejected } = await pushChecked(db, table,
       rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, stamping,
-      uncovered(purged, "history", body.history ?? []));
+      uncovered(purged, "history", body.history ?? []), false, policy);
     // The hub logs its own event for an accepted edit; a marker that covers
     // the row removes it again, old value included.
-    if (table !== PURGES && accepted.length) {
+    if (!policy && table !== PURGES && accepted.length) {
       await applyPurges(db, markersFor(purged, table, accepted.map((row) => row.id)));
     }
     if (table === PURGES && accepted.length) {
@@ -371,7 +371,7 @@ const ROUTES = {
     })));
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
-    if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db, 200), env, table, accepted)));
+    if (!policy && accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db, 200), env, table, accepted)));
     // Report stored arrivals, never a timestamp captured before the write.
     // This diagnostic is not a pull checkpoint (another write may follow).
     const hubAt = stamping && accepted.length
@@ -380,7 +380,7 @@ const ROUTES = {
     return { upserted: accepted.length, rejected, hub_at: hubAt };
   },
 
-  "/v1/rows/insert": async (body, db, env, ctx) => {
+  "/v1/rows/insert": async (body, db, env, ctx, policy) => {
     if (!body || Object.hasOwn(body, "history")) return json({error:"history attachments are not supported by rows/insert"},400);
     if (!Array.isArray(body.columns) || !body.columns.includes("id") || !Array.isArray(body.rows)) {
       return json({error:"rows/insert requires columns including id and a rows list"},400);
@@ -392,8 +392,8 @@ const ROUTES = {
     const table = ident(body.table), columns = body.columns.map(ident);
     const rows = body.rows.map(row=>Object.fromEntries(columns.filter(col=>Object.hasOwn(row,col)).map(col=>[col,row[col]])));
     const stamping = await hasHubAt(db,table);
-    const out = await pushChecked(db,table,rows,(t,c,s)=>upsertSql(t,c,s,true),stamping,[],true);
-    if (out.accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db,200),env,table,out.accepted)));
+    const out = await pushChecked(db,table,rows,(t,c,s)=>upsertSql(t,c,s,true),stamping,[],true,policy);
+    if (!policy && out.accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db,200),env,table,out.accepted)));
     return {inserted:out.accepted.map(row=>row.id),existing:out.existing ?? [],rejected:out.rejected};
   },
 
@@ -786,11 +786,27 @@ async function handle(request, env, ctx, url) {
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
     return json(scopedReplicaUnsupported, 403);
   }
-  if (!allowed(url.pathname, request.method, tenant.scopes)) {
+  const rowOperation = request.method === "POST"
+    ? ({"/v1/rows/pull":"read","/v1/rows/push":"write","/v1/rows/insert":"write"})[url.pathname] : null;
+  const narrowRows = rowOperation && !broadTableAccess(tenant.scopes,rowOperation);
+  if (!narrowRows && !allowed(url.pathname, request.method, tenant.scopes)) {
     return json({ error: "insufficient scope" }, 403);
   }
 
   try {
+    if (narrowRows) {
+      const body = await request.json();
+      if (!body || !authorizeTable(tenant.scopes,rowOperation,body.table) || Object.hasOwn(body,"history")) {
+        return json({error:"insufficient scope"},403);
+      }
+      if (rowOperation === "read") {
+        const out = await scopedRows(body,tenant.db);
+        return out instanceof Response ? out : json(out);
+      }
+      await scopedTable(tenant.db,body.table,true);
+      const out = await ROUTES[url.pathname](body,tenant.db,env,ctx,scopedTable);
+      return out instanceof Response ? out : json(scopedResult(out));
+    }
     if (url.pathname.startsWith("/v1/files/")) {
       if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
       if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
@@ -856,6 +872,8 @@ async function handle(request, env, ctx, url) {
     const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {
+    if (e instanceof ScopeDenied) return json({error:"insufficient scope"},403);
+    if (narrowRows) return json({error:"row request failed"},400);
     return json({ error: String(e) }, 500);
   }
 }

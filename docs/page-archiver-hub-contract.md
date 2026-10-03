@@ -33,6 +33,9 @@ history and outbox machinery may run implicitly. Guard policy/schema/catalog rea
 in the same transaction as mutation to prevent concurrent policy changes. Validate
 catalog references server-side; errors contain no denied values or SQL. Mutations
 must not gain cross-table effects through foreign keys or history triggers.
+Tables with active purge markers are ineligible for narrow writes: the existing
+broad recovery path performs post-commit effects. Narrow policy guards marker
+absence transactionally and never executes that recovery path.
 
 Admin creates subscriptions with {label,sources:[{table,columns}],start:"now"}.
 IDs are opaque. Selectors are immutable. States active/paused/retired mean deliver

@@ -442,6 +442,18 @@ default. Consumer enrollment still rejects operator/admin credentials. Capabilit
 never broaden route scopes. The generated contract includes the wire types.
 Subscriptions are advertised as null until durable pull routes are implemented.
 
+Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
+body.table before data access. Narrow consumers use bounded direct rows APIs;
+global schema/catalog/cursor/stats/history/provenance/internal/view/SQL routes stay
+denied. File grants remain independent. Narrow writes require a catalogued base
+table with safe defaults and no generated expressions, arbitrary triggers,
+derivations, enforced SQL rules or physical foreign keys. Eligibility reads join
+the mutation's checked transaction; concurrent policy changes roll back. Active
+purge markers make a table ineligible for narrow writes, which skip broad
+post-commit purge recovery. Validation errors are generic; internal references
+are still checked server-side. The exact timestamp trigger is trusted by its SQL,
+not its name. Broad callers retain their existing behavior.
+
 `authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth
