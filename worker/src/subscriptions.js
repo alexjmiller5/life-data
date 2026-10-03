@@ -84,3 +84,87 @@ export async function applySubscriptionSchema(db,ddl) {
     throw error;
   }
 }
+
+export { pollEvents } from './subscription-delivery.js';
+import { pollEvents, acknowledgeSubscription, loadSubscription, subscriptionAdmin, subscriptionStatus, subscriptionSelect, subscriptionReply, SubscriptionError } from './subscription-delivery.js';
+import { ScopeDenied } from './scopes.js';
+
+async function boundedJson(request,maximum=1_048_576) {
+  const reader=request.body?.getReader();if(!reader) throw new SubscriptionError(400,'invalid_request');
+  const parts=[];let bytes=0;
+  try {
+    for(;;) {
+      const {value,done}=await reader.read();if(done) break;
+      bytes+=value.byteLength;if(bytes>maximum) throw new SubscriptionError(413,'request_too_large');
+      parts.push(value);
+    }
+    const body=new Uint8Array(bytes);let offset=0;
+    for(const part of parts){body.set(part,offset);offset+=part.byteLength;}
+    try{return JSON.parse(new TextDecoder().decode(body));}catch{throw new SubscriptionError(400,'invalid_request');}
+  } finally {await reader.cancel().catch(()=>{});}
+}
+
+export async function handleSubscription(request,tenant) {
+  try {
+    const url=new URL(request.url),match=/^\/v1\/subscriptions(?:\/([0-9a-f-]{36})(?:\/(events|ack))?)?$/.exec(url.pathname);
+    if(!match) throw new ScopeDenied('insufficient scope');
+    const [,id,action]=match;
+    if(!id) {
+      if(!subscriptionAdmin(tenant)) throw new ScopeDenied('insufficient scope');
+      if(request.method==='POST') {
+        const body=await boundedJson(request);
+        let created;
+        try{created=await createSubscription(tenant.db,body);}catch(error){
+          if(error instanceof ScopeDenied || String(error).includes('invalid subscription')) throw new SubscriptionError(400,'invalid_subscription');
+          throw error;
+        }
+        return subscriptionReply(created,201);
+      }
+      if(request.method==='GET') {
+        await ensureSubscriptions(tenant.db);
+        const after=url.searchParams.get('after') ?? '';
+        const {results}=await tenant.db.prepare(`${subscriptionSelect} WHERE id>? ORDER BY id LIMIT 100`).bind(after).all();
+        return subscriptionReply({subscriptions:results.map(subscriptionStatus),next_cursor:results.length===100?results.at(-1).id:null});
+      }
+      throw new SubscriptionError(405,'method_not_allowed');
+    }
+    if(action==='events' && request.method==='GET') {
+      await loadSubscription(tenant,id);
+      const wait=url.searchParams.get('wait') ?? '30';
+      if(url.searchParams.getAll('wait').length>1 || !/^\d+$/.test(wait) || Number(wait)>30) throw new SubscriptionError(400,'invalid_wait');
+      return await pollEvents(tenant,id,Number(wait),{signal:request.signal});
+    }
+    if(action==='ack' && request.method==='POST') {
+      await loadSubscription(tenant,id);
+      return await acknowledgeSubscription(tenant,id,await boundedJson(request,4096));
+    }
+    const sub=await loadSubscription(tenant,id);
+    if(!action && request.method==='GET') return subscriptionReply(subscriptionStatus(sub));
+    if(!action && request.method==='PATCH') {
+      if(!subscriptionAdmin(tenant)) throw new ScopeDenied('insufficient scope');
+      const body=await boundedJson(request,4096);
+      if(!body || Object.keys(body).length!==1 || !['active','paused','retired'].includes(body.state)) throw new SubscriptionError(400,'invalid_subscription_state');
+      const drops=[];
+      if(body.state==='retired') {
+        const row=await tenant.db.prepare('SELECT trigger_sources_json FROM _change_subscriptions WHERE id=?').bind(id).first();
+        for(const trigger of subscriptionTriggers(id,JSON.parse(row.trigger_sources_json))) drops.push(tenant.db.prepare(`DROP TRIGGER IF EXISTS "${trigger.name}"`));
+      }
+      try {
+        const result=await tenant.db.batch([
+          tenant.db.prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM _change_subscriptions WHERE id=? AND (state!='retired' OR ?='retired')) THEN 1 ELSE abs(-9223372036854775808) END").bind(id,body.state),
+          tenant.db.prepare('UPDATE _change_subscriptions SET state=? WHERE id=?').bind(body.state,id),...drops,
+          tenant.db.prepare(`${subscriptionSelect} WHERE id=?`).bind(id),
+        ]);
+        return subscriptionReply(subscriptionStatus(result.at(-1).results[0]));
+      } catch(error) {
+        if(String(error).includes('integer overflow')) throw new SubscriptionError(409,'subscription_retired');
+        throw error;
+      }
+    }
+    throw new SubscriptionError(405,'method_not_allowed');
+  } catch(error) {
+    if(error instanceof ScopeDenied) return subscriptionReply({error:'insufficient scope'},403);
+    if(error instanceof SubscriptionError) return subscriptionReply({error:error.code},error.status);
+    return subscriptionReply({error:'subscription_unavailable'},500);
+  }
+}

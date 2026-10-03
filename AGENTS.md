@@ -652,5 +652,8 @@ Capacity and per-event size failures roll back the source mutation. Canonical
 shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
 Schema replay transactionally preserves active watched table definitions and trigger
 SQL; retire affected subscriptions before structural changes. Private operational
-DDL never enters the replica schema log or catalog. Delivery routes are a separate
-capability, advertised only when implemented.
+DDL never enters the replica schema log or catalog. `durable-pull-v1` delivers persisted offered batches through capped long polls
+and explicit ACK receipts. Consumers need the subscription grant plus read access
+to every source. Live auth is rechecked before release; GET never advances ACK.
+Empty retired subscriptions honor the requested wait. Admin selects immutable
+sources at creation and can pause/resume or permanently retire recording.

@@ -13,7 +13,7 @@ use an explicit configured schema. Files remain independently prefix-authorized.
 
 GET /v1/session retains name/scopes and adds capabilities: row_api `v1`, schema
 `full-ddl-v1` or `none`, replica_sync boolean, files `opaque-key-v1`, and
-subscriptions `durable-pull-v1` once those routes exist (null beforehand).
+subscriptions `durable-pull-v1`.
 Only broad read access supports full schema; full/admin support replica writes.
 Narrow schema/replica requests return status 403 with exactly:
 
@@ -54,6 +54,7 @@ GET /v1/subscriptions/<id>/events?wait=30 holds at most 30 seconds, checks once 
 second, returns at most 100 events and 1 MiB. Persist delivery_id and through_seq
 before offering a nonempty batch. Until ACK, return the identical batch. Empty
 responses have null delivery_id, current acked_seq as through_seq, and events [].
+Paused and drained retired subscriptions honor the same wait on empty responses.
 GET never advances ACK. Recheck live token status and source grants immediately
 before releasing private data, separately from memoized authenticate.
 

@@ -12,7 +12,7 @@ import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
 import { handleLogin, loginPath } from "./login.js";
-import { applySubscriptionSchema } from "./subscriptions.js";
+import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
@@ -744,7 +744,7 @@ function preflight(request, env) {
   return withCors(new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT",
+      "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH",
       "Access-Control-Allow-Headers": "Authorization, Content-Type, If-None-Match, Range",
       "Access-Control-Max-Age": "86400",
     },
@@ -785,6 +785,7 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant);
+  if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
     return json(scopedReplicaUnsupported, 403);
   }
