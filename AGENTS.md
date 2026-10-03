@@ -639,3 +639,18 @@ profile snapshots through its scoped file token; Music Sync retains raw
 Spotify pulls through its scoped file token. They depend on this supported
 service contract only. Each consumer's operational recovery state stays in
 its own store; Life Data storage credentials never leave this service.
+
+## Durable change recording
+
+`worker/src/subscriptions.js` owns private `_change_subscriptions` and
+`_change_events` state. Activation installs exact per-source triggers atomically;
+`subscription-triggers.js` generates and recognizes their SQL. Selected actual
+OLD/NEW values, source revisions and per-subscription sequences commit with each
+mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
+writes create no event. Paused subscriptions keep recording; retired ones stop.
+Capacity and per-event size failures roll back the source mutation. Canonical
+shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
+Schema replay transactionally preserves active watched table definitions and trigger
+SQL; retire affected subscriptions before structural changes. Private operational
+DDL never enters the replica schema log or catalog. Delivery routes are a separate
+capability, advertised only when implemented.

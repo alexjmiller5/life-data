@@ -19,6 +19,7 @@ export function sessionCapabilities(scopes) {
 }
 
 import { qident } from './validate.js';
+import { trustedSubscriptionTrigger } from './subscription-triggers.js';
 import { checkedReads, readGuards } from './write.js';
 
 export class ScopeDenied extends Error {}
@@ -66,7 +67,7 @@ export async function scopedTable(view, table, write=false) {
   }
   if (columns.some(c=>!safeDefault(c.dflt_value))) deny();
   const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN (?, 'history', 'provenance') ORDER BY name").bind(table).all();
-  if (triggers.some(t=>!timestampTrigger(t))) deny();
+  for (const trigger of triggers) if (!timestampTrigger(trigger) && !await trustedSubscriptionTrigger(view,trigger)) deny();
   const {results:foreignKeys}=await view.prepare("SELECT m.name,f.id,f.seq FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f WHERE m.type='table' AND m.name NOT LIKE '_cf_%' ORDER BY m.name,f.id,f.seq").all();
   if (foreignKeys.length) deny();
   if (!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_properties'").first()) deny();

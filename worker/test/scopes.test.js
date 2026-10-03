@@ -173,3 +173,15 @@ test('narrow writes refuse a table with active purge recovery instead of running
   expect(response.status).toBe(403);
   expect(await response.json()).toEqual({error:'insufficient scope'});
 });
+
+test('narrow writes allow exact subscription triggers but reject a forged replacement',async()=>{
+  const {createSubscription}=await import('../src/subscriptions.js');
+  const db=rowDb();await createSubscription(db,{label:'Fixture',sources:[{table:'articles',columns:['url']}],start:'now'});
+  const {call}=await setup(['tables:write:articles'],db);
+  expect((await (await call('/v1/rows/insert','POST',insert())).json()).inserted).toEqual(['b']);
+  expect(db.db.query('SELECT count(*) AS n FROM _change_events').get().n).toBe(1);
+  const {name}=db.db.query("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '%_insert'").get();
+  db.db.exec(`DROP TRIGGER "${name}"; CREATE TRIGGER "${name}" AFTER INSERT ON articles BEGIN UPDATE secrets SET value=NEW.url; END`);
+  expect((await call('/v1/rows/insert','POST',insert())).status).toBe(403);
+  expect(db.db.query('SELECT value FROM secrets').get().value).toBe('denied-value');
+});

@@ -229,6 +229,13 @@ async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe,
     }
     return {accepted,rejected};
   } catch (e) {
+    const outbox = /life_outbox_(capacity|event_size)/.exec(String(e));
+    if (outbox) {
+      const retryable = outbox[1] === 'capacity';
+      throw Object.assign(e,{accepted,rejected,existing,failure:{col:null,
+        rule:retryable?'outbox-capacity':'outbox-event-size',retryable,
+        message:retryable?'Change outbox capacity reached; drain pending events and retry.':'Change event exceeds the durable delivery size limit.'}});
+    }
     if (!/life_invariant_|life_property_|life_write_conflict|integer overflow/.test(String(e))) throw e;
     const property=/life_property_(\d+)_(ref|options)/.exec(String(e));
     const index=/life_invariant_(\d+)/.exec(String(e));

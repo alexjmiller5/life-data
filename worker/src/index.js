@@ -12,6 +12,7 @@ import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
 import { handleLogin, loginPath } from "./login.js";
+import { applySubscriptionSchema } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
@@ -261,8 +262,9 @@ const ROUTES = {
     for (const entry of body.entries ?? []) {
       if (known.has(entry.ddl)) continue;
       try {
-        await db.prepare(entry.ddl).run();
+        await applySubscriptionSchema(db,entry.ddl);
       } catch (e) {
+        if (e.code === 'subscription-schema-conflict') return json({error:'subscription_schema_conflict',message:'Retire affected subscriptions before changing watched schema.'},409);
         const msg = String(e).toLowerCase();
         // replay is idempotent-by-skip for DDL the hub already has: a CREATE that
         // exists, an ADD of a column it has, a RENAME of a column already gone, a

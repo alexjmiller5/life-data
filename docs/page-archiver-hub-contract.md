@@ -76,3 +76,12 @@ Captures use opaque keys; successful and failed attempt metadata stay separate.
 A shared captures table/prefix requires an explicit combined-source grant; future
 restricted viewers need row and file source policy. PNG is the default preview;
 HTML viewers remain a separate future feature.
+
+Subscription capacity defaults to 100,000 pending events and 256 MiB of conservative
+encoded-event accounting. Admin creation may set max_pending_events (1..1,000,000)
+and max_pending_bytes (4096..1 GiB). A single event must leave 4096 bytes within the
+1 MiB delivery envelope. No automatic expiry frees capacity. Schema replay guards
+active/paused watched table definitions and exact recording trigger SQL in its D1
+transaction; structural changes require retiring affected subscriptions first.
+Unrelated schema changes remain available. Subscription retirement does not discard
+pending events.
