@@ -344,6 +344,32 @@
       "expected": null
     },
     {
+      "name": "sync bookkeeping",
+      "statements": [
+        {
+          "sql": "SELECT value FROM _sync_state"
+        }
+      ],
+      "setup": [
+        "DROP TABLE IF EXISTS main._sync_state",
+        "CREATE TABLE main._sync_state(key TEXT PRIMARY KEY,value TEXT)"
+      ],
+      "expected": null
+    },
+    {
+      "name": "schema bookkeeping",
+      "statements": [
+        {
+          "sql": "SELECT ddl FROM _schema_log"
+        }
+      ],
+      "setup": [
+        "DROP TABLE IF EXISTS main._schema_log",
+        "CREATE TABLE main._schema_log(id INTEGER PRIMARY KEY,ddl TEXT)"
+      ],
+      "expected": null
+    },
+    {
       "name": "missing owned snapshot",
       "statements": [
         {
