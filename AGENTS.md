@@ -70,6 +70,8 @@ CLI.
   driver transaction. Cache DDL never enters `_schema_log`. `View.search`
   uses literal word prefixes; `contains` retains substring semantics. Raw
   Markdown is indexed, with conservative plain-text display cleanup only.
+  Results list read-only system tables (`isReadOnlyTable`) after user tables,
+  then order by relevance.
 - `core/src/remote.ts` provides transient read-only `remoteRows`/`remoteRow`
   operations through the existing paginated rows/pull API, one request each.
   Durable endpoint binding and known local table schema are checked before
