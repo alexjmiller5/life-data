@@ -473,8 +473,9 @@ in device-only Keychain, browser credentials stay session-only, and operator or
 another client's credentials are never copied into enrollment.
 
 `SessionReply` is `{ status: number, data: JSONValue, retryAfterSeconds?: number }`.
-The host supplies the actual HTTP status, bounded parsed JSON on 200, and `null`
-on non-success. Never parse an error string to recover status. The host transport
+The host supplies the actual HTTP status and bounded parsed JSON on 200. For
+non-success replies, policy ignores the body; hosts may supply `null`. Never
+parse an error string to recover status. The host transport
 uses the fixed session route, refuses redirects/cookies, enforces the response
 byte bound, and sanitizes network/body parsing failures. Core's existing Hub HTTP
 transport is unchanged; it does not yet expose this session envelope.
@@ -503,7 +504,10 @@ core never reads a clock or parses an HTTP date. Malformed HTTP Retry-After
 headers should be omitted by the host. Hosts use a monotonic five-minute deadline,
 cap waits to remaining time **before** converting units, and never issue another
 poll or accept approval after timeout/cancellation/attempt replacement. Network
-failures and malformed 200 replies are errors, not implicit approval or retries.
+failures are host transport errors; malformed 200 replies are policy errors.
+Core does not retry either. Hosts may explicitly retry transient network failures
+at the policy interval within the original deadline; malformed replies fail the
+attempt. Neither error can imply approval.
 
 Session POST confirms `revoked` only for 200 with `logged_out: true`. A 401 returns
 `unauthorized`: the existing hub cannot invalidate an unregistered, non-expiring
