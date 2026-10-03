@@ -260,6 +260,20 @@ CLI.
   originals receive the dedup guarantee; old or uninventoryed replicas can
   duplicate aggregate/original history until upgraded. Never infer away or
   delete original events, add client registries/gates, or require new endpoints.
+  The one exception is a purge marker (below).
+- **`purges` is the only hard delete.** `life purge <tbl> <id> [--col c]` writes
+  a content-free marker (id `json([tbl, row_id, col])`, `purged_at`) and
+  deletes, wherever a marker is applied, the row, its history and its
+  provenance edges (col NULL) or that column's history - only what is stamped
+  at or before `purged_at`. Markers travel through ordinary rows/push and
+  pull: the hub applies them on push (`worker/src/purge.js`, mirrored by
+  `apply_purges` in `__init__.py`), replicas pull `purges` before any other
+  table and apply it, and both drop covered copies from pushes (rows,
+  `history` rows and attachments) without rejecting them, since a rejection
+  would pin an old replica's cursor. Inserts are not filtered. Purging again
+  moves `purged_at` forward to cover a re-import. Only `life purge` writes
+  `purges`; engine tables are never purge targets. Keep both implementations
+  in step.
 - **A soft-deleted row is never validated** (its cells are history, not a
   claim), but its cell changes are still logged.
 - **`rename_table` is the only table rename.** `execute_sql` refuses

@@ -121,6 +121,22 @@ soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate. A
 hard `DELETE` does not. Schema changes replay from `_schema_log`, so a new
 device pulls tables and rows with `life init` followed by `life sync`.
 
+When content must disappear rather than be marked deleted (a soft-deleted
+row and the `history` table both keep the old text), use `life purge`:
+
+```bash
+life purge notes 3f2a...                 # the row, its history and provenance edges
+life sql "UPDATE notes SET body = '[redacted]' WHERE id = '3f2a...'"
+life purge notes 3f2a... --col body      # only the old values of one column
+```
+
+A purge writes a marker to the `purges` table naming the table, row and
+column, never the content. The marker syncs like a row: the hub and every
+replica delete what it covers, and the hub silently drops copies stamped at
+or before the marker that an out-of-date device pushes later. A copy written
+after the marker (a re-import from the source) is new data and is kept;
+purge again to remove it. Hub backups keep old copies until they expire.
+
 Only one sync round runs per database, including manual and background calls.
 The push checkpoint uses the local clock captured with a consistent snapshot;
 it never advances from a remote row's future revision. The hub stamps arrivals

@@ -376,6 +376,119 @@ def _insert_payload(table: str, columns: list[str], rows: list[dict], history=No
     return [{col: row[col] for col in columns if col in row} for row in rows]
 
 
+# --- purge ---------------------------------------------------------------------
+# The one sanctioned hard delete. A marker row in `purges` names a row (col
+# NULL) or one column's history, never its content, and syncs like any row.
+# The hub and every replica that holds a marker delete what it covers, stamped
+# at or before `purged_at`, and refuse to take such copies back. A copy written
+# after the marker (a source re-import) is new data and passes.
+PURGES = "purges"
+PURGE_COLUMNS = ["tbl:text", "row_id:text", "col:text", "purged_at:text"]
+
+
+def _purge_index(conn: sqlite3.Connection) -> dict[tuple, list[tuple]]:
+    if not catalog._table_exists(conn, PURGES):
+        return {}
+    index: dict[tuple, list[tuple]] = {}
+    for m in conn.execute(
+        f"SELECT tbl, row_id, col, purged_at FROM {PURGES} WHERE deleted_at IS NULL"
+    ):
+        index.setdefault((m["tbl"], m["row_id"]), []).append((m["col"], m["purged_at"]))
+    return index
+
+
+def _covers_row(index: dict, table: str, row: dict) -> bool:
+    return any(
+        col is None and (row.get("updated_at") or "") <= at
+        for col, at in index.get((table, row.get("id")), [])
+    )
+
+
+def _covers_event(index: dict, event: dict) -> bool:
+    return any(
+        (col is None or col == event.get("col")) and (event.get("created_at") or "") <= at
+        for col, at in index.get((event.get("tbl"), event.get("row_id")), [])
+    )
+
+
+def _uncovered(index: dict, table: str, rows: list[dict]) -> list[dict]:
+    if not index or table == PURGES:
+        return rows
+    if table == "history":
+        return [e for e in rows if not _covers_event(index, e)]
+    return [r for r in rows if not _covers_row(index, table, r)]
+
+
+def apply_purges(conn: sqlite3.Connection, markers: list[dict]) -> None:
+    """Hard-delete what each live marker covers, on whatever database `conn` is."""
+    exists = lambda t: catalog._table_exists(conn, t)
+    for m in markers:
+        if m.get("deleted_at"):
+            continue
+        tbl, rid, col, at = m["tbl"], m["row_id"], m.get("col"), m["purged_at"]
+        if col is None:
+            if exists(tbl):
+                conn.execute(f"DELETE FROM {qi(tbl)} WHERE id = ? AND updated_at <= ?", (rid, at))
+            if exists("provenance"):
+                conn.execute(
+                    "DELETE FROM provenance WHERE updated_at <= ? AND "
+                    "((to_kind = ? AND to_ref = ?) OR (from_kind = ? AND from_ref = ?))",
+                    (at, tbl, rid, tbl, rid),
+                )
+        if exists("history"):
+            conn.execute(
+                "DELETE FROM history WHERE tbl = ? AND row_id = ? AND created_at <= ?"
+                + ("" if col is None else " AND col = ?"),
+                (tbl, rid, at) if col is None else (tbl, rid, at, col),
+            )
+
+
+def purge(path: Path, table: str, row_id: str, cols: list[str] | None = None) -> dict:
+    """Remove a row, or its listed columns' history, here and - through sync -
+    on the hub and every replica. Redact a column's live value with a normal
+    write first; this removes the trail of old values."""
+    if table.startswith(("_", "sqlite_")) or table in catalog.CATALOG_TABLES or table == PURGES:
+        raise ValueError(f"{table} is an engine table")
+    qi(table)
+    with connect(path) as conn:
+        if not catalog._table_exists(conn, table):
+            raise ValueError(f"no such table: {table}")
+        names = {r["name"] for r in conn.execute(f"PRAGMA table_info({qi(table)})")}
+        missing = [c for c in cols or [] if c not in names]
+        if missing:
+            raise ValueError(f"no such column: {table}.{missing[0]}")
+        has_purges = catalog._table_exists(conn, PURGES)
+    if not has_purges:
+        create_table(path, PURGES, PURGE_COLUMNS)  # logged DDL: replays everywhere
+        catalog.set_table(
+            path,
+            PURGES,
+            purpose="Purge markers: each names a row (col empty) or one column's history "
+            "that the hub and every replica hard-delete, never the content itself.",
+            id_semantics="JSON array [table, row_id, col]; purging again updates purged_at.",
+            owner="life purge",
+        )
+    written = 0
+    with connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        now = conn.execute(f"SELECT {NOW}").fetchone()[0]
+        for col in cols or [None]:
+            mid = json.dumps([table, row_id, col])
+            # Purging again moves the marker's time forward, so a copy re-imported
+            # since the last purge is covered too.
+            conn.execute(
+                f"INSERT INTO {PURGES} (id, tbl, row_id, col, purged_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET purged_at = excluded.purged_at, deleted_at = NULL",
+                (mid, table, row_id, col, now),
+            )
+            written += 1
+        markers = conn.execute(
+            f"SELECT * FROM {PURGES} WHERE tbl = ? AND row_id = ?", (table, row_id)
+        ).fetchall()
+        apply_purges(conn, [dict(m) for m in markers])
+    return {"markers": written}
+
+
 class LocalHub:
     """Hub backed by a local SQLite file — used by tests and by the Worker's own logic."""
 
@@ -446,6 +559,13 @@ class LocalHub:
         rejected, accepted, existing = [], [], []
         with connect(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            # Pushed copies a marker covers are dropped silently: a rejection
+            # would pin an un-upgraded replica's push cursor forever. Inserts
+            # account for every submitted id and carry new data, so pass.
+            if not insert_only:
+                purged = _purge_index(conn)
+                rows = _uncovered(purged, table, rows)
+                history = _uncovered(purged, "history", history or [])
             stamping = any(
                 r["name"] == "hub_at" for r in conn.execute(f"PRAGMA main.table_info({qi(table)})")
             )
@@ -604,6 +724,17 @@ class LocalHub:
                 finally:
                     if conn.in_transaction:
                         conn.execute("RELEASE pushed_row")
+            if table == PURGES and accepted:
+                apply_purges(
+                    conn,
+                    [
+                        dict(m)
+                        for m in conn.execute(
+                            f"SELECT * FROM {PURGES} WHERE id IN (SELECT value FROM json_each(?))",
+                            (json.dumps([r["id"] for r in accepted]),),
+                        )
+                    ],
+                )
         if insert_only:
             return {
                 "inserted": [r["id"] for r in accepted],
@@ -1082,9 +1213,17 @@ def _sync_locked(path: Path, hub) -> dict:
             else []
         )
     withheld = set()
-    tables = [t for t in tables if t != "history"] + (["history"] if "history" in tables else [])
+    # Purge markers travel first, so this replica deletes what they cover
+    # before it can push a stale copy back.
+    first = [PURGES] if PURGES in tables else []
+    tables = (
+        first
+        + [t for t in tables if t not in ("history", PURGES)]
+        + (["history"] if "history" in tables else [])
+    )
     pulled = pushed = 0
     rejected = []
+    purged: dict = {}
     for table in tables:
         cols, mine = columns[table], candidates[table]
         # the pull is inclusive (hub_at >= cursor), so the comparison is too
@@ -1100,11 +1239,21 @@ def _sync_locked(path: Path, hub) -> dict:
                         _upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),)
                     )
                     pulled += cur.rowcount
+                if table == PURGES:
+                    apply_purges(conn, remote)
+        if table == PURGES:
+            with connect(path) as conn:
+                purged = _purge_index(conn)
+        mine = _uncovered(purged, table, mine)
         if table == "history":
             mine = [r for r in mine if r["id"] not in withheld]
         if mine:
             ids = {r["id"] for r in mine}
-            events = [e for e in pending_history if e["tbl"] == table and e["row_id"] in ids]
+            events = _uncovered(
+                purged,
+                "history",
+                [e for e in pending_history if e["tbl"] == table and e["row_id"] in ids],
+            )
             out = hub.rows_push(table, cols, mine, **({"history": events} if events else {}))
             bad = {r["id"] for r in out["rejected"]}
             withheld.update(e["id"] for e in events if e["row_id"] in bad)
@@ -1212,6 +1361,14 @@ def main(argv: list[str] | None = None) -> int:
         "run", help="supervised runner (provided by the Home Manager module)"
     )
     bg_run.add_argument("--poll", type=int, default=POLL_SECONDS)
+    p_purge = sub.add_parser(
+        "purge", help="hard-delete a row, or a column's history, here and on every replica"
+    )
+    p_purge.add_argument("table")
+    p_purge.add_argument("id", help="the row id")
+    p_purge.add_argument(
+        "--col", action="append", help="purge only this column's history (repeatable)"
+    )
     p_derive = sub.add_parser(
         "derive", help="request the hub derive a column for rows selected locally"
     )
@@ -1366,6 +1523,8 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
     elif args.command == "insert":
         n = insert_rows(path, args.table, json.load(sys.stdin))
         print(f"inserted {n} rows into {args.table}")
+    elif args.command == "purge":
+        print(json.dumps(purge(path, args.table, args.id, args.col)))
     elif args.command == "sync":
         stats = sync(path, hub_from_config())
         print(json.dumps(stats))

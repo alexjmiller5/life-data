@@ -7,6 +7,7 @@
 // knows how the caller was authenticated.
 
 import { pushChecked, queryBudget } from "./write.js";
+import { PURGES, applyPurges, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
@@ -340,12 +341,20 @@ const ROUTES = {
     const columns = body.columns.map(ident);
     // The same sparse payload must reach validation and SQL: unlisted keys
     // are not writes, and an omitted listed key is not an explicit NULL.
-    const rows = (body.rows ?? []).map((row) => Object.fromEntries(
+    const purged = await purgeIndex(db);
+    const rows = uncovered(purged, table, (body.rows ?? []).map((row) => Object.fromEntries(
       columns.filter((col) => Object.hasOwn(row, col)).map((col) => [col, row[col]])
-    ));
+    )));
     const stamping = await hasHubAt(db, table);
     const { accepted, rejected } = await pushChecked(db, table,
-      rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, stamping, body.history ?? []);
+      rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, stamping,
+      uncovered(purged, "history", body.history ?? []));
+    if (table === PURGES && accepted.length) {
+      const { results } = await db
+        .prepare(`SELECT * FROM ${PURGES} WHERE id IN (SELECT value FROM json_each(?))`)
+        .bind(JSON.stringify(accepted.map((row) => row.id))).all();
+      await applyPurges(db, results ?? []);
+    }
     // Ambiguous history rolls back the entire request, including rows filtered
     // by the timestamp gate, and supplies no committed arrival cursor.
     const ambiguity = rejected.find(r=>r.rule === "history-ambiguity");
