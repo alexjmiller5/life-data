@@ -200,3 +200,18 @@ for(const internal of ['_change_events','_change_subscriptions']) for(const conc
   expect(db.db.query('SELECT value FROM secrets').get().value).toBe('denied-value');
   expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
 });
+
+for (const sideEffect of [false, true]) test(`legacy unquoted system timestamp trigger: side effect ${sideEffect}`, async () => {
+  const db=rowDb();
+  db.db.exec(`CREATE TABLE provenance(id TEXT PRIMARY KEY,updated_at TEXT);
+    CREATE TRIGGER provenance_updated_at AFTER UPDATE ON provenance FOR EACH ROW
+    WHEN NEW.updated_at = OLD.updated_at BEGIN
+      UPDATE provenance SET updated_at = (${stamp}) WHERE rowid = NEW.rowid;
+      ${sideEffect ? "UPDATE secrets SET value='changed';" : ''}
+    END`);
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/insert','POST',insert());
+  expect(response.status).toBe(sideEffect ? 403 : 200);
+  expect(db.db.query("SELECT count(*) AS n FROM articles WHERE id='b'").get().n).toBe(sideEffect ? 0 : 1);
+  expect(db.db.query('SELECT value FROM secrets').get().value).toBe('denied-value');
+});

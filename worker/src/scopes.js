@@ -36,8 +36,11 @@ export function authorizeTable(scopes, operation, table) {
 export function timestampTrigger(trigger) {
   const table=trigger.tbl_name;
   if (!identifier(table)) return false;
-  const canonical=`CREATE TRIGGER ${qident(`${table}_updated_at`)} AFTER UPDATE ON ${qident(table)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${qident(table)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
-  return String(trigger.sql).replace(/\s+/g,' ').trim() === canonical;
+  const canonical=quote=>`CREATE TRIGGER ${quote(`${table}_updated_at`)} AFTER UPDATE ON ${quote(table)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(table)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
+  const sql=String(trigger.sql).replace(/\s+/g,' ').trim();
+  // Both forms were emitted by the CLI. Identifiers remain validated above;
+  // recognize the complete statement, never a trigger name or SQL fragment.
+  return sql === canonical(qident) || sql === canonical(name=>name);
 }
 function safeDefault(value) {
   if (value == null) return true;

@@ -657,8 +657,9 @@ mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
 writes create no event. Paused subscriptions keep recording; retired ones stop.
 Capacity and per-event size failures roll back the source mutation. Canonical
 shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
-Activation rejects custom source/outbox triggers; only canonical timestamp and
-exact generated recording triggers are supported. Timestamp revisions use the same
+Activation rejects custom source/outbox triggers; only complete canonical timestamp
+statements (quoted or unquoted CLI identifiers) and exact generated recording
+triggers are supported. Timestamp revisions use the same
 statement-stable SQLite clock as the canonical timestamp trigger. Physical cleanup
 of tombstones emits no second logical delete. Narrow writes reject triggers on
 implicit outbox destination tables inside their checked policy read set.
