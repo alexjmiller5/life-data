@@ -11,7 +11,10 @@ import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
+import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
+import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -260,8 +263,9 @@ const ROUTES = {
     for (const entry of body.entries ?? []) {
       if (known.has(entry.ddl)) continue;
       try {
-        await db.prepare(entry.ddl).run();
+        await applySubscriptionSchema(db,entry.ddl);
       } catch (e) {
+        if (e.code === 'subscription-schema-conflict') return json({error:'subscription_schema_conflict',message:'Retire affected subscriptions before changing watched schema.'},409);
         const msg = String(e).toLowerCase();
         // replay is idempotent-by-skip for DDL the hub already has: a CREATE that
         // exists, an ADD of a column it has, a RENAME of a column already gone, a
@@ -336,22 +340,22 @@ const ROUTES = {
     return { rows, next_cursor };
   },
 
-  "/v1/rows/push": async (body, db, env, ctx) => {
+  "/v1/rows/push": async (body, db, env, ctx, policy) => {
     const table = ident(body.table); // before any SQL is built from it
     const columns = body.columns.map(ident);
     // The same sparse payload must reach validation and SQL: unlisted keys
     // are not writes, and an omitted listed key is not an explicit NULL.
-    const purged = await purgeIndex(db);
+    const purged = policy ? new Map() : await purgeIndex(db);
     const rows = uncovered(purged, table, (body.rows ?? []).map((row) => Object.fromEntries(
       columns.filter((col) => Object.hasOwn(row, col)).map((col) => [col, row[col]])
     )));
     const stamping = await hasHubAt(db, table);
     const { accepted, rejected } = await pushChecked(db, table,
       rows.filter(row => validEditTimestamp(row.updated_at)), upsertSql, stamping,
-      uncovered(purged, "history", body.history ?? []));
+      uncovered(purged, "history", body.history ?? []), false, policy);
     // The hub logs its own event for an accepted edit; a marker that covers
     // the row removes it again, old value included.
-    if (table !== PURGES && accepted.length) {
+    if (!policy && table !== PURGES && accepted.length) {
       await applyPurges(db, markersFor(purged, table, accepted.map((row) => row.id)));
     }
     if (table === PURGES && accepted.length) {
@@ -370,7 +374,7 @@ const ROUTES = {
     })));
     // Derivation happens in the background: the push response never waits on
     // an external endpoint, and a failure here is retried by the cron sweep.
-    if (accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db, 200), env, table, accepted)));
+    if (!policy && accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db, 200), env, table, accepted)));
     // Report stored arrivals, never a timestamp captured before the write.
     // This diagnostic is not a pull checkpoint (another write may follow).
     const hubAt = stamping && accepted.length
@@ -379,7 +383,7 @@ const ROUTES = {
     return { upserted: accepted.length, rejected, hub_at: hubAt };
   },
 
-  "/v1/rows/insert": async (body, db, env, ctx) => {
+  "/v1/rows/insert": async (body, db, env, ctx, policy) => {
     if (!body || Object.hasOwn(body, "history")) return json({error:"history attachments are not supported by rows/insert"},400);
     if (!Array.isArray(body.columns) || !body.columns.includes("id") || !Array.isArray(body.rows)) {
       return json({error:"rows/insert requires columns including id and a rows list"},400);
@@ -391,8 +395,8 @@ const ROUTES = {
     const table = ident(body.table), columns = body.columns.map(ident);
     const rows = body.rows.map(row=>Object.fromEntries(columns.filter(col=>Object.hasOwn(row,col)).map(col=>[col,row[col]])));
     const stamping = await hasHubAt(db,table);
-    const out = await pushChecked(db,table,rows,(t,c,s)=>upsertSql(t,c,s,true),stamping,[],true);
-    if (out.accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db,200),env,table,out.accepted)));
+    const out = await pushChecked(db,table,rows,(t,c,s)=>upsertSql(t,c,s,true),stamping,[],true,policy);
+    if (!policy && out.accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db,200),env,table,out.accepted)));
     return {inserted:out.accepted.map(row=>row.id),existing:out.existing ?? [],rejected:out.rejected};
   },
 
@@ -476,7 +480,11 @@ const json = (obj, status = 200) =>
   });
 
 async function handleSession(request, tenant) {
-  if (request.method === "GET") return json({ name: tenant.name, scopes: tenant.scopes });
+  if (request.method === "GET") {
+    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities: sessionCapabilities(tenant.scopes) });
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  }
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   if (tenant.admin) return json({ error: "admin token cannot self-revoke" }, 403);
   await ensureAuthReady(tenant.authDb);
@@ -681,11 +689,7 @@ async function handleArchiveGet(request, env, url) {
   if (request.method === "HEAD") {
     const head = await env.ARCHIVE.head(key);
     if (!head) return new Response(null, { status: 404 });
-    const headers = new Headers();
-    head.writeHttpMetadata(headers);
-    headers.set("Cache-Control", "private, no-store, no-transform");
-    headers.set("Accept-Ranges", "bytes");
-    headers.set("Content-Length", String(head.size));
+    const headers = fileHeaders(head);
     return new Response(null, { headers });
   }
   // range: pass the Headers object only when a Range header exists — R2
@@ -696,10 +700,7 @@ async function handleArchiveGet(request, env, url) {
     ? await env.ARCHIVE.get(key, { range: request.headers })
     : await env.ARCHIVE.get(key);
   if (!obj) return json({ error: "not found" }, 404);
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set("Cache-Control", "private, no-store, no-transform");
-  headers.set("Accept-Ranges", "bytes");
+  const headers = fileHeaders(obj);
   if (rangeHeader && obj.range) {
     const start = obj.range.offset ?? Math.max(0, obj.size - (obj.range.suffix ?? 0));
     const length = obj.range.length ?? obj.size - start;
@@ -727,7 +728,7 @@ function withCors(response, origin) {
   const out = new Response(response.body, response);
   out.headers.set("Access-Control-Allow-Origin", origin);
   out.headers.append("Vary", "Origin");
-  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Date, Retry-After");
+  out.headers.set("Access-Control-Expose-Headers", "ETag, Content-Range, Date, Retry-After, X-Content-SHA256");
   return out;
 }
 
@@ -737,8 +738,8 @@ function preflight(request, env) {
   return withCors(new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT",
-      "Access-Control-Allow-Headers": "Authorization, Content-Type, If-None-Match, Range",
+      "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, If-None-Match, Range, X-Content-SHA256",
       "Access-Control-Max-Age": "86400",
     },
   }), origin);
@@ -778,20 +779,37 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant);
-  if (!allowed(url.pathname, request.method, tenant.scopes)) {
+  if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
+  if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
+    return json(scopedReplicaUnsupported, 403);
+  }
+  const rowOperation = request.method === "POST"
+    ? ({"/v1/rows/pull":"read","/v1/rows/push":"write","/v1/rows/insert":"write"})[url.pathname] : null;
+  const narrowRows = rowOperation && !broadTableAccess(tenant.scopes,rowOperation);
+  if (!narrowRows && !allowed(url.pathname, request.method, tenant.scopes)) {
     return json({ error: "insufficient scope" }, 403);
   }
 
   try {
+    if (narrowRows) {
+      const body = await request.json();
+      if (!body || !authorizeTable(tenant.scopes,rowOperation,body.table) || Object.hasOwn(body,"history")) {
+        return json({error:"insufficient scope"},403);
+      }
+      if (rowOperation === "read") {
+        const out = await scopedRows(body,tenant.db);
+        return out instanceof Response ? out : json(out);
+      }
+      await scopedTable(tenant.db,body.table,true);
+      const out = await ROUTES[url.pathname](body,tenant.db,env,ctx,scopedTable);
+      return out instanceof Response ? out : json(scopedResult(out));
+    }
     if (url.pathname.startsWith("/v1/files/")) {
       if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
       if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
       let key;
       try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
-      const object = await tenant.archive.put(key, request.body, {
-        httpMetadata: { contentType: request.headers.get("Content-Type") || "application/octet-stream" },
-      });
-      return json({ key, etag: object.httpEtag }, 201);
+      return await putFile(request, tenant.archive, key);
     }
     if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
       const route = TOKEN_ROUTES[url.pathname];
@@ -848,6 +866,8 @@ async function handle(request, env, ctx, url) {
     const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {
+    if (e instanceof ScopeDenied) return json({error:"insufficient scope"},403);
+    if (narrowRows) return json({error:"row request failed"},400);
     return json({ error: String(e) }, 500);
   }
 }

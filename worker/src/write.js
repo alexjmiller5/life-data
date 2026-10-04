@@ -27,7 +27,7 @@ export function checkedReads(db) {
   };
 }
 
-function readGuards(db, reads) {
+export function readGuards(db, reads) {
   return [...reads.values()].map(({ sql, args, rows }) => {
     let equal;
     if (!rows.length) equal = `NOT EXISTS (${sql})`;
@@ -126,10 +126,10 @@ export function queryBudget(db, maximum) {
 
 const rejectAll = (rows, rule, message) => ({accepted:[],rejected:rows.map(row=>({id:row.id,col:null,rule,message}))});
 
-export async function pushChecked(db, table, rows, upsertSql, stamping, history = [], insertOnly = false) {
+export async function pushChecked(db, table, rows, upsertSql, stamping, history = [], insertOnly = false, policy = null) {
   // Include rollback-only isolation probes in the same request budget.
   db = queryBudget(db,750);
-  const attempt = (rows, probe=false) => pushAttempt(db,table,rows,upsertSql,stamping,history,probe,insertOnly);
+  const attempt = (rows, probe=false) => pushAttempt(db,table,rows,upsertSql,stamping,history,probe,insertOnly,policy);
   try {
     return history.length ? await pushAtomicHistory(rows,attempt) : await pushGroup(rows,attempt);
   } catch (e) {
@@ -195,9 +195,10 @@ async function pushGroup(rows, attempt) {
   }
 }
 
-async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe, insertOnly) {
+async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe, insertOnly, policy) {
   if (!rows.length) return {accepted:[],rejected:[]};
   const view=checkedReads(db);
+  if (policy) await policy(view,table,true);
   await view.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
   const {accepted,rejected,expected,props,transitions,existing}=await validatePush(view,table,rows,db,insertOnly);
   if (!accepted.length) return {accepted,rejected,existing};
@@ -228,6 +229,13 @@ async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe,
     }
     return {accepted,rejected};
   } catch (e) {
+    const outbox = /life_outbox_(capacity|event_size)/.exec(String(e));
+    if (outbox) {
+      const retryable = outbox[1] === 'capacity';
+      throw Object.assign(e,{accepted,rejected,existing,failure:{col:null,
+        rule:retryable?'outbox-capacity':'outbox-event-size',retryable,
+        message:retryable?'Change outbox capacity reached; drain pending events and retry.':'Change event exceeds the durable delivery size limit.'}});
+    }
     if (!/life_invariant_|life_property_|life_write_conflict|integer overflow/.test(String(e))) throw e;
     const property=/life_property_(\d+)_(ref|options)/.exec(String(e));
     const index=/life_invariant_(\d+)/.exec(String(e));

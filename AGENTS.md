@@ -433,6 +433,27 @@ as a task and is a client-side change only.
 
 ## Hub service
 
+`GET /v1/session` includes explicit protocol capabilities and uses no-store.
+`tests/fixtures/hub-capabilities-contract.json` owns the response and the exact
+403 `scoped_replica_unsupported` error for credentials without broad schema
+access. Core enrollment requires advertised schema `full-ddl-v1` and
+`replica_sync: true`; only entirely absent capabilities use the legacy full-token
+default. Consumer enrollment still rejects operator/admin credentials. Capabilities
+never broaden route scopes. The generated contract includes the wire types.
+Subscriptions are advertised as null until durable pull routes are implemented.
+
+Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
+body.table before data access. Narrow consumers use bounded direct rows APIs;
+global schema/catalog/cursor/stats/history/provenance/internal/view/SQL routes stay
+denied. File grants remain independent. Narrow writes require a catalogued base
+table with safe defaults and no generated expressions, arbitrary triggers,
+derivations, enforced SQL rules or physical foreign keys. Eligibility reads join
+the mutation's checked transaction; concurrent policy changes roll back. Active
+purge markers make a table ineligible for narrow writes, which skip broad
+post-commit purge recovery. Validation errors are generic; internal references
+are still checked server-side. The exact timestamp trigger is trusted by its SQL,
+not its name. Broad callers retain their existing behavior.
+
 `authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth
@@ -610,7 +631,14 @@ ARCHIVE binding. Prefix scopes `files:read:<prefix>/` and
 The same checks protect the legacy `/v1/archive/<key>` read route;
 `tables:read` never grants object access. Full/admin retain archive access.
 Reject encoded separators, double encoding, dot/empty segments and control
-characters before touching storage. Tests exercise real token creation,
+characters before touching storage. Conditional PUT uses `If-None-Match: *` and required lowercase hex
+`X-Content-SHA256`; the storage service validates the streamed bytes atomically.
+201 returns key/mime/bytes/sha256/etag. Existing keys return 412; retries reconcile
+through independently authorized HEAD metadata. Unconditional legacy writes remain
+compatible; unchecked legacy objects have no SHA-256. Every object response is
+attachment + nosniff + sandbox/default-src-none CSP, regardless of MIME.
+Canonical shapes: `tests/fixtures/hub-files-contract.json`.
+Tests exercise real token creation,
 revocation and requests against an in-memory archive.
 
 Approved consumers: People Sync retains person/record photos and source
@@ -618,3 +646,26 @@ profile snapshots through its scoped file token; Music Sync retains raw
 Spotify pulls through its scoped file token. They depend on this supported
 service contract only. Each consumer's operational recovery state stays in
 its own store; Life Data storage credentials never leave this service.
+
+## Durable change recording
+
+`worker/src/subscriptions.js` owns private `_change_subscriptions` and
+`_change_events` state. Activation installs exact per-source triggers atomically;
+`subscription-triggers.js` generates and recognizes their SQL. Selected actual
+OLD/NEW values, source revisions and per-subscription sequences commit with each
+mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
+writes create no event. Paused subscriptions keep recording; retired ones stop.
+Capacity and per-event size failures roll back the source mutation. Canonical
+shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
+Activation rejects custom source/outbox triggers; only canonical timestamp and
+exact generated recording triggers are supported. Timestamp revisions use the same
+statement-stable SQLite clock as the canonical timestamp trigger. Physical cleanup
+of tombstones emits no second logical delete. Narrow writes reject triggers on
+implicit outbox destination tables inside their checked policy read set.
+Schema replay transactionally preserves active watched table definitions and the
+entire source/outbox trigger set; retire affected subscriptions before structural changes. Private operational
+DDL never enters the replica schema log or catalog. `durable-pull-v1` delivers persisted offered batches through capped long polls
+and explicit ACK receipts. Consumers need the subscription grant plus read access
+to every source. Live auth is rechecked before release; GET never advances ACK.
+Empty retired subscriptions honor the requested wait. Admin selects immutable
+sources at creation and can pause/resume or permanently retire recording.
