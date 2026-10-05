@@ -182,6 +182,7 @@ test('ordinary standalone writes with defaults, options and references do not ac
   await db.run('DELETE FROM catalog_rules');
   await db.run('DELETE FROM _core_coverage');
   await db.run('DELETE FROM _core_state');
+  await db.run("DELETE FROM _sync_state WHERE key='hub_url'");
   await db.run("UPDATE catalog_properties SET type='ref',ref_table='limits',default_value='sql:(SELECT id FROM limits)',options_sql='SELECT id FROM limits' WHERE col='name'");
   db.readDependencies = async () => { throw new Error('Must not inspect tables without invariants'); };
   expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);

@@ -10,8 +10,13 @@ import { schema, setup, TestSql, T0, T1 } from './support.ts';
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
-async function replica(path?: string) {
+async function replica(path?: string, collation?: string) {
   const fixture = setup();
+  if(collation) {
+    const ddl = schema[0].replace('id TEXT PRIMARY KEY', `id TEXT PRIMARY KEY COLLATE ${collation}`);
+    fixture.remote.db.exec(`DROP TABLE items; ${ddl}`);
+    fixture.remote.db.query('UPDATE _schema_log SET ddl=? WHERE ddl=?').run(ddl,schema[0]);
+  }
   if (path) { fixture.db.db.close(); fixture.db.db = new Database(path); }
   cleanup.push(() => fixture.db.db.close(), () => fixture.remote.db.close());
   for (const [col, type, required] of [['name', 'text', 1], ['qty', 'int', 0]]) {
@@ -87,6 +92,113 @@ test('an accepted push preserves a newer concurrent UI edit of the same row', as
   await core.sync(db, hub);
   expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
   expect(remote.db.query('SELECT name FROM items').get()).toEqual({ name: 'Second' });
+});
+
+test('a newer remote pull cannot erase an unsent edit across failure, reopen and bounded replay', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'life-pull-race-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'replica.db');
+  const { db, hub, remote } = await replica(path);
+  remote.db.query('INSERT INTO items(id,name,created_at,updated_at,hub_at) VALUES (?,?,?,?,?)').run('a', 'Before', T0, T0, T1);
+  await core.sync(db, hub);
+  const prior = await db.all("SELECT pull FROM _core_sync WHERE tbl='items'");
+  const remoteRevision = new Date(Date.now() + 2000).toISOString();
+  remote.db.query('UPDATE items SET name=?,updated_at=?,hub_at=? WHERE id=?').run('Remote', remoteRevision, remoteRevision, 'a');
+  let changed = false;
+  const transport: Hub = { ...hub, async post(route, body) {
+    if (route === '/v1/rows/pull' && body.table === 'items' && !changed) {
+      changed = true;
+      await core.writeRow(db, 'items', { id: 'a', name: 'Unsent' });
+    }
+    if (route === '/v1/rows/pull' && body.table === 'history') throw new Error('connection lost');
+    return hub.post(route, body);
+  } };
+  await expect(core.sync(db, transport)).rejects.toThrow('connection lost');
+  db.db.close(); db.db = new Database(path);
+  expect(await db.all("SELECT name FROM items WHERE id='a'")).toEqual([{ name: 'Unsent' }]);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(1);
+  expect(await db.all("SELECT pull FROM _core_sync WHERE tbl='items'")).toEqual(prior);
+  const sent: string[] = [];
+  await core.sync(db, { ...hub, async post(route, body) {
+    if (route === '/v1/rows/push' && body.table === 'items') sent.push(...(body.rows as any[]).map(row => row.name));
+    return hub.post(route, body);
+  } });
+  expect(sent).toContain('Unsent');
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
+  expect(await db.all("SELECT pull FROM _core_sync WHERE tbl='items'")).toEqual(prior);
+  expect(await db.all("SELECT s.pull=c.pull AS coherent FROM _core_sync s JOIN _core_coverage c ON c.tbl=s.tbl WHERE s.tbl='items'")).toEqual([{ coherent: 1 }]);
+  db.db.close(); db.db = new Database(path);
+  // The deferred remote winner is replayed after our own receipt, without an endless full pull.
+  await core.sync(db, hub);
+  expect(await db.all("SELECT name FROM items WHERE id='a'")).toEqual([{ name: 'Remote' }]);
+  expect(await db.all("SELECT s.pull=c.pull AS coherent FROM _core_sync s JOIN _core_coverage c ON c.tbl=s.tbl WHERE s.tbl='items'")).toEqual([{ coherent: 1 }]);
+  expect(await db.all("SELECT pull FROM _core_sync WHERE tbl='items'")).not.toEqual(prior);
+  expect(remote.db.query("SELECT new FROM history WHERE tbl='items' AND col='name'").all()).toContainEqual({ new: 'Unsent' });
+});
+
+test('an old rejection never marks a newer concurrent UI revision rejected', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'life-rejection-race-'));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'replica.db');
+  const { db, hub, remote } = await replica(path);
+  await core.writeRow(db, 'items', { name: 'Old' }, { id: () => 'a' });
+  await core.writeRow(db, 'items', { id: 'a', name: 'Rejected' });
+  const transport: Hub = { ...hub, async post(route, body) {
+    if (route === '/v1/rows/push' && body.table === 'items') {
+      await core.writeRow(db, 'items', { id: 'a', name: 'Corrected' });
+      return { data: { upserted: 0, rejected: [{ id: 'a', rule: 'required', col: 'name' }] }, date: new Date().toUTCString() };
+    }
+    return hub.post(route, body);
+  } };
+  await core.sync(db, transport);
+  expect(await db.all('SELECT * FROM _core_rejected')).toEqual([]);
+  expect(await db.all("SELECT name FROM items WHERE id='a'")).toEqual([{ name: 'Corrected' }]);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(1);
+  db.db.close(); db.db = new Database(path);
+  await core.sync(db, hub, { tables: { items: false } });
+  expect(remote.db.query('SELECT * FROM history').all()).toEqual([]);
+  await core.sync(db, hub);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
+  expect(remote.db.query("SELECT new FROM history WHERE col='name' ORDER BY updated_at").all()).toEqual([{new:'Rejected'}, {new:'Corrected'}]);
+});
+
+test.each([['NOCASE','A','a'], ['RTRIM','a','a ']])('pending pull guards use SQLite %s identity', async (collation, localID, remoteID) => {
+  const { db, hub, remote } = await replica(undefined,collation);
+  remote.db.query('INSERT INTO items(id,name,created_at,updated_at,hub_at) VALUES (?,?,?,?,?)').run(localID,'Before',T0,T0,T1);
+  await core.sync(db,hub);
+  const stamp = new Date(Date.now()+2000).toISOString();
+  remote.db.query('UPDATE items SET id=?,name=?,updated_at=?,hub_at=?').run(remoteID,'Remote',stamp,stamp);
+  let edited = false;
+  await core.sync(db,{...hub, async post(route,body) {
+    if(route==='/v1/rows/pull' && body.table==='items' && !edited) {
+      edited=true;
+      await core.writeRow(db,'items',{id:localID,name:'Unsent'});
+    }
+    return hub.post(route,body);
+  }});
+  expect(await db.all('SELECT name FROM items')).toEqual([{name:'Unsent'}]);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(1);
+});
+
+test('an insert after the sync snapshot keeps its payload and history for the next round', async () => {
+  const { db, hub, remote } = await replica();
+  let inserted = false;
+  await core.sync(db, { ...hub, async post(route, body) {
+    if (route === '/v1/rows/pull' && body.table === 'items' && !inserted) {
+      inserted = true;
+      await core.writeRow(db, 'items', { name: 'Created while pulling' }, { id: () => 'late' });
+      await core.writeRow(db, 'items', { id: 'late', name: 'Edited while pulling' });
+    }
+    return hub.post(route, body);
+  } });
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(1);
+  expect(remote.db.query("SELECT id FROM items WHERE id='late'").get()).toBeNull();
+  const history = await db.all("SELECT id,col,old,new FROM history WHERE row_id='late'");
+  expect(history.length).toBeGreaterThan(0);
+  await core.sync(db, hub);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
+  expect(remote.db.query("SELECT name FROM items WHERE id='late'").get()).toEqual({ name: 'Edited while pulling' });
+  expect(remote.db.query("SELECT id,col,old,new FROM history WHERE row_id='late'").all()).toEqual(history);
 });
 
 test('other clients acknowledgments and downloaded rows never imply a UI receipt', async () => {
