@@ -461,9 +461,14 @@ uniqueness. Their columns and ownership are checked; validation remains
 transactional. `GET /v1/catalog/options?table=X&column=Y` exposes only static
 select choices under the exact table-read grant, never dynamic SQL or other
 catalog metadata. Eligibility reads join
-the mutation's checked transaction; concurrent policy changes roll back. Active
-purge markers make a table ineligible for narrow writes, which skip broad
-post-commit purge recovery. Validation errors are generic; internal references
+the mutation's checked transaction; concurrent policy changes roll back. Narrow
+writes require explicit string row IDs and deny any submitted row with an active
+purge marker, including column markers. Markers on unrelated rows do not block
+the write when the primary key is TEXT with BINARY comparison; other key forms
+retain table-wide denial because distinct strings can alias one SQLite ID.
+The marker lookup and table-existence check join the guarded read set,
+so a concurrent marker also prevents commit. Narrow writes preserve all markers
+and skip broad post-commit purge recovery. Validation errors are generic; internal references
 are still checked server-side. The exact timestamp trigger is trusted by its SQL,
 not its name. Broad callers retain their existing behavior.
 

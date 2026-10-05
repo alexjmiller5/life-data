@@ -389,3 +389,92 @@ test('existing write-pipeline SQL restriction still rejects an ambient-clock-loo
   expect(await response.json()).toEqual({error:'row request failed'});
   expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
 });
+
+function purgeDb(column=null, target='a') {
+  const db=captureDb();templates.forEach(sql=>rule(db,sql));
+  db.db.exec("CREATE TABLE purges(id TEXT PRIMARY KEY,tbl TEXT,row_id TEXT,col TEXT,purged_at TEXT,deleted_at TEXT)");
+  db.db.query('INSERT INTO purges VALUES (?,?,?,?,?,NULL)').run('marker','articles',target,column,'2099-01-01T00:00:00.000Z');
+  return db;
+}
+
+for(const route of ['insert','push']) for(const column of [null,'description']) test(`unrelated purge markers permit ${route} without cleanup: ${column ?? 'row'}`,async()=>{
+  const db=purgeDb(column),before=db.db.query('SELECT * FROM purges').all();
+  const {call}=await setup(['tables:read:articles','tables:write:articles'],db);
+  expect((await call('/v1/rows/pull','POST',{...pull('articles'),where:{url:'https://example.test/a'}})).status).toBe(200);
+  expect((await call(optionsPath)).status).toBe(200);
+  const response=await call(`/v1/rows/${route}`,'POST',capture());
+  expect(response.status).toBe(200);
+  const body=await response.json();
+  expect(body.rejected).toEqual([]);
+  expect(route==='push'?body.upserted:body.inserted).toEqual(route==='push'?1:['b']);
+  expect(db.db.query("SELECT id FROM articles WHERE id='a'").get()).toEqual({id:'a'});
+  expect(db.db.query('SELECT * FROM purges').all()).toEqual(before);
+});
+
+for(const route of ['insert','push']) for(const column of [null,'description']) for(const mixed of [false,true]) test(`marked row denied on ${route}: ${column ?? 'row'}, mixed=${mixed}`,async()=>{
+  const db=purgeDb(column,'b'),before=db.db.query('SELECT * FROM purges').all();
+  const {call}=await setup(['tables:write:articles'],db);
+  const body=capture();
+  if(mixed) body.rows.unshift({...body.rows[0],id:'c',url:'https://source.test/c'});
+  const response=await call(`/v1/rows/${route}`,'POST',body);
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({error:'insufficient scope'});
+  expect(db.db.query("SELECT id FROM articles WHERE id IN ('b','c')").all()).toEqual([]);
+  expect(db.db.query('SELECT * FROM purges').all()).toEqual(before);
+});
+
+for(const route of ['insert','push']) for(const column of [null,'description']) for(const createTable of [false,true]) test(`new purge marker rolls back ${route}: ${column ?? 'row'}, new table=${createTable}`,async()=>{
+  const db=purgeDb(column),batch=db.batch.bind(db);let changed=false;
+  if(createTable) db.db.exec('DROP TABLE purges');
+  db.batch=async statements=>{
+    if(!changed){
+      changed=true;
+      if(createTable) db.db.exec("CREATE TABLE purges(id TEXT PRIMARY KEY,tbl TEXT,row_id TEXT,col TEXT,purged_at TEXT,deleted_at TEXT)");
+      db.db.query('INSERT INTO purges VALUES (?,?,?,?,?,NULL)').run('new-marker','articles','b',column,'2099-01-01T00:00:00.000Z');
+    }
+    return batch(statements);
+  };
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call(`/v1/rows/${route}`,'POST',capture());
+  const body=await response.json();
+  expect(response.status===403 || (response.status===200 && body.rejected.length>0 && (body.upserted===0 || body.inserted.length===0))).toBe(true);
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
+  expect(db.db.query("SELECT id FROM purges WHERE id='new-marker'").get()).toEqual({id:'new-marker'});
+  expect(JSON.stringify(body)).not.toContain('new-marker');
+});
+
+for(const id of [undefined,null,1,{},[], '', ' ']) test(`narrow writes require an explicit string row ID: ${JSON.stringify(id)}`,async()=>{
+  const db=purgeDb(),{call}=await setup(['tables:write:articles'],db);
+  for(const route of ['insert','push']) {
+    const response=await call(`/v1/rows/${route}`,'POST',capture({id}));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({error:'insufficient scope'});
+  }
+});
+
+test('narrow writes cannot omit id from the write column list',async()=>{
+  const db=purgeDb(),{call}=await setup(['tables:write:articles'],db);
+  const body=capture();body.columns=body.columns.filter(c=>c!=='id');
+  expect((await call('/v1/rows/push','POST',body)).status).toBe(403);
+});
+
+for(const route of ['insert','push']) test(`inactive or other-table marker does not block ${route}`,async()=>{
+  const db=purgeDb(null,'b');
+  db.db.exec("UPDATE purges SET deleted_at='2026-01-01T00:00:00.000Z'; INSERT INTO purges VALUES ('other','secrets','b',NULL,'2099-01-01T00:00:00.000Z',NULL)");
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call(`/v1/rows/${route}`,'POST',capture());
+  expect(response.status).toBe(200);
+  expect((await response.json()).rejected).toEqual([]);
+});
+
+for(const [definition,stored,submitted] of [['TEXT COLLATE NOCASE','b','B'],['TEXT COLLATE RTRIM','b','b '],['INTEGER',1,'01']]) test(`purge eligibility cannot alias protected IDs through ${definition}`,async()=>{
+  const db=rowDb();
+  db.db.exec(`DROP TABLE articles; CREATE TABLE articles(id ${definition} PRIMARY KEY,url TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT);
+    CREATE TABLE purges(id TEXT PRIMARY KEY,tbl TEXT,row_id TEXT,col TEXT,purged_at TEXT,deleted_at TEXT);`);
+  db.db.query('INSERT INTO articles(id,url,updated_at) VALUES (?,?,?)').run(stored,'https://example.test/original',revision);
+  db.db.query('INSERT INTO purges VALUES (?,?,?,?,?,NULL)').run('marker','articles',String(stored),null,revision);
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/push','POST',insert({rows:[{id:submitted,url:'https://example.test/changed',updated_at:'2026-10-04T00:00:00.000Z'}]}));
+  expect(response.status).toBe(403);
+  expect(db.db.query('SELECT url FROM articles').get().url).toBe('https://example.test/original');
+});

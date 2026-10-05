@@ -802,7 +802,10 @@ async function handle(request, env, ctx, url) {
         const out = await scopedRows(body,tenant.db);
         return out instanceof Response ? out : json(out);
       }
-      await scopedTable(tenant.db,body.table,true);
+      if (!Array.isArray(body.columns) || !body.columns.includes('id') || !Array.isArray(body.rows)) {
+        return json({error:"insufficient scope"},403);
+      }
+      await scopedTable(tenant.db,body.table,true,body.rows.map(row=>row?.id));
       const out = await ROUTES[url.pathname](body,tenant.db,env,ctx,scopedTable);
       return out instanceof Response ? out : json(scopedResult(out));
     }

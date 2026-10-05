@@ -72,8 +72,9 @@ function scopedInvariant(rule, table, columns) {
   return !!match && match[1] === table && names.has(match[2]);
 }
 
-export async function scopedTable(view, table, write=false) {
+export async function scopedTable(view, table, write=false, rowIds=null) {
   if (!ordinaryName(table)) deny();
+  if (write && (!Array.isArray(rowIds) || rowIds.some(id=>typeof id !== 'string' || !id.trim()))) deny();
   const schema=await view.prepare("SELECT name,type,sql FROM sqlite_master WHERE name=?").bind(table).first();
   if (!schema || schema.type !== 'table' || !/^CREATE\s+TABLE\b/i.test(schema.sql)) deny();
   if (!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_tables'").first()) deny();
@@ -83,11 +84,19 @@ export async function scopedTable(view, table, write=false) {
   if (columns.some(c=>c.hidden || !identifier(c.name)) || !columns.some(c=>c.name==='id' && c.pk===1)
     || columns.filter(c=>c.pk).length!==1 || !columns.some(c=>c.name==='updated_at')) deny();
   if (!write) return columns;
-  // Existing broad push recovery applies purges after its checked transaction.
-  // Narrow writes cannot run that unguarded side-effect path. Capture its absence
-  // in the write read-set so a concurrent marker also prevents the mutation.
+  // Narrow writes never run broad post-commit purge recovery. Any marker on a
+  // submitted row (including a column marker) denies the write. Guard the empty
+  // result in the mutation's transaction so concurrent new markers also block it.
   if (await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='purges'").first()) {
-    const {results:purges}=await view.prepare('SELECT * FROM purges WHERE tbl=? AND deleted_at IS NULL ORDER BY id').bind(table).all();
+    if (await view.prepare('SELECT 1 FROM purges WHERE tbl=? AND deleted_at IS NULL').bind(table).first()) {
+      // String marker identities must equal SQLite's primary-key identities.
+      // Otherwise retain table-wide denial: e.g. B aliases b under NOCASE,
+      // and '01' aliases 1 under INTEGER affinity, even after a row is purged.
+      const {results:keys}=await view.prepare("SELECT x.name,x.coll FROM pragma_index_list(?) i JOIN pragma_index_xinfo(i.name) x WHERE i.origin='pk' AND x.key=1 ORDER BY x.seqno").bind(table).all();
+      if (columns.find(c=>c.name==='id').type.toUpperCase() !== 'TEXT'
+        || keys.length !== 1 || keys[0].name !== 'id' || keys[0].coll !== 'BINARY') deny();
+    }
+    const {results:purges}=await view.prepare('SELECT * FROM purges WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL ORDER BY id').bind(table,JSON.stringify(rowIds)).all();
     if (purges.length) deny();
   }
   if (columns.some(c=>!safeDefault(c.dflt_value))) deny();

@@ -198,7 +198,7 @@ async function pushGroup(rows, attempt) {
 async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe, insertOnly, policy) {
   if (!rows.length) return {accepted:[],rejected:[]};
   const view=checkedReads(db);
-  if (policy) await policy(view,table,true);
+  if (policy) await policy(view,table,true,rows.map(row=>row.id));
   await view.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
   const {accepted,rejected,expected,props,transitions,existing}=await validatePush(view,table,rows,db,insertOnly);
   if (!accepted.length) return {accepted,rejected,existing};
