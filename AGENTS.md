@@ -173,7 +173,10 @@ CLI.
 - **Writes are validated.** `execute_sql` and `insert_rows` run inside
   `catalog.write()`: one transaction, every changed row checked in every table
   that has catalog properties OR is named by an invariant, `ValidationError`
-  after ROLLBACK. **Changed rows come from the per-table `temp._before_<t>`
+  after ROLLBACK. Client writes reserve the writer with `BEGIN IMMEDIATE`
+  before catalog reads and validation snapshots, so another writer cannot
+  invalidate the snapshot before its first mutation.
+  **Changed rows come from the per-table `temp._before_<t>`
   snapshot diff, never a timestamp comparison** - a clock collision at
   millisecond resolution cuts both ways (an untouched legacy row looks
   changed; an UPDATE inside the same millisecond moves no `updated_at`). Only SELECT/PRAGMA/EXPLAIN/VALUES bypass it - a CTE

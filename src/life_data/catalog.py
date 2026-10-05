@@ -688,8 +688,8 @@ def write(path: Path, fn, *, ddl: bool = False):
     pkg = _pkg()
     conn = pkg.connect(path, manual_tx=True)
     try:
+        conn.execute("BEGIN IMMEDIATE")
         tables = [t for t in _validated_tables(conn) if _table_exists(conn, t)]
-        conn.execute("BEGIN")
         if tables and not ddl and not _table_exists(conn, "history"):
             # an estate cataloged before history existed: create it here, as
             # logged DDL, so the first edit after an upgrade is not lost. Not

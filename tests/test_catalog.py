@@ -1,5 +1,8 @@
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,12 +30,56 @@ from life_data.catalog import (
     validate_push,
     validate_row,
     value_hash,
+    write,
 )
 
 
 @pytest.fixture()
 def db(tmp_path):
     return init(tmp_path / "life.db")
+
+
+def test_cli_writer_waits_until_another_validation_snapshot_commits(db):
+    create_table(db, "items", ["name:text!"])
+    child = None
+
+    def first_writer(conn):
+        nonlocal child
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from life_data import main; print('ready', flush=True); "
+                    "main(['sql', \"INSERT INTO items (id,name) VALUES ('second','Second')\"])"
+                ),
+            ],
+            env={
+                "PATH": os.environ["PATH"],
+                "LIFE_DATA_DIR": str(db.parent),
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert child.stdout.readline().strip() == "ready"
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.communicate(timeout=0.3)
+        conn.execute("INSERT INTO items (id,name) VALUES ('first','First')")
+
+    try:
+        write(db, first_writer)
+        _, stderr = child.communicate(timeout=10)
+        assert child.returncode == 0, stderr
+        assert execute_sql(db, "SELECT name FROM items ORDER BY id") == [
+            {"name": "First"},
+            {"name": "Second"},
+        ]
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.communicate()
 
 
 def test_ensure_catalog_creates_logged_tables(db):
