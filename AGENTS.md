@@ -112,7 +112,9 @@ CLI.
   deterministic table invariants with one-row SQLite `before`/`changed` contexts
   and a captured `now.ts`. Custom triggers, estate enforcement and all declared
   SQLite FKs remain blocked, including NO ACTION/RESTRICT and disabled FKs;
-  catalog references keep their ordinary validation.
+  catalog references keep their ordinary validation. Only complete canonical
+  main timestamp triggers with quoted or unquoted CLI identifiers are accepted;
+  temporary timestamp triggers and modified bodies remain unsupported.
   Adapters must allow read-only `main/temp.foreign_key_list` introspection.
   `core/src/coverage.ts` owns local `_core_coverage` certificates: successful
   full pulls and certified incrementals only, endpoint/schema/cursor/version

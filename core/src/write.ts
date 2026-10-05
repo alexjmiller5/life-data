@@ -106,8 +106,10 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   for (const trigger of triggers) {
     if (isSearchTrigger(trigger)) continue;
     const t = String(trigger.tbl_name);
-    const canonical = `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
-    if (trigger.temporary || String(trigger.sql).replace(/\s+/g, ' ').trim() !== canonical) {
+    const canonical = (quote: (name: string) => string) => `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
+    const sql = String(trigger.sql).replace(/\s+/g, ' ').trim();
+    // The CLI emits both forms; require a complete match, never a SQL fragment.
+    if (trigger.temporary || (sql !== canonical(quote) && sql !== canonical(name => name))) {
       fail('', 'trigger', `Unsupported trigger ${trigger.name} on ${t}. Use the CLI writer to validate and record all trigger effects.`);
     }
   }

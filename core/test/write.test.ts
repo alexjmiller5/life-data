@@ -337,19 +337,20 @@ test('custom insert triggers and unrelated database triggers also fail closed', 
   await rejects(writeRow(db, 'items', { name: 'New' }, clock), 'trigger');
 });
 
-function timestampTrigger(table: string) {
-  // The exact shipped Python _trigger_ddl, including its WHEN guard.
-  return `CREATE TRIGGER ${qident(`${table}_updated_at`)} AFTER UPDATE ON ${qident(table)} FOR EACH ROW
+function timestampTrigger(table: string, quoted = true) {
+  // Complete CLI forms, including the row-local update and WHEN guard.
+  const quote = quoted ? qident : (name: string) => name;
+  return `CREATE TRIGGER ${quote(`${table}_updated_at`)} AFTER UPDATE ON ${quote(table)} FOR EACH ROW
 WHEN NEW.updated_at = OLD.updated_at
 BEGIN
-    UPDATE ${qident(table)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid;
+    UPDATE ${quote(table)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid;
 END`;
 }
 
-test('canonical Python timestamp triggers remain usable and preserve explicit revisions and original history', async () => {
+for (const quoted of [true, false]) test(`canonical Python timestamp triggers preserve explicit revisions and original history (quoted=${quoted})`, async () => {
   const db = await local();
-  await db.run(timestampTrigger('items'));
-  await db.run(timestampTrigger('history'));
+  await db.run(timestampTrigger('items', quoted));
+  await db.run(timestampTrigger('history', quoted));
   const created = await writeRow(db, 'items', { name: 'Before' }, clock);
   const edited = await writeRow(db, 'items', { id: created.id, name: 'After' }, clock);
   expect(edited.updated_at).toBe('2026-01-02T00:00:00.001Z');
@@ -364,12 +365,15 @@ test('canonical Python timestamp triggers remain usable and preserve explicit re
   expect((await writeRow(db, 'order', { id: created.id, name: 'Keyword table' }, clock)).name).toBe('Keyword table');
 });
 
-for (const change of ['extra-statement', 'changed-guard', 'temporary']) test(`timestamp trigger allowlist checks the full definition (${change})`, async () => {
+for (const quoted of [true, false]) for (const change of ['extra-statement', 'changed-guard', 'missing-row-filter', 'changed-clock', 'wrong-name', 'temporary']) test(`timestamp trigger allowlist checks the full definition (${change}, quoted=${quoted})`, async () => {
   const db = await local();
   await writeRow(db, 'items', { name: 'Before', qty: 2 }, clock);
-  let sql = timestampTrigger('items');
+  let sql = timestampTrigger('items', quoted);
   if (change === 'extra-statement') sql = sql.replace('\nEND', '\n    UPDATE items SET qty=9;\nEND');
   if (change === 'changed-guard') sql = sql.replace('WHEN NEW.updated_at = OLD.updated_at', 'WHEN 1');
+  if (change === 'missing-row-filter') sql = sql.replace(' WHERE rowid = NEW.rowid', '');
+  if (change === 'changed-clock') sql = sql.replace("'now'", "'2000-01-01'");
+  if (change === 'wrong-name') sql = sql.replace('items_updated_at', 'other_updated_at');
   if (change === 'temporary') sql = sql.replace('CREATE TRIGGER', 'CREATE TEMP TRIGGER');
   await db.run(sql);
   const before = await db.all('SELECT * FROM items');
