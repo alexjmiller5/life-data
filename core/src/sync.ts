@@ -1,6 +1,6 @@
 import type { SqlDriver, Hub } from './driver.ts';
 import { qident, validEditTimestamp, type Row } from './validate.ts';
-import { COVERAGE_VERSION, coverageSchema, initCoverage, validCoverage } from './coverage.ts';
+import { COVERAGE_VERSION, coverageProblem, coverageSchema, initCoverage, validCoverage } from './coverage.ts';
 import type { SyncSettings, SyncResult } from './contract.generated.ts';
 export type { SyncResult } from './contract.generated.ts';
 export type SyncOptions = SyncSettings & { now?: () => Date; maxClockSkewMs?: number };
@@ -12,14 +12,51 @@ export async function initCore(db: SqlDriver): Promise<void> {
   await db.run("CREATE TABLE IF NOT EXISTS _core_sync (tbl TEXT PRIMARY KEY, pull TEXT NOT NULL DEFAULT '', push TEXT NOT NULL DEFAULT '')");
   await db.run('CREATE TABLE IF NOT EXISTS _core_rejected (tbl TEXT, row_id TEXT, row TEXT NOT NULL, errors TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
   await db.run('CREATE TABLE IF NOT EXISTS _core_pending (tbl TEXT NOT NULL, row_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
+  await db.run('CREATE TABLE IF NOT EXISTS _core_history_hold (tbl TEXT NOT NULL, row_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
   await initCoverage(db);
 }
 
 const active = new WeakSet<SqlDriver>();
+const snapshotDDL='CREATE TABLE _core_sync_snapshot (sequence INTEGER PRIMARY KEY, kind TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL, payload TEXT NOT NULL)';
 export async function sync(db: SqlDriver, hub: Hub, options: SyncOptions = {}): Promise<SyncResult> {
   if(active.has(db)) throw new Error('sync already in progress');
   active.add(db);
-  try { return await syncLocked(db,hub,options); } finally { active.delete(db); }
+  let ownsSnapshot=false;
+  try {
+    await db.run(snapshotDDL.replace('CREATE TABLE ','CREATE TABLE IF NOT EXISTS main.'));
+    const definition=(await db.all("SELECT sql FROM main.sqlite_master WHERE type='table' AND name='_core_sync_snapshot'"))[0]?.sql;
+    if(definition!==snapshotDDL) throw new Error('sync snapshot storage has an unexpected schema');
+    if((await db.all("SELECT 1 FROM main.sqlite_master WHERE type='trigger' AND tbl_name='_core_sync_snapshot' UNION ALL SELECT 1 FROM temp.sqlite_master WHERE type='trigger' AND tbl_name='_core_sync_snapshot'")).length) throw new Error('sync snapshot storage has unexpected triggers');
+    ownsSnapshot=true;
+    await db.run('DELETE FROM main._core_sync_snapshot');
+    await db.run('CREATE INDEX IF NOT EXISTS main._core_sync_snapshot_batch ON _core_sync_snapshot(kind,tbl,sequence)');
+    await db.run('CREATE INDEX IF NOT EXISTS main._core_sync_snapshot_history ON _core_sync_snapshot(kind,tbl,row_id)');
+    return await syncLocked(db,hub,options);
+  } finally {
+    try { if(ownsSnapshot) await db.run('DELETE FROM main._core_sync_snapshot'); }
+    finally { active.delete(db); }
+  }
+}
+
+function rowJSON(columns: string[]): string {
+  // Stay below SQLite's argument limit, including wide user tables. json_set
+  // preserves null-valued keys, unlike JSON merge-patch semantics.
+  let json="'{}'";
+  for(let i=0;i<columns.length;i+=40) {
+    json=`json_set(${json},${columns.slice(i,i+40).map(c=>`'$.${qident(c).slice(1,-1)}',${qident(c)}`).join(',')})`;
+  }
+  return json;
+}
+
+async function freezeRows(db: SqlDriver, kind: 'row'|'history', table: string, columns: string[], where: string, params: string[], owner=table): Promise<void> {
+  let after:string|null=null;
+  while(true) {
+    // Keyset comparisons/order use the real PK's collation, including WITHOUT
+    // ROWID tables. The enclosing transaction freezes membership and payloads.
+    const copied=await db.run(`INSERT INTO main._core_sync_snapshot(kind,tbl,row_id,payload) SELECT ?,?,${kind==='row'?'id':'row_id'},${rowJSON(columns)} FROM main.${qident(table)} WHERE (${where})${after===null?'':' AND id>?'} ORDER BY id LIMIT 1000`,[kind,owner,...params,...(after===null?[]:[after])]);
+    if(copied<1000) break;
+    after=String((await db.all("SELECT json_extract(payload,'$.id') AS id FROM main._core_sync_snapshot WHERE kind=? AND tbl=? ORDER BY sequence DESC LIMIT 1",[kind,owner]))[0].id);
+  }
 }
 
 async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promise<SyncResult> {
@@ -28,6 +65,14 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const endpoint=(await db.all("SELECT value FROM _core_state WHERE key='hub'"))[0]?.value;
   const cliState=(await db.all("SELECT value FROM _sync_state WHERE key='hub_url'"))[0]?.value;
   if ([endpoint,cliState].some(value=>value && value!==hub.endpoint)) throw new Error('hub changed; use a fresh replica');
+  // Exclusions are known before the first HTTP yield. Never let foreground
+  // validation borrow a certificate the caller has already withdrawn.
+  await db.transaction(async()=>{
+    for(const [table, included] of Object.entries(options.tables??{})) {
+      if(!included && !table.startsWith('catalog_')) await db.run('DELETE FROM _core_coverage WHERE tbl=?',[table]);
+    }
+  });
+  const priorMetadataReady=endpoint===hub.endpoint && cliState===hub.endpoint && await coverageProblem(db,[])===null;
   const now=options.now ?? (()=>new Date());
   // Observe rollback even when the first network request fails. Check again
   // under the snapshot transaction in case the clock changes during I/O.
@@ -50,7 +95,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   // Binding an unbound CLI must not legitimize its unknown global cursors.
   await db.transaction(async()=>{
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
-    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase',?)",[priorMetadataReady ? 'ready' : 'refreshing']);
     if(!cliState) {
       await db.run("INSERT OR REPLACE INTO _sync_state(key,value) VALUES ('hub_url',?),('checkpoint_version','')",[hub.endpoint]);
     }
@@ -61,6 +106,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   for (const entry of entries) {
     if (known.has(entry.ddl)) continue;
     await db.transaction(async () => {
+      await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
       try { await db.run(entry.ddl); }
       catch (error) {
         const message=String(error).toLowerCase();
@@ -75,6 +121,9 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const tables=allTables.filter(t=>t.startsWith('catalog_') || (options.tables?.[t] ?? (Number.isFinite(counts?.[t]) && counts[t] <= (options.maxRows ?? 50_000))));
   tables.sort((a,b)=>Number(a==='history')-Number(b==='history'));
   result.skipped=allTables.filter(t=>!tables.includes(t));
+  await db.transaction(async()=>{
+    for(const table of result.skipped) await db.run('DELETE FROM _core_coverage WHERE tbl=?',[table]);
+  });
   const marks=await post('/v1/cursor',{tables}); // BEFORE pull; remote writes after this land next round.
   const validMark=(value:unknown)=>value===''||validEditTimestamp(value);
   if(!marks || !validMark(marks.max_hub_at) || !marks.tables || tables.some(t=>!validMark(marks.tables[t]))) throw new Error('invalid cursor response');
@@ -82,9 +131,8 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const proofs=new Map((await db.all('SELECT * FROM _core_coverage')).map(r=>[String(r.tbl),r]));
   const pullSince=new Map<string,string>();
   let coverageSignature='';
-  const columns=new Map<string,string[]>(), candidates=new Map<string,Row[]>();
+  const columns=new Map<string,string[]>();
   let checkpoint='';
-  const pendingHistory:Row[]=[];
   await db.transaction(async()=>{
     coverageSignature=(await coverageSchema(db)).signature;
     // Persist exclusions and schema invalidation even if this round fails.
@@ -102,12 +150,15 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       const since=endpoint && push<=checkpoint ? push : '';
       // Pending UI rows need our own receipt even when another writer/clock
       // has moved their state behind this client's timestamp checkpoint.
-      const mine=await db.all(`SELECT * FROM ${qident(table)} WHERE updated_at >= ? OR id IN (SELECT row_id FROM _core_pending WHERE tbl=?)`,[since,table]);
-      candidates.set(table,mine);
-      if(allTables.includes('history') && table!=='history' && mine.length) pendingHistory.push(...await db.all('SELECT * FROM history WHERE tbl=? AND (updated_at>=? OR row_id IN (SELECT row_id FROM _core_pending WHERE tbl=?)) AND row_id IN (SELECT value FROM json_each(?))',[table,since,table,JSON.stringify(mine.map(r=>r.id))]));
+      await freezeRows(db,'row',table,columns.get(table)!, 'updated_at >= ? OR id IN (SELECT row_id FROM _core_pending WHERE tbl=?)',[since,table]);
+      if(allTables.includes('history') && table!=='history') {
+        const historyColumns=(await db.all('PRAGMA table_info(history)')).map(r=>String(r.name));
+        await freezeRows(db,'history','history',historyColumns,"tbl=? AND (updated_at>=? OR row_id IN (SELECT row_id FROM _core_pending WHERE tbl=?)) AND row_id IN (SELECT row_id FROM main._core_sync_snapshot WHERE kind='row' AND tbl=?)",[table,since,table,table],table);
+      }
     }
   });
   const withheld=new Set<unknown>();
+  const deferred=new Set<string>();
   for (const table of tables) {
     const cols=columns.get(table)!;
     const since=pullSince.get(table)!;
@@ -120,19 +171,43 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
         ||Object.keys(r).length!==cols.length
         ||cols.some(c=>!Object.hasOwn(r,c)||(r[c]!==null&&typeof r[c]!=='string'&&!(typeof r[c]==='number'&&Number.isFinite(r[c]))))
         ||typeof r.id!=='string'||!validEditTimestamp(r.updated_at))) throw new Error('invalid pulled row');
-      if (page.rows.length) result.pulled+=await db.run(upsertSql(table,cols),[JSON.stringify(page.rows)]);
+      if (page.rows.length) await db.transaction(async()=>{
+        if(table.startsWith('catalog_')) {
+          const current=new Map((await db.all(`SELECT id,updated_at FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`,[JSON.stringify(page.rows.map((r:Row)=>r.id))])).map(r=>[r.id,String(r.updated_at)]));
+          if(page.rows.some((row:Row)=>!current.has(row.id)||String(row.updated_at)>current.get(row.id)!)) {
+            // A paginated metadata replacement is not atomic. Revoke trust
+            // before the first applicable row; only final certification restores it.
+            await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
+          }
+        }
+        // A UI revision must reach its own push receipt before LWW can replace
+        // its payload. Keep the old pull checkpoint so deferred rows replay
+        // after acknowledgment, including after process restart.
+        // Compare in SQLite with the actual primary-key collation, then return
+        // the remote spelling for the JS filter (NOCASE/RTRIM IDs need not match).
+        const pending=new Set((await db.all(`SELECT json_extract(r.value,'$.id') AS id FROM json_each(?) r JOIN ${qident(table)} t ON t.id=json_extract(r.value,'$.id') JOIN _core_pending p ON p.tbl=? AND t.id=p.row_id WHERE json_extract(r.value,'$.updated_at')>t.updated_at`,[JSON.stringify(page.rows),table])).map(r=>r.id));
+        const applicable=page.rows.filter((row:Row)=>{
+          if(pending.has(row.id)) { deferred.add(table); return false; }
+          return true;
+        });
+        if(applicable.length) result.pulled+=await db.run(upsertSql(table,cols),[JSON.stringify(applicable)]);
+      });
       after=page.next_cursor;
     } while (after);
-    if(table==='history') {
-      const held=new Set((await db.all('SELECT tbl,row_id FROM _core_rejected')).map(r=>JSON.stringify([r.tbl,r.row_id])));
-      for(const event of candidates.get(table)!) if(held.has(JSON.stringify([event.tbl,event.row_id]))) withheld.add(event.id);
-    }
-    const mine=candidates.get(table)!.filter(r=>table!=='history'||!withheld.has(r.id));
+    const held=table==='history' ? new Set((await db.all('SELECT tbl,row_id FROM _core_rejected UNION SELECT tbl,row_id FROM _core_history_hold')).map(r=>JSON.stringify([r.tbl,r.row_id]))) : new Set();
     const bad: Row[]=[];
-    for(let i=0;i<mine.length;i+=200) {
-      const rows=mine.slice(i,i+200);
+    let sequence=0;
+    while(true) {
+      const batch=await db.all("SELECT sequence,payload FROM main._core_sync_snapshot WHERE kind='row' AND tbl=? AND sequence>? ORDER BY sequence LIMIT 200",[table,sequence]);
+      if(!batch.length) break;
+      sequence=Number(batch.at(-1)!.sequence);
+      const rows=batch.map(r=>JSON.parse(String(r.payload)) as Row).filter(row=>{
+        if(table==='history' && held.has(JSON.stringify([row.tbl,row.row_id]))) { withheld.add(row.id);return false; }
+        return true;
+      });
+      if(!rows.length) continue;
       const ids=new Set(rows.map(r=>r.id));
-      const history=pendingHistory.filter(e=>e.tbl===table&&ids.has(e.row_id));
+      const history=(await db.all("SELECT payload FROM main._core_sync_snapshot WHERE kind='history' AND tbl=? AND row_id IN (SELECT value FROM json_each(?)) ORDER BY sequence",[table,JSON.stringify([...ids])])).map(r=>JSON.parse(String(r.payload)) as Row);
       const out=await post('/v1/rows/push',{table,columns:cols,rows,...(history.length ? {history} : {})});
       if(!out||!Number.isInteger(out.upserted)||out.upserted<0||out.upserted>rows.length||!Array.isArray(out.rejected)||out.rejected.some((r:Row)=>!r||!ids.has(r.id))) throw new Error('invalid push response');
       const rejectedIds=new Set(out.rejected.map((r:Row)=>r.id));
@@ -145,10 +220,17 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       await db.transaction(async()=>{
         for(const row of rows) {
           const errors=out.rejected.filter((e:Row)=>e.id===row.id);
-          if(errors.length) await db.run('INSERT OR REPLACE INTO _core_rejected(tbl,row_id,row,errors) VALUES (?,?,?,?)',[table,String(row.id),JSON.stringify(row),JSON.stringify(errors)]);
+          if(errors.length) {
+            // Superseded rejection receipts must still withhold their history
+            // across restart/exclusion, without labeling the newer edit rejected.
+            await db.run('INSERT INTO _core_history_hold(tbl,row_id,updated_at) VALUES (?,?,?) ON CONFLICT(tbl,row_id) DO UPDATE SET updated_at=max(updated_at,excluded.updated_at)',[table,String(row.id),String(row.updated_at)]);
+            const current=(await db.all(`SELECT updated_at FROM ${qident(table)} WHERE id=?`,[String(row.id)]))[0];
+            if(current?.updated_at===row.updated_at) await db.run('INSERT OR REPLACE INTO _core_rejected(tbl,row_id,row,errors) VALUES (?,?,?,?)',[table,String(row.id),JSON.stringify(row),JSON.stringify(errors)]);
+          }
           else {
             await db.run('DELETE FROM _core_rejected WHERE tbl=? AND row_id=?',[table,String(row.id)]);
             await db.run('DELETE FROM _core_pending WHERE tbl=? AND row_id=? AND updated_at<=?',[table,String(row.id),String(row.updated_at)]);
+            await db.run('DELETE FROM _core_history_hold WHERE tbl=? AND row_id=? AND updated_at<=?',[table,String(row.id),String(row.updated_at)]);
           }
         }
       });
@@ -161,8 +243,11 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
     for(const table of tables) {
       const rejected=result.rejected.some(r=>r.table===table)||(table==='history'&&withheld.size>0);
-      await db.run('INSERT OR REPLACE INTO _core_sync(tbl,pull,push) VALUES (?,?,?)',[table,marks.tables?.[table]??marks.max_hub_at??'',rejected ? String(states.get(table)?.push??'') : checkpoint]);
-      await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,marks.tables[table],COVERAGE_VERSION]);
+      const pull=deferred.has(table) ? String(states.get(table)?.pull??'') : marks.tables[table];
+      await db.run('INSERT OR REPLACE INTO _core_sync(tbl,pull,push) VALUES (?,?,?)',[table,pull,rejected ? String(states.get(table)?.push??'') : checkpoint]);
+      // A deferred bootstrap has no complete proof. An incremental deferral
+      // retains only the already validated proof at its unchanged checkpoint.
+      if(!deferred.has(table)) await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,pull,COVERAGE_VERSION]);
     }
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','ready')");
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('skipped_tables',?)",[JSON.stringify(result.skipped)]);

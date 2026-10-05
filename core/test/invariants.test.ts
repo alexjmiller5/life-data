@@ -126,18 +126,21 @@ test.each(['schema', 'log'])('driver object key order does not change %s coverag
   expect(await core.writeability(db, { table: 'items' })).toEqual({ writable: true, reason: null });
 });
 
-test('a failed refresh blocks writes until successful recovery, without trusting partial pages', async () => {
+test('an unchanged incremental refresh retains prior valid coverage during and after failure', async () => {
   const { db, hub } = fixture();
   await core.sync(db, hub);
+  await core.writeRow(db, 'items', { id: 'edited', name: 'Queued before snapshot' });
   const broken = { ...hub, async post(route: string, body: core.Row) {
     if (route === '/v1/rows/pull' && body.table === 'items') {
-      await blocked(db, 'coverage');
+      expect((await db.all('SELECT count(*) AS n FROM _core_sync_snapshot'))[0].n).toBeGreaterThan(0);
+      expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
+      await core.writeRow(db, 'items', { id: 'edited', name: 'Saved while offline' });
       throw new Error('offline');
     }
     return hub.post(route, body);
   } };
   await expect(core.sync(db, broken)).rejects.toThrow('offline');
-  await blocked(db, 'coverage');
+  expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
   await core.sync(db, hub);
   expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
 });
@@ -156,6 +159,55 @@ test('schema changes and downgraded cursor updates invalidate certificates', asy
   requests.length = 0;
   await core.sync(db, hub);
   expect(requests.find(r => r.route === '/v1/rows/pull' && r.body.table === 'items')!.body.since).toBe('');
+});
+
+test.each(['bootstrap', 'catalog'])('failed %s metadata never authorizes writes when there are no local rules', async mode => {
+  const { db, hub, remote } = fixture();
+  remote.db.exec('DELETE FROM catalog_rules');
+  if (mode === 'catalog') {
+    await core.sync(db, hub);
+    expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
+    const stamp = new Date().toISOString();
+    remote.db.query("UPDATE catalog_properties SET required=1,updated_at=?,hub_at=? WHERE col='qty'").run(stamp,stamp);
+  }
+  await expect(core.sync(db, { ...hub, async post(route, body) {
+    if (route === '/v1/rows/pull' && body.table === 'items') throw new Error('metadata interrupted');
+    return hub.post(route, body);
+  } })).rejects.toThrow('metadata interrupted');
+  await blocked(db, 'coverage', { name: 'Cannot bypass missing rules' });
+  await core.sync(db, hub);
+  expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
+});
+
+test('explicit exclusions revoke dependency trust before the first transport yield', async () => {
+  const { db, hub } = fixture();
+  await core.sync(db, hub);
+  await expect(core.sync(db, { ...hub, async post() {
+    await blocked(db, 'coverage');
+    throw new Error('held schema');
+  } }, { tables: { limits: false } })).rejects.toThrow('held schema');
+});
+
+test('tombstoning the last invariant on an incomplete catalog page stays blocked after reopen', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'life-catalog-pages-'));
+  const {db,hub,remote}=fixture();
+  const path=join(dir,'replica.db');
+  db.db.close(); db.db=new Database(path);
+  try {
+    await core.sync(db,hub);
+    const stamp=new Date().toISOString();
+    remote.db.query('UPDATE catalog_rules SET deleted_at=?,updated_at=?,hub_at=?').run(stamp,stamp,stamp);
+    for(let i=0;i<200;i++) remote.db.query('INSERT INTO catalog_rules(id,tbl,kind,enforce,updated_at,hub_at) VALUES (?,?,?,?,?,?)').run(`zz${String(i).padStart(3,'0')}`,'items','note',0,stamp,stamp);
+    await expect(core.sync(db,{...hub,async post(route,body) {
+      if(route==='/v1/rows/pull' && body.table==='catalog_rules' && body.after) throw new Error('catalog page interrupted');
+      return hub.post(route,body);
+    }})).rejects.toThrow('catalog page interrupted');
+    expect(await db.all('SELECT id FROM catalog_rules WHERE enforce=1 AND deleted_at IS NULL')).toEqual([]);
+    db.db.close(); db.db=new Database(path);
+    await blocked(db,'coverage');
+    await core.sync(db,hub);
+    expect((await core.writeability(db,{table:'items'})).writable).toBe(true);
+  } finally { db.db.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
 for (const enabled of [0,1]) test(`FK cascade effects fail closed even with foreign_keys=${enabled}`, async () => {
@@ -209,7 +261,7 @@ test('schema-level REPLACE cannot silently remove another row', async () => {
   expect(await db.all('SELECT id,name FROM items ORDER BY id')).toEqual([{ id: 'first', name: 'same' }, { id: 'second', name: 'other' }]);
 });
 
-test('complete and interrupted coverage both survive closing and reopening the database', async () => {
+test('prior certified incremental coverage survives interruption and database reopen', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'core-coverage-'));
   const { db, hub } = fixture();
   const path = join(temp, 'replica.db');
@@ -223,7 +275,7 @@ test('complete and interrupted coverage both survive closing and reopening the d
       return hub.post(route, body);
     } })).rejects.toThrow('offline');
     db.db.close(); db.db = new Database(path);
-    await blocked(db, 'coverage');
+    expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
     await core.sync(db, hub);
     expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
   } finally { db.db.close(); rmSync(temp, { recursive: true, force: true }); }

@@ -120,12 +120,15 @@ CLI.
   Adapters must allow read-only `main/temp.foreign_key_list` introspection.
   `core/src/coverage.ts` owns local `_core_coverage` certificates: successful
   full pulls and certified incrementals only, endpoint/schema/cursor/version
-  bound, with interrupted refreshes blocked. The optional driver
+  bound. Unchanged incremental refreshes retain prior proof across interruption;
+  schema/catalog changes revoke metadata trust before application and stay
+  blocked until complete certification. Bound replicas require trusted catalog
+  metadata even when no invariant is currently present. The optional driver
   `readDependencies(statements, { ownedTempTables })` uses SQLite compiler
   metadata, without execution, to narrow invariant coverage to target/catalog,
   reference and SQL validation reads. Null/unexplained metadata fails closed;
   an absent method retains full-global coverage, including history/provenance.
-  Ordinary tables without enforced invariants keep their existing behavior.
+  Standalone unbound tables without enforced invariants remain editable.
   `tests/fixtures/read-dependencies.json` owns host conformance cases. Core owns
   temporary snapshot creation/cleanup, bounds preparation, and never caches
   dependency sets persistently. Coverage is neither freshness nor a simultaneous

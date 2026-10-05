@@ -152,6 +152,14 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
       fail(String(rule.col ?? ''), 'invariant', `Enforced invariant ${rule.id} uses unsupported SQL. Use a table SELECT without clock, date/time, randomness or connection-state functions; compare or slice now.ts directly.`);
     }
   }
+  // A partial catalog can omit rules entirely. Enforce its trust before authorizing a write, including for tables with no current invariant. Standalone
+  // local workspaces remain editable without replication certificates.
+  const bound=await exists('_core_state') && (await db.all("SELECT value FROM main._core_state WHERE key='hub'"))[0]?.value
+    || await exists('_sync_state') && (await db.all("SELECT value FROM main._sync_state WHERE key='hub_url'"))[0]?.value;
+  if(bound) {
+    const problem=await coverageProblem(db,[]);
+    if(problem) fail('', 'coverage', problem);
+  }
   await unusedWriteContext(db, fail);
   await prepareInvariants(db, table, props, rules, fail);
   return { cols, props, rules };

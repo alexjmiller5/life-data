@@ -200,15 +200,26 @@ They certify an unfiltered full pull and subsequent successful incremental
 walks for one endpoint, public schema/log identity, checkpoint and version.
 Ordinary cursors, row counts and Python daemon acknowledgements never grant
 proof. Missing/stale proof forces a full backfill; skipped tables invalidate
-their proof. A durable refresh flag blocks invariant writes across failures
-and restarts until recovery completes. Certificates and readiness commit with
+their proof before transport yields. Unchanged incremental refreshes retain
+prior certified trust across interruption and restart. Applicable schema or
+catalog changes revoke metadata trust before application; partial metadata
+blocks bound-replica writes even when no invariant is yet present. Recovery
+restores trust only after complete certification. Certificates and readiness commit with
 sync checkpoints; none of this local metadata is logged or synced.
+
+Sync freezes candidate payloads and their original history in the main-database
+`_core_sync_snapshot` within one transaction, then reads 200 candidates per
+push batch. The private snapshot is cleared at startup and on exit; it never
+resumes an abandoned round or changes logged schema. Pending UI payloads are
+protected from incoming LWW replacement until their own receipt. Deferred
+tables retain their old pull checkpoint/proof for replay. Superseded rejection
+receipts retain a durable history hold without marking the newer edit rejected.
 
 Invariant-checked writes require coverage of the target, validation catalogs,
 declared reference tables and all compiler-reported rule/options/default reads.
 History/provenance need proof when validation reads them, not just because the
-writer appends history. Ordinary tables without enforced invariants keep their
-existing write behavior; references alone do not activate this coverage gate.
+writer appends history. Standalone unbound tables without enforced invariants
+keep their existing behavior; references alone do not activate this coverage gate.
 Adapters without `readDependencies` conservatively require coverage of
 **every table in the global schema, including history/provenance**.
 Unbound or externally imported files are not assumed complete. Coverage is
