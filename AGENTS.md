@@ -681,8 +681,10 @@ triggers are supported. Timestamp revisions use the same
 statement-stable SQLite clock as the canonical timestamp trigger. Physical cleanup
 of tombstones emits no second logical delete. Narrow writes reject triggers on
 implicit outbox destination tables inside their checked policy read set.
-Schema replay transactionally preserves active watched table definitions and the
-entire source/outbox trigger set; retire affected subscriptions before structural changes. Private operational
+Schema replay permits plain nullable TEXT/INTEGER/REAL/BLOB column additions on
+watched source tables, preserving existing columns and the entire source/outbox
+trigger set. Rowid aliases and `hub_at` additions remain protected because they
+change revision semantics. Other structural changes require retiring affected subscriptions. Private operational
 DDL never enters the replica schema log or catalog. `durable-pull-v1` delivers persisted offered batches through capped long polls
 and explicit ACK receipts. Consumers need the subscription grant plus read access
 to every source. Live auth is rechecked before release; GET never advances ACK.

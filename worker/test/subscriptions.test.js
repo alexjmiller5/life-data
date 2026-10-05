@@ -125,6 +125,40 @@ test('schema replay cannot silently drop or change watched tables or their recor
   expect(rows(db,sub.id)).toHaveLength(1);
 });
 
+test.each(['active','paused'])('schema replay adds nullable fields without interrupting watched URL changes (%s)',async state=>{
+  const db=database();db.db.exec('CREATE TABLE _schema_log(id INTEGER PRIMARY KEY,applied_at TEXT,ddl TEXT)');
+  const sub=await createSubscription(db,config);
+  db.db.query('UPDATE _change_subscriptions SET state=? WHERE id=?').run(state,sub.id);
+  await write(db,change('a','https://example.test/a',1));
+  const before=rows(db,sub.id);
+  for(const ddl of ['ALTER TABLE articles ADD COLUMN decision TEXT','alter table "articles" add "rating" INTEGER;']) {
+    const result=await ROUTES['/v1/schema/push']({entries:[{applied_at:'2026-10-03T00:00:00.000Z',ddl}]},db);
+    expect(result.applied).toBe(1);
+  }
+  expect(db.db.query("SELECT decision,rating FROM articles WHERE id='a'").get()).toEqual({decision:null,rating:null});
+  await write(db,change('a','https://example.test/a',2,{decision:'Consider'}));
+  expect(rows(db,sub.id)).toEqual(before);
+  await write(db,change('a','https://example.test/b',3));
+  expect(rows(db,sub.id).map(e=>e.changes)).toEqual([
+    [{column:'url',old_value:null,new_value:'https://example.test/a'}],
+    [{column:'url',old_value:'https://example.test/a',new_value:'https://example.test/b'}],
+  ]);
+  for(const ddl of ['ALTER TABLE articles ADD COLUMN constrained TEXT CHECK (url IS NOT NULL)','ALTER TABLE articles ADD COLUMN required TEXT NOT NULL DEFAULT \'\'','ALTER TABLE _change_events ADD COLUMN extra TEXT']) {
+    const response=await ROUTES['/v1/schema/push']({entries:[{applied_at:'2026-10-03T00:00:00.000Z',ddl}]},db);
+    expect(response.status).toBe(409);
+  }
+});
+
+test.each(['hub_at','rowid','_rowid_','oid'])('schema replay cannot add revision-sensitive field %s to a watched source',async column=>{
+  const db=database();
+  db.db.exec('ALTER TABLE articles DROP COLUMN hub_at; CREATE TABLE _schema_log(id INTEGER PRIMARY KEY,applied_at TEXT,ddl TEXT)');
+  db.db.exec(canonicalClock);
+  await createSubscription(db,config);
+  const response=await ROUTES['/v1/schema/push']({entries:[{applied_at:'2026-10-03T00:00:00.000Z',ddl:`ALTER TABLE articles ADD COLUMN "${column.toUpperCase()}" TEXT`}]},db);
+  expect(response.status).toBe(409);
+  expect(db.db.query('PRAGMA table_info(articles)').all().some(c=>c.name.toLowerCase()===column)).toBe(false);
+});
+
 test('multi-column changes, empty URLs and restoration preserve exact accepted values',async()=>{
   const db=database(),sub=await createSubscription(db,config);
   await write(db,change('a','https://example.test/a',1,{alternate:'https://example.test/alt'}));

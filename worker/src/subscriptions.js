@@ -76,10 +76,17 @@ export async function applySubscriptionSchema(db,ddl) {
     for(const source of sources) {names.add(source.table);watched.add(source.table);}
     for(const trigger of subscriptionTriggers(sub.id,sources)) {names.add(trigger.name);expectedTriggers.push(trigger);}
   }
+  // Only a plain nullable scalar addition can change a watched table's SQL.
+  // Constraints, defaults, renames and internal outbox changes keep exact guards.
+  const addition=/^\s*ALTER\s+TABLE\s+(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s+ADD\s+(?:COLUMN\s+)?(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))\s+(?:TEXT|INTEGER|REAL|BLOB)\s*;?\s*$/i.exec(ddl);
+  // Rowid aliases affect timestamp triggers; hub_at changes revision shape.
+  const reserved=addition && ['rowid','_rowid_','oid','hub_at'].includes((addition[3]??addition[4]).toLowerCase());
+  const addedTable=addition && !reserved && [...watched].find(name=>!name.startsWith('_') && name.toLowerCase()===(addition[1]??addition[2]).toLowerCase());
+  if(addedTable) await view.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(addedTable).first();
   const stable=checkedReads(db);
   if(names.size) {
-    const {results:objects}=await stable.prepare('SELECT name,type,sql FROM sqlite_master WHERE name IN (SELECT value FROM json_each(?)) ORDER BY name')
-      .bind(JSON.stringify([...names].sort())).all();
+    const {results:objects}=await stable.prepare("SELECT name,type,CASE WHEN type='table' AND name=? THEN NULL ELSE sql END AS sql FROM sqlite_master WHERE name IN (SELECT value FROM json_each(?)) ORDER BY name")
+      .bind(addedTable||'',JSON.stringify([...names].sort())).all();
     if(objects.length!==names.size || expectedTriggers.some(t=>!objects.some(o=>o.name===t.name && o.type==='trigger' && o.sql===t.sql))) {
       throw Object.assign(new Error('subscription schema conflict'),{code:'subscription-schema-conflict'});
     }
