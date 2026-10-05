@@ -454,7 +454,13 @@ body.table before data access. Narrow consumers use bounded direct rows APIs;
 global schema/catalog/cursor/stats/history/provenance/internal/view/SQL routes stay
 denied. File grants remain independent. Narrow writes require a catalogued base
 table with safe defaults and no generated expressions, arbitrary triggers,
-derivations, enforced SQL rules or physical foreign keys. Eligibility reads join
+derivations, unrecognized enforced SQL rules or physical foreign keys. Only the
+three fully anchored local invariant templates in `scopes.js` are eligible:
+row pattern rejection, conditional JSON-tag membership, and same-table
+uniqueness. Their columns and ownership are checked; validation remains
+transactional. `GET /v1/catalog/options?table=X&column=Y` exposes only static
+select choices under the exact table-read grant, never dynamic SQL or other
+catalog metadata. Eligibility reads join
 the mutation's checked transaction; concurrent policy changes roll back. Active
 purge markers make a table ineligible for narrow writes, which skip broad
 post-commit purge recovery. Validation errors are generic; internal references

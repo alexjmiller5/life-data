@@ -14,7 +14,7 @@ import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
-import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedResult, ScopeDenied } from "./scopes.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -786,11 +786,13 @@ async function handle(request, env, ctx, url) {
   const rowOperation = request.method === "POST"
     ? ({"/v1/rows/pull":"read","/v1/rows/push":"write","/v1/rows/insert":"write"})[url.pathname] : null;
   const narrowRows = rowOperation && !broadTableAccess(tenant.scopes,rowOperation);
-  if (!narrowRows && !allowed(url.pathname, request.method, tenant.scopes)) {
+  const optionsRequest = url.pathname === '/v1/catalog/options' && request.method === 'GET';
+  if (!narrowRows && !optionsRequest && !allowed(url.pathname, request.method, tenant.scopes)) {
     return json({ error: "insufficient scope" }, 403);
   }
 
   try {
+    if (optionsRequest) return json(await scopedOptions(url.searchParams,tenant.db,tenant.scopes));
     if (narrowRows) {
       const body = await request.json();
       if (!body || !authorizeTable(tenant.scopes,rowOperation,body.table) || Object.hasOwn(body,"history")) {
@@ -867,7 +869,7 @@ async function handle(request, env, ctx, url) {
     return out instanceof Response ? out : json(out);
   } catch (e) {
     if (e instanceof ScopeDenied) return json({error:"insufficient scope"},403);
-    if (narrowRows) return json({error:"row request failed"},400);
+    if (narrowRows || optionsRequest) return json({error:"row request failed"},400);
     return json({ error: String(e) }, 500);
   }
 }

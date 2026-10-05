@@ -215,3 +215,177 @@ for (const sideEffect of [false, true]) test(`legacy unquoted system timestamp t
   expect(db.db.query("SELECT count(*) AS n FROM articles WHERE id='b'").get().n).toBe(sideEffect ? 0 : 1);
   expect(db.db.query('SELECT value FROM secrets').get().value).toBe('denied-value');
 });
+
+function captureDb() {
+  const db=rowDb();
+  db.db.exec(`ALTER TABLE articles ADD COLUMN description TEXT;
+    ALTER TABLE articles ADD COLUMN tags TEXT;
+    ALTER TABLE articles ADD COLUMN related TEXT;
+    INSERT INTO catalog_properties(id,tbl,col,type,required,options,ref_table) VALUES
+    ('articles.description','articles','description','text',1,NULL,NULL),
+    ('articles.tags','articles','tags','multi_select',0,'[{"v":"Source","d":"Source material","sort":2},{"v":"Other"}]',NULL),
+    ('articles.related','articles','related','multi_ref',0,NULL,'articles');`);
+  return db;
+}
+const templates = [
+  "SELECT id FROM changed WHERE deleted_at IS NULL AND description LIKE '%.'",
+  "SELECT id FROM changed WHERE deleted_at IS NULL AND url LIKE '%source.test/%' AND NOT EXISTS (SELECT 1 FROM json_each(coalesce(tags,'[]')) WHERE value = 'Source')",
+  'SELECT c.id FROM changed c JOIN articles b ON b.url = c.url AND b.id != c.id AND b.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.url IS NOT NULL',
+];
+function rule(db,sql,scope='table',tbl='articles') {
+  db.db.query('INSERT INTO catalog_rules VALUES (?,?,?,?,?,?,NULL)').run(`rule-${db.db.query('SELECT count(*) AS n FROM catalog_rules').get().n}`,tbl,'invariant',1,scope,sql);
+}
+const capture = (values={}) => ({table:'articles',columns:['id','url','description','tags','related','updated_at'],rows:[{id:'b',url:'https://source.test/b',description:'A resource',tags:'["Source"]',related:'["a"]',updated_at:revision,...values}]});
+const optionsPath='/v1/catalog/options?table=articles&column=tags';
+
+test('exact read grant exposes only static option metadata',async()=>{
+  const db=captureDb(),{call}=await setup(['tables:read:articles'],db);
+  const response=await call(optionsPath);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({options:[{v:'Source',d:'Source material',sort:2},{v:'Other'}]});
+  db.db.exec(`UPDATE catalog_properties SET options='[]' WHERE col='tags'`);
+  expect(await (await call(optionsPath)).json()).toEqual({options:[]});
+});
+
+test('options authorization rejects wrong grants and malformed targets before data reads',async()=>{
+  for(const scopes of [['streams:append'],['tables:write:articles'],['tables:read:secrets']]) {
+    const {call}=await setup(scopes);
+    expect((await call(optionsPath)).status).toBe(403);
+  }
+  const {call}=await setup(['tables:read:articles']);
+  for(const path of [optionsPath.replace('articles','secrets'),optionsPath.replace('articles','catalog_properties'),'/v1/catalog/options?table=articles','/v1/catalog/options?table=articles&column=tags%3B','/v1/catalog/options?table=articles&column=tags&column=url']) {
+    expect((await call(path)).status).toBe(403);
+  }
+});
+
+for(const mutation of [
+  "UPDATE catalog_properties SET options_sql='SELECT value FROM secrets' WHERE col='tags'",
+  "UPDATE catalog_properties SET deleted_at='gone' WHERE col='tags'",
+  "DELETE FROM catalog_properties WHERE col='tags'",
+  "UPDATE catalog_properties SET col='missing' WHERE col='tags'",
+  "UPDATE catalog_properties SET type='text' WHERE col='tags'",
+  "UPDATE catalog_tables SET kind='view' WHERE id='articles'",
+]) test(`options fail closed: ${mutation}`,async()=>{
+  const db=captureDb();db.db.exec(mutation);
+  const {call}=await setup(['tables:read:articles'],db);
+  const response=await call(optionsPath);
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({error:'insufficient scope'});
+});
+
+test('options projection is guarded against concurrent catalog changes',async()=>{
+  const db=captureDb(),batch=db.batch.bind(db);
+  db.batch=async statements=>{
+    db.db.exec("UPDATE catalog_properties SET options_sql='SELECT value FROM secrets' WHERE col='tags'");
+    return batch(statements);
+  };
+  const {call}=await setup(['tables:read:articles'],db);
+  const response=await call(optionsPath);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({error:'row request failed'});
+});
+
+for(const route of ['insert','push']) test(`exact invariant templates enforce ${route} and permit same-table references`,async()=>{
+  const db=captureDb();templates.forEach(sql=>rule(db,sql));
+  const {call}=await setup(['tables:write:articles'],db);
+  const good=await call(`/v1/rows/${route}`,'POST',capture());
+  expect(good.status).toBe(200);
+  expect((await good.json()).rejected).toEqual([]);
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toEqual({id:'b'});
+  for(const values of [{description:'Bad.'},{tags:'[]'},{url:'https://example.test/a'},{tags:'["Invalid"]'},{description:null},{related:'["missing"]'}]) {
+    const response=await call(`/v1/rows/${route}`,'POST',capture({id:'c',...values}));
+    expect(response.status).toBe(200);
+    expect((await response.json()).rejected).toEqual([{id:'c',col:null,rule:'validation',message:'Row rejected.'}]);
+    expect(db.db.query("SELECT id FROM articles WHERE id='c'").get()).toBeNull();
+  }
+});
+
+for(const sql of [
+  templates[2].replace('JOIN articles','JOIN secrets'),
+  ...['c.id','b.id','b.deleted_at','c.deleted_at'].map(part=>templates[2].replace(part,part.replace('.','X'))),
+  templates[2].replace('b.url = c.url','b.url = c.description'),
+  templates[2].replace('c.url IS NOT NULL','c.description IS NOT NULL'),
+  templates[0].replace('description','missing'),
+  templates[1].replace("coalesce(tags,","coalesce(missing,"),
+  ...[';',' -- comment','\n',' UNION SELECT id FROM secrets',' AND 1=1'].map(s=>templates[0]+s),
+  templates[0].replace("'%.'","'%.' OR 1=1"),
+  templates[0].replace("'%.'",'"%."'),
+  templates[0].replace("'%.'","'bad\\' OR 1=1 --'"),
+  'SELECT id FROM secrets',
+]) test(`unrecognized invariant denied: ${sql}`,async()=>{
+  const db=captureDb();rule(db,sql);
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/insert','POST',capture());
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({error:'insufficient scope'});
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
+});
+
+for(const [scope,tbl] of [['estate','articles'],['estate','secrets'],[null,'articles'],['other','articles']]) test(`rule ownership denied: ${scope}/${tbl}`,async()=>{
+  const db=captureDb();rule(db,templates[0],scope,tbl);
+  const {call}=await setup(['tables:write:articles'],db);
+  expect((await call('/v1/rows/insert','POST',capture())).status).toBe(403);
+});
+
+test('SQL literal escaping treats punctuation and SQL-looking text only as values',async()=>{
+  const db=captureDb();
+  const value="it's \\ text; -- SELECT id FROM secrets /* */";
+  rule(db,`SELECT id FROM changed WHERE deleted_at IS NULL AND description LIKE '${value.replaceAll("'","''")}'`);
+  const {call}=await setup(['tables:write:articles'],db);
+  const good=await call('/v1/rows/insert','POST',capture());
+  expect(good.status).toBe(200);
+  expect((await good.json()).inserted).toEqual(['b']);
+  const bad=await call('/v1/rows/insert','POST',capture({id:'c',description:value}));
+  expect((await bad.json()).rejected).toEqual([{id:'c',col:null,rule:'validation',message:'Row rejected.'}]);
+});
+
+
+test('concurrent invariant replacement cannot escape the checked transaction',async()=>{
+  const db=captureDb();rule(db,templates[0]);
+  const batch=db.batch.bind(db);let changed=false;
+  db.batch=async statements=>{
+    if(!changed){changed=true;db.db.exec("UPDATE catalog_rules SET sql='SELECT id FROM secrets'");}
+    return batch(statements);
+  };
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/insert','POST',capture());
+  const body=await response.json();
+  expect(response.status===403 || (response.status===200 && body.inserted.length===0 && body.rejected.length>0)).toBe(true);
+  expect(JSON.stringify(body)).not.toContain('secrets');
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
+});
+
+for(const options of ['not json','{}','[null]','[{"v":1}]','[{"v":"x","d":3}]','[{"v":"x","sort":"1"}]']) test(`malformed static options denied: ${options}`,async()=>{
+  const db=captureDb();db.db.query("UPDATE catalog_properties SET options=? WHERE col='tags'").run(options);
+  const {call}=await setup(['tables:read:articles'],db);
+  const response=await call(optionsPath);
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({error:'insufficient scope'});
+});
+
+test('option projection strips unrelated metadata',async()=>{
+  const db=captureDb();db.db.query("UPDATE catalog_properties SET options=? WHERE col='tags'").run('[{"v":"Option","private":"hidden"}]');
+  const {call}=await setup(['tables:read:articles'],db);
+  expect(await (await call(optionsPath)).json()).toEqual({options:[{v:'Option'}]});
+});
+
+test('JSON membership template accepts doubled quotes in both literals',async()=>{
+  const db=captureDb();
+  db.db.query("UPDATE catalog_properties SET options=? WHERE col='tags'").run(JSON.stringify([{v:"Reader's choice"}]));
+  rule(db,"SELECT id FROM changed WHERE deleted_at IS NULL AND description LIKE 'reader''s %' AND NOT EXISTS (SELECT 1 FROM json_each(coalesce(tags,'[]')) WHERE value = 'Reader''s choice')");
+  const {call}=await setup(['tables:write:articles'],db);
+  const good=await call('/v1/rows/insert','POST',capture({description:"reader's guide",tags:JSON.stringify(["Reader's choice"])}));
+  expect(good.status).toBe(200);
+  expect((await good.json()).inserted).toEqual(['b']);
+  const bad=await call('/v1/rows/insert','POST',capture({id:'c',description:"reader's guide",tags:'[]'}));
+  expect((await bad.json()).rejected).toEqual([{id:'c',col:null,rule:'validation',message:'Row rejected.'}]);
+});
+
+test('existing write-pipeline SQL restriction still rejects an ambient-clock-looking literal',async()=>{
+  const db=captureDb();rule(db,"SELECT id FROM changed WHERE deleted_at IS NULL AND description LIKE 'now'");
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/insert','POST',capture());
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({error:'row request failed'});
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
+});

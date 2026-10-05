@@ -50,6 +50,28 @@ function safeDefault(value) {
     || text === "strftime('%Y-%m-%dT%H:%M:%fZ','now')" || text === 'lower(hex(randomblob(16)))';
 }
 
+// These are complete SQL templates, not a general SQL safety checker. SQL
+// strings escape quotes only by doubling them; backslashes are plain data.
+const ruleColumn = '([A-Za-z_][A-Za-z0-9_]*)';
+const ruleLiteral = "'(?:[^']|'')*'";
+const rowRule = `SELECT id FROM changed WHERE deleted_at IS NULL AND ${ruleColumn} LIKE ${ruleLiteral}`;
+const localRules = [
+  new RegExp(`^${rowRule}(?![\\s\\S])`),
+  new RegExp(`^${rowRule} AND NOT EXISTS \\(SELECT 1 FROM json_each\\(coalesce\\(${ruleColumn},'\\[\\]'\\)\\) WHERE value = ${ruleLiteral}\\)(?![\\s\\S])`),
+];
+const uniqueRule = new RegExp(String.raw`^SELECT c\.id FROM changed c JOIN ${ruleColumn} b ON b\.${ruleColumn} = c\.\2 AND b\.id != c\.id AND b\.deleted_at IS NULL WHERE c\.deleted_at IS NULL AND c\.\2 IS NOT NULL(?![\s\S])`);
+function scopedInvariant(rule, table, columns) {
+  if (rule.scope !== 'table' || rule.tbl !== table || rule.enforce !== 1 || typeof rule.sql !== 'string') return false;
+  const names = new Set(columns.map(c => c.name));
+  if (!names.has('id') || !names.has('deleted_at')) return false;
+  for (const pattern of localRules) {
+    const match = pattern.exec(rule.sql);
+    if (match) return match.slice(1).every(col => names.has(col));
+  }
+  const match = uniqueRule.exec(rule.sql);
+  return !!match && match[1] === table && names.has(match[2]);
+}
+
 export async function scopedTable(view, table, write=false) {
   if (!ordinaryName(table)) deny();
   const schema=await view.prepare("SELECT name,type,sql FROM sqlite_master WHERE name=?").bind(table).first();
@@ -82,9 +104,28 @@ export async function scopedTable(view, table, write=false) {
   for (const prop of props) if (prop.ref_table) await scopedTable(view,prop.ref_table);
   if (await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_rules'").first()) {
     const {results:rules}=await view.prepare("SELECT * FROM catalog_rules WHERE deleted_at IS NULL AND kind='invariant' AND enforce != 0 AND (tbl=? OR scope='estate') ORDER BY id").bind(table).all();
-    if (rules.length) deny();
+    if (rules.some(rule => !scopedInvariant(rule,table,columns))) deny();
   }
   return columns;
+}
+
+export async function scopedOptions(params, db, scopes) {
+  const table=params.get('table'),column=params.get('column');
+  if (params.getAll('table').length !== 1 || params.getAll('column').length !== 1
+    || !identifier(column) || !ordinaryName(table)
+    || !(authorizeTable(scopes,'read',table) || broadTableAccess(scopes,'read'))) deny();
+  const view=checkedReads(db),columns=await scopedTable(view,table);
+  if (!columns.some(c=>c.name===column)) deny();
+  if (!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_properties'").first()) deny();
+  const {results:props}=await view.prepare('SELECT * FROM catalog_properties WHERE tbl=? AND col=? AND deleted_at IS NULL ORDER BY id').bind(table,column).all();
+  if (props.length !== 1 || !['select','multi_select'].includes(props[0].type) || props[0].options_sql) deny();
+  let options;
+  try { options=JSON.parse(props[0].options ?? '[]'); } catch { deny(); }
+  if (!Array.isArray(options) || options.some(o=>!o || typeof o.v !== 'string'
+    || (o.d !== undefined && typeof o.d !== 'string')
+    || (o.sort !== undefined && (typeof o.sort !== 'number' || !Number.isFinite(o.sort))))) deny();
+  await db.batch(readGuards(db,view.reads));
+  return {options:options.map(({v,d,sort})=>({v,...(d===undefined?{}:{d}),...(sort===undefined?{}:{sort})}))};
 }
 
 export async function scopedRows(body,db) {
