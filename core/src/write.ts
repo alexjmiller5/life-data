@@ -106,10 +106,14 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   for (const trigger of triggers) {
     if (isSearchTrigger(trigger)) continue;
     const t = String(trigger.tbl_name);
-    const canonical = (quote: (name: string) => string) => `CREATE TRIGGER ${quote(`${t}_updated_at`)} AFTER UPDATE ON ${quote(t)} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${quote(t)} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
+    const name = String(trigger.name);
+    const canonical = (name: string, target: string) => `CREATE TRIGGER ${name} AFTER UPDATE ON ${target} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${target} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`;
     const sql = String(trigger.sql).replace(/\s+/g, ' ').trim();
-    // The CLI emits both forms; require a complete match, never a SQL fragment.
-    if (trigger.temporary || (sql !== canonical(quote) && sql !== canonical(name => name))) {
+    // SQLite renames the target but keeps the trigger name and its quoting.
+    // Require the complete canonical body on the actual table in either form.
+    const supported = [quote(name), name].some(name =>
+      [quote(t), t].some(target => sql === canonical(name, target)));
+    if (trigger.temporary || !supported) {
       fail('', 'trigger', `Unsupported trigger ${trigger.name} on ${t}. Use the CLI writer to validate and record all trigger effects.`);
     }
   }

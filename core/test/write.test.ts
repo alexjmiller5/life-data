@@ -365,7 +365,40 @@ for (const quoted of [true, false]) test(`canonical Python timestamp triggers pr
   expect((await writeRow(db, 'order', { id: created.id, name: 'Keyword table' }, clock)).name).toBe('Keyword table');
 });
 
-for (const quoted of [true, false]) for (const change of ['extra-statement', 'changed-guard', 'missing-row-filter', 'changed-clock', 'wrong-name', 'temporary']) test(`timestamp trigger allowlist checks the full definition (${change}, quoted=${quoted})`, async () => {
+for (const quoted of [true, false]) for (const triggerQuoted of [true, false]) for (const name of ['items_updated_at', 'custom_clock']) test(`renamed timestamp trigger keeps its independent name (quoted=${quoted}, triggerQuoted=${triggerQuoted}, name=${name})`, async () => {
+  const db = await local();
+  await db.run('PRAGMA legacy_alter_table=OFF');
+  await db.run(timestampTrigger('items', quoted).replace(
+    quoted ? qident('items_updated_at') : 'items_updated_at', triggerQuoted ? qident(name) : name));
+  const created = await writeRow(db, 'items', { name: 'Before' }, clock);
+  await db.run('ALTER TABLE items RENAME TO renamed_items');
+  await db.run("UPDATE catalog_properties SET tbl='renamed_items'");
+  expect(await db.all("SELECT name,tbl_name FROM sqlite_master WHERE type='trigger'")).toEqual([
+    { name, tbl_name: 'renamed_items' },
+  ]);
+  const edited = await writeRow(db, 'renamed_items', { id: created.id, name: 'After' }, clock);
+  expect(edited.updated_at).toBe('2026-01-02T00:00:00.001Z');
+  expect(await db.all('SELECT * FROM renamed_items')).toEqual([edited]);
+  expect(await db.all('SELECT tbl,col,old,new,updated_at FROM history')).toEqual([
+    { tbl: 'renamed_items', col: 'name', old: 'Before', new: 'After', updated_at: edited.updated_at },
+  ]);
+});
+
+for (const quoted of [true, false]) test(`legacy rename with stale timestamp target fails closed (quoted=${quoted})`, async () => {
+  const db = await local();
+  await writeRow(db, 'items', { name: 'Before' }, clock);
+  await db.run(timestampTrigger('items', quoted));
+  await db.run('PRAGMA legacy_alter_table=ON');
+  await db.run('ALTER TABLE items RENAME TO renamed_items');
+  await db.run('PRAGMA legacy_alter_table=OFF');
+  await db.run("UPDATE catalog_properties SET tbl='renamed_items'");
+  const before = await db.all('SELECT * FROM renamed_items');
+  await rejects(writeRow(db, 'renamed_items', { id: 'item-1', name: 'After' }, clock), 'trigger');
+  expect(await db.all('SELECT * FROM renamed_items')).toEqual(before);
+  expect(await db.all('SELECT * FROM history')).toEqual([]);
+});
+
+for (const quoted of [true, false]) for (const change of ['extra-statement', 'changed-guard', 'missing-row-filter', 'changed-clock', 'wrong-target', 'temporary']) test(`timestamp trigger allowlist checks the full definition (${change}, quoted=${quoted})`, async () => {
   const db = await local();
   await writeRow(db, 'items', { name: 'Before', qty: 2 }, clock);
   let sql = timestampTrigger('items', quoted);
@@ -373,7 +406,7 @@ for (const quoted of [true, false]) for (const change of ['extra-statement', 'ch
   if (change === 'changed-guard') sql = sql.replace('WHEN NEW.updated_at = OLD.updated_at', 'WHEN 1');
   if (change === 'missing-row-filter') sql = sql.replace(' WHERE rowid = NEW.rowid', '');
   if (change === 'changed-clock') sql = sql.replace("'now'", "'2000-01-01'");
-  if (change === 'wrong-name') sql = sql.replace('items_updated_at', 'other_updated_at');
+  if (change === 'wrong-target') sql = sql.replace(quoted ? 'UPDATE "items"' : 'UPDATE items', 'UPDATE history');
   if (change === 'temporary') sql = sql.replace('CREATE TRIGGER', 'CREATE TEMP TRIGGER');
   await db.run(sql);
   const before = await db.all('SELECT * FROM items');
