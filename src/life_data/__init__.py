@@ -81,7 +81,10 @@ class _Connection(sqlite3.Connection):
 
 
 def connect(path: Path, manual_tx: bool = False) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, isolation_level=None if manual_tx else "", factory=_Connection)
+    # Bulk sync and validation can hold the writer beyond SQLite's five-second default.
+    conn = sqlite3.connect(
+        path, timeout=60, isolation_level=None if manual_tx else "", factory=_Connection
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

@@ -65,7 +65,7 @@ def test_cli_writer_waits_until_another_validation_snapshot_commits(db):
         )
         assert child.stdout.readline().strip() == "ready"
         with pytest.raises(subprocess.TimeoutExpired):
-            child.communicate(timeout=0.3)
+            child.communicate(timeout=5.5)
         conn.execute("INSERT INTO items (id,name) VALUES ('first','First')")
 
     try:

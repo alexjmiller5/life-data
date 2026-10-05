@@ -175,7 +175,8 @@ CLI.
   that has catalog properties OR is named by an invariant, `ValidationError`
   after ROLLBACK. Client writes reserve the writer with `BEGIN IMMEDIATE`
   before catalog reads and validation snapshots, so another writer cannot
-  invalidate the snapshot before its first mutation.
+  invalidate the snapshot before its first mutation. Connections wait up to
+  60 seconds for a competing writer, including bulk sync transactions.
   **Changed rows come from the per-table `temp._before_<t>`
   snapshot diff, never a timestamp comparison** - a clock collision at
   millisecond resolution cuts both ways (an untouched legacy row looks
