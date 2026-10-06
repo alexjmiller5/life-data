@@ -9,15 +9,23 @@ const revision = (alias, hasHubAt, updated=`${alias}.updated_at`) => `json_objec
 // writing transaction, including derives, direct SQL and physical deletions.
 export function subscriptionTriggers(id, sources) {
   return sources.flatMap((source, index) => ['INSERT','UPDATE','DELETE'].map(operation => {
+    if (source.version!==undefined && source.version!==2) throw new Error('invalid subscription trigger version');
+    const lifecycle=source.version===2 && source.lifecycle===true;
     const row = operation === 'DELETE' ? 'OLD' : 'NEW';
     const oldValue = column => operation === 'INSERT' ? 'NULL'
       : `CASE WHEN OLD.deleted_at IS NULL THEN OLD.${qident(column)} END`;
     const newValue = column => operation === 'DELETE' ? 'NULL' : `CASE WHEN NEW.deleted_at IS NULL THEN NEW.${qident(column)} END`;
     const changed = source.columns.map(column => `${oldValue(column)} IS NOT ${newValue(column)}`).join(' OR ');
+    const transition=operation==='INSERT'?'NEW.deleted_at IS NULL':operation==='DELETE'?'OLD.deleted_at IS NULL'
+      :'(OLD.deleted_at IS NULL) IS NOT (NEW.deleted_at IS NULL)';
+    const observed=lifecycle?`${changed} OR (${transition})`:changed;
     const changes = `(SELECT json_group_array(json(item)) FROM (${source.columns.map(column =>
       `SELECT json_object('column',${literal(column)},'old_value',${oldValue(column)},'new_value',${newValue(column)}) AS item WHERE ${oldValue(column)} IS NOT ${newValue(column)}`
     ).join(' UNION ALL ')}))`;
-    const kind = operation === 'UPDATE' ? "CASE WHEN NEW.deleted_at IS NOT NULL THEN 'delete' ELSE 'update' END" : literal(operation.toLowerCase());
+    const kind = operation === 'UPDATE'
+      ? (lifecycle?"CASE WHEN NEW.deleted_at IS NOT NULL THEN 'delete' WHEN OLD.deleted_at IS NOT NULL THEN 'restore' ELSE 'update' END"
+        :"CASE WHEN NEW.deleted_at IS NOT NULL THEN 'delete' ELSE 'update' END")
+      : literal(operation.toLowerCase());
     const before = operation === 'INSERT' ? 'NULL' : revision('OLD', source.hasHubAt);
     // The canonical clock runs before or after this AFTER trigger. NEW remains
     // the outer row image in either order. SQLite 'now' is stable for the entire
@@ -32,7 +40,7 @@ export function subscriptionTriggers(id, sources) {
     const active = `id=${literal(id)} AND state IN ('active','paused')`;
     const name = `_change_${id.replaceAll('-','')}_${index}_${operation.toLowerCase()}`;
     const sql = `CREATE TRIGGER ${qident(name)} AFTER ${operation} ON ${qident(source.table)}
-      WHEN (${changed}) AND EXISTS (SELECT 1 FROM _change_subscriptions WHERE ${active})
+      WHEN (${observed}) AND EXISTS (SELECT 1 FROM _change_subscriptions WHERE ${active})
       BEGIN
         SELECT RAISE(ABORT,'life_outbox_event_size') WHERE ${bytes} > ${MAX_EVENT_BYTES};
         SELECT RAISE(ABORT,'life_outbox_capacity') WHERE EXISTS (

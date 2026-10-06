@@ -2,6 +2,7 @@ import type { CoreHandlers, UndoAction, UndoArgs, WriteArgs } from './contract.g
 import type { SqlDriver } from './driver.ts';
 import { commitWrite, ValidationError, type WriteCapture } from './write.ts';
 import type { Row } from './validate.ts';
+import { resolveRowAction } from './row-actions.ts';
 
 const managed = new Set(['id', 'created_at', 'updated_at', 'hub_at', 'deleted_at']);
 type Receipt = { action: UndoAction; inverse: Row; capture: WriteCapture };
@@ -80,6 +81,20 @@ export function createWriteSession(db: SqlDriver, origin: string) {
       return result.row;
     });
   };
+  const runRowAction: CoreHandlers['runRowAction'] = async input => {
+    const args=snapshot(input);
+    return queued(async()=>{
+      const committed=await db.transaction(async()=>{
+        const tx:SqlDriver={all:db.all.bind(db),run:db.run.bind(db),transaction:body=>body(),
+          ...(db.readDependencies?{readDependencies:db.readDependencies.bind(db)}:{})};
+        const write=await resolveRowAction(tx,args);
+        const result=await commitWrite(tx,write.table,write.patch,{origin,expectedUpdatedAt:write.expectedUpdatedAt},true);
+        return {table:write.table,result};
+      });
+      current=receipt(committed.table,committed.result.capture!);
+      return committed.result.row;
+    });
+  };
   const undoStatus: CoreHandlers['undoStatus'] = () => queued(async () => ({ action: current ? { ...current.action } : null }));
   async function otherMutation<A, T>(input: A, operation: (args: A) => Promise<T>): Promise<T> {
     const args = snapshot(input);
@@ -89,5 +104,5 @@ export function createWriteSession(db: SqlDriver, origin: string) {
       return result;
     });
   }
-  return { write, undo, undoStatus, otherMutation };
+  return { write, runRowAction, undo, undoStatus, otherMutation };
 }

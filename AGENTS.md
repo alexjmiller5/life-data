@@ -37,6 +37,10 @@ CLI.
   contracts and current boundaries. `worker/src/validate.js` re-exports the
   shared validator and adds hub-specific validation.
   `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
+- `core/src/source-links.ts` resolves supported Notion URLs through live,
+  whole-record `imported_from` provenance. It never infers a destination from
+  coincidental row IDs. Missing mappings stay external; ambiguous mappings fail.
+  Hosts re-read the returned destination through their usual navigation guards.
 - `core/src/references.ts` owns incoming catalog relations. `referenceSources`
   lists metadata without scanning data; `referencedBy` reads one bounded local
   group (20 default, 100 maximum). Identity comparisons use the target primary
@@ -84,6 +88,15 @@ CLI.
   separate from local edits/search and deduplicate IDs across changing pages.
   No coverage, count or snapshot guarantee follows from browsing; usage caps
   still apply and core never retries. The bridge contract owns both operations.
+- `core/src/view.ts` compiles bounded AND/OR groups, runtime Today operands and
+  option-rank sorting. Version 2 saved definitions retain timezone, groups and
+  optional `dayStartMinutes` (integer 0..1439, absent means midnight). Hosts
+  supply consecutive local policy boundaries on each query, never persist the
+  calendar, and refresh at the boundary/resume. Resolve a DST gap to the next
+  valid local instant and a repeated boundary to its first occurrence. The
+  date label belongs to the interval's start; source timestamps stay intact.
+  Multi-select order uses the first selected
+  option; unknown/empty values trail known ones. Version 1 remains supported.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.
@@ -96,6 +109,13 @@ CLI.
   advancing each affected revision beyond its previous value and at least to
   database time so LWW and push discovery retain the rename under clock skew.
   Returned view columns are SQL projection: clients need full rows to edit.
+- `core/src/row-actions.ts` validates version 2 literal action patches and layout
+  references. `runRowAction` resolves the current definition and full live row
+  under the mutation session's writer transaction, requires both the displayed
+  saved-view `expectedViewUpdatedAt` and selected row `expectedUpdatedAt`,
+  and publishes an ordinary undo receipt only after commit. Keep identity,
+  clocks, deletion, derived and immutable fields out of action definitions.
+  Actions use ordinary catalog/history/coverage checks and pending sync state.
 - `syncStatus` includes durable `skippedTables` from the last completed pull
   round, stored in the final ready transaction even when pushes are rejected.
   `last_sync` advances only without rejections. Hosts consume this
@@ -451,7 +471,9 @@ access. Core enrollment requires advertised schema `full-ddl-v1` and
 `replica_sync: true`; only entirely absent capabilities use the legacy full-token
 default. Consumer enrollment still rejects operator/admin credentials. Capabilities
 never broaden route scopes. The generated contract includes the wire types.
-Subscriptions are advertised as null until durable pull routes are implemented.
+Subscriptions advertise `durable-pull-v1`; conditional row edits advertise
+`conditional_patch: revision-v1`. Missing optional capabilities never authorize
+falling back to an unconditional write.
 
 Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
 body.table before data access. Narrow consumers use bounded direct rows APIs;
@@ -679,6 +701,12 @@ mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
 writes create no event. Paused subscriptions keep recording; retired ones stop.
 Capacity and per-event size failures roll back the source mutation. Canonical
 shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
+Selected columns support TEXT, INTEGER and REAL, preserving numeric JSON values.
+Per-source `lifecycle: true` records live insertion/deletion/restoration even with
+empty changes; restoration is `restore`. Default subscriptions retain value-only
+events and `update` on restore. Stored trigger sources carry version 2; missing
+version regenerates the original SQL exactly. Never reinterpret persisted trigger
+definitions. `subscription_features: scalar-lifecycle-v1` advertises the extension.
 Activation rejects custom source/outbox triggers; only complete canonical timestamp
 statements (quoted or unquoted CLI identifiers) and exact generated recording
 triggers are supported. Timestamp revisions use the same

@@ -42,6 +42,63 @@ async function insert(db: TestSql, id: string, value: unknown, name = id) {
   await db.run('INSERT INTO views(id,name,tbl,definition,updated_at) VALUES (?,?,?,?,?)', [id,name,'items',typeof value === 'string' ? value : JSON.stringify(value),T0]);
 }
 
+test('version 2 grouped and relative definitions round-trip without persisting a calendar',async()=>{
+  const db=await local();
+  await db.run('ALTER TABLE items ADD COLUMN due TEXT');
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('items.due','items','due','date')");
+  const definition:core.SavedViewDefinition={version:2,timeZone:'America/New_York',groups:[{match:'any',filters:[{column:'qty',op:'gte',value:3},{column:'qty',op:'empty'}]}],filters:[{column:'due',op:'lte',relative:'today'}]};
+  const saved=await save(db,{table:'items',name:'Daily',definition});
+  expect(saved.unavailable).toBeNull();expect(saved.definition).toEqual(definition);
+  const reopened=(await list(db)).views[0];expect(reopened.definition).toEqual(definition);
+  expect(reopened.view).toEqual({table:'items',groups:definition.groups,filters:definition.filters});
+  await expect(core.readRows(db,reopened.view!)).rejects.toThrow(/calendar/i);
+  const before=await db.all('SELECT * FROM views');
+  for(const bad of [{...definition,calendar:{today:'2026-03-08'}},{...definition,timeZone:undefined},{...definition,version:1}]){
+    await expect(save(db,{table:'items',name:'Invalid',definition:bad})).rejects.toThrow();
+  }
+  expect(await db.all('SELECT * FROM views')).toEqual(before);
+});
+
+test('version 2 query extensions remain unavailable to version 1 definitions',async()=>{
+  const db=await local();
+  await insert(db,'old',{version:1});await insert(db,'future',{version:3});
+  await insert(db,'bad',{version:1,groups:[{match:'any',filters:[{column:'qty',op:'empty'}]}]});
+  const result=await list(db);
+  expect(result.views.find(v=>v.id==='old')?.unavailable).toBeNull();
+  for(const id of ['future','bad'])expect(result.views.find(v=>v.id===id)?.unavailable).toBeTruthy();
+});
+
+test.each([undefined, 0, 180, 1439])('saved day boundary round-trips as host policy: %s', async dayStartMinutes => {
+  const db = await local();
+  const definition = { version: 2, timeZone: 'Europe/Berlin', ...(dayStartMinutes === undefined ? {} : { dayStartMinutes }) };
+  const saved = await save(db, { table: 'items', name: 'Policy', definition });
+  expect(saved.definition).toEqual(definition);
+  expect(saved.view).toEqual({ table: 'items' });
+  const reopened = (await list(db)).views[0];
+  expect(reopened.definition).toEqual(definition);
+  expect(reopened.view).toEqual({ table: 'items' });
+  expect(JSON.parse(String((await db.all('SELECT definition FROM views'))[0].definition))).toEqual(definition);
+});
+
+test.each([-1, 1440, 0.5, '180', null, true])('invalid day boundary rejects writes and remains unavailable when imported: %s', async dayStartMinutes => {
+  const db = await local();
+  const definition = { version: 2, timeZone: 'Europe/Berlin', dayStartMinutes };
+  await expect(save(db, { table: 'items', name: 'Invalid', definition })).rejects.toThrow(/day boundary/i);
+  expect(await db.all('SELECT * FROM views')).toEqual([]);
+  expect(await db.all('SELECT * FROM history')).toEqual([]);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
+  await insert(db, 'imported', definition);
+  expect((await list(db)).views[0]).toMatchObject({ view: null, definition: null });
+  expect((await list(db)).views[0].unavailable).toMatch(/day boundary/i);
+});
+
+test('version 1 cannot silently accept a configured day boundary', async () => {
+  const db = await local();
+  await expect(save(db, { table: 'items', name: 'Invalid', definition: { version: 1, dayStartMinutes: 0 } })).rejects.toThrow();
+  await insert(db, 'legacy', { version: 1 });
+  expect((await list(db)).views[0]).toMatchObject({ definition: { version: 1 }, unavailable: null });
+});
+
 test.each(['canonical', 'ddl', 'metadata'])('a standalone browser bundle recognizes its packaged saved-view manifest: %s', async variant => {
   const temp = await mkdtemp(join(tmpdir(), 'core-manifest-'));
   try {
@@ -189,7 +246,7 @@ test.each([
 });
 
 test.each([
-  { version: 2 }, { version: 1, table: 'elsewhere' }, { version: 1, limit: 10 }, { version: 1, offset: 4 },
+  { version: 3 }, { version: 1, table: 'elsewhere' }, { version: 1, limit: 10 }, { version: 1, offset: 4 },
   { version: 1, owner: 'private' }, { version: 1, columns: [] }, { version: 1, columns: ['missing'] },
   { version: 1, columns: ['name', 'name'] },
   { version: 1, filters: [{ column: 'qty', op: 'sql', value: '1=1' }] },
@@ -292,7 +349,7 @@ test('every malformed definition stays per-view unavailable while driver failure
   await expect(list(db)).rejects.toThrow('disk failure');
 });
 
-test('shared views round-trip through the real hub with history, own receipts and no provisioning DDL', async () => {
+test.each([1, 2])('version %s shared views round-trip through the real hub with history, own receipts and no provisioning DDL', async version => {
   const { db, remote, hub, requests } = setup(); databases.push(db.db, remote.db);
   const ddl = [
     'ALTER TABLE catalog_properties ADD COLUMN source TEXT',
@@ -312,7 +369,7 @@ test('shared views round-trip through the real hub with history, own receipts an
   }
   await core.sync(db, hub);
   const handlers = core.createCoreHandlers(db, () => { throw new Error('unused'); }, 'fixture');
-  const created = await handlers.saveView({ table: 'items', name: 'Shared', definition: { version: 1, columns: ['name'] } });
+  const created = await handlers.saveView({ table: 'items', name: 'Shared', definition: { version, columns: ['name'], ...(version === 2 ? { timeZone: 'Europe/Berlin', dayStartMinutes: 180 } : {}) } });
   expect((await handlers.status({})).pendingUiEdits).toBe(1);
   await core.sync(db, hub);
   expect((await handlers.status({})).pendingUiEdits).toBe(0);

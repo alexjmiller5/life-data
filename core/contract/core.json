@@ -50,6 +50,9 @@
         },
         "direction": {
           "$ref": "#/$defs/SortDirection"
+        },
+        "mode": {
+          "$ref": "#/$defs/SortMode"
         }
       },
       "required": [
@@ -68,6 +71,9 @@
         },
         "value": {
           "$ref": "#/$defs/FilterValue"
+        },
+        "relative": {
+          "$ref": "#/$defs/FilterRelative"
         }
       },
       "required": [
@@ -110,6 +116,15 @@
         },
         "search": {
           "type": "string"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterGroup"
+          }
+        },
+        "calendar": {
+          "$ref": "#/$defs/CalendarContext"
         }
       },
       "required": [
@@ -1024,6 +1039,31 @@
           "additionalProperties": {
             "type": "number"
           }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterGroup"
+          }
+        },
+        "timeZone": {
+          "type": "string"
+        },
+        "dayStartMinutes": {
+          "type": "integer",
+          "description": "Version 2 host calendar policy: integer minutes after local midnight, 0 through 1439. Omitted means 0. Applied with timeZone to runtime CalendarContext, never persisted as resolved timestamps."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RowAction"
+          }
+        },
+        "layout": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ViewLayoutItem"
+          }
         }
       },
       "required": [
@@ -1819,6 +1859,18 @@
           "enum": [
             "opaque-key-v1"
           ]
+        },
+        "conditional_patch": {
+          "type": "string",
+          "enum": [
+            "revision-v1"
+          ]
+        },
+        "subscription_features": {
+          "type": "string",
+          "enum": [
+            "scalar-lifecycle-v1"
+          ]
         }
       },
       "required": [
@@ -1869,6 +1921,162 @@
         "message"
       ],
       "description": "HTTP 403. Canonical message and response fixture: tests/fixtures/hub-capabilities-contract.json."
+    },
+    "SortMode": {
+      "type": "string",
+      "enum": [
+        "value",
+        "options"
+      ]
+    },
+    "FilterRelative": {
+      "type": "string",
+      "enum": [
+        "today"
+      ]
+    },
+    "FilterGroup": {
+      "type": "object",
+      "properties": {
+        "match": {
+          "type": "string",
+          "enum": [
+            "all",
+            "any"
+          ]
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filter"
+          }
+        }
+      },
+      "required": [
+        "match",
+        "filters"
+      ]
+    },
+    "CalendarContext": {
+      "type": "object",
+      "properties": {
+        "today": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "today",
+        "start",
+        "end"
+      ]
+    },
+    "RowAction": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "values": {
+          "$ref": "#/$defs/Row"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "values"
+      ]
+    },
+    "ViewLayoutItem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "column",
+            "action"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "RunRowActionArgs": {
+      "type": "object",
+      "properties": {
+        "viewId": {
+          "type": "string"
+        },
+        "actionId": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        },
+        "expectedViewUpdatedAt": {
+          "type": "string",
+          "description": "Revision of the saved-view definition displayed for this action. Checked atomically with the selected row revision."
+        }
+      },
+      "required": [
+        "viewId",
+        "actionId",
+        "rowId",
+        "expectedUpdatedAt",
+        "expectedViewUpdatedAt"
+      ]
+    },
+    "SourceLinkArgs": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "SourceRecordDestination": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "row": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "row"
+      ]
+    },
+    "SourceLinkResult": {
+      "type": "object",
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/SourceRecordDestination"
+        }
+      },
+      "required": []
     }
   },
   "operations": {
@@ -2106,6 +2314,23 @@
       "result": {
         "$ref": "#/$defs/RejectionsPage"
       }
+    },
+    "runRowAction": {
+      "args": {
+        "$ref": "#/$defs/RunRowActionArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
+      }
+    },
+    "resolveSourceLink": {
+      "args": {
+        "$ref": "#/$defs/SourceLinkArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SourceLinkResult"
+      },
+      "description": "Resolve supported external source URLs through live whole-record imported_from provenance. Missing mappings remain external; ambiguous identities fail. Hosts re-resolve the destination before guarded navigation."
     }
   }
 }

@@ -3,6 +3,7 @@ import { D1Shim } from './d1shim.js';
 import { ScopeDenied } from '../src/scopes.js';
 import contract from '../../tests/fixtures/hub-subscriptions-contract.json';
 import { createSubscription } from '../src/subscriptions.js';
+import { subscriptionTriggers, trustedSubscriptionTrigger } from '../src/subscription-triggers.js';
 import worker, { ROUTES, authenticate } from '../src/index.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,92 @@ const config = {label:'Capture fixture',sources:[{table:'articles',columns:['url
 const rows = (db,id) => db.db.query('SELECT CAST(seq AS TEXT) AS seq,event_id,recorded_at,payload_json FROM _change_events WHERE subscription_id=? ORDER BY seq').all(id).map(r=>({...JSON.parse(r.payload_json),id:r.event_id,seq:r.seq,recorded_at:r.recorded_at}));
 const write = (db,values) => ROUTES['/v1/rows/push']({table:'articles',columns:Object.keys(values),rows:[values]},db);
 const change = (id,url,second=0,extra={}) => ({id,url,updated_at:`2026-10-03T00:00:${String(second).padStart(2,'0')}.000Z`,...extra});
+
+test('scalar subscriptions retain numeric checkbox and real values through toggles',async()=>{
+  const db=database();
+  db.db.exec('ALTER TABLE articles ADD COLUMN flag INTEGER; ALTER TABLE articles ADD COLUMN score REAL');
+  const sub=await createSubscription(db,{...config,sources:[{table:'articles',columns:['flag','score']}]});
+  db.db.exec("INSERT INTO articles(id,flag,score) VALUES ('a',0,1.5); UPDATE articles SET flag=1,score=2.25; UPDATE articles SET flag=0; UPDATE articles SET flag=0");
+  expect(rows(db,sub.id).map(e=>e.changes)).toEqual([
+    [{column:'flag',old_value:null,new_value:0},{column:'score',old_value:null,new_value:1.5}],
+    [{column:'flag',old_value:0,new_value:1},{column:'score',old_value:1.5,new_value:2.25}],
+    [{column:'flag',old_value:1,new_value:0}],
+  ]);
+});
+
+test('opt-in lifecycle events include all-null rows, logical restore and physical delete',async()=>{
+  const db=database(),sub=await createSubscription(db,{...config,sources:[{...config.sources[0],lifecycle:true}]});
+  expect(sub.sources[0].lifecycle).toBe(true);
+  db.db.exec("INSERT INTO articles(id) VALUES ('a'); UPDATE articles SET updated_at='changed'; UPDATE articles SET deleted_at='deleted'; UPDATE articles SET deleted_at=NULL; DELETE FROM articles");
+  expect(rows(db,sub.id).map(e=>[e.operation,e.changes])).toEqual([
+    ['insert',[]],['delete',[]],['restore',[]],['delete',[]],
+  ]);
+  db.db.exec("INSERT INTO articles(id,deleted_at) VALUES ('dead','deleted'); UPDATE articles SET updated_at='changed'; DELETE FROM articles");
+  expect(rows(db,sub.id)).toHaveLength(4);
+  const stored=JSON.parse(db.db.query('SELECT trigger_sources_json FROM _change_subscriptions WHERE id=?').get(sub.id).trigger_sources_json);
+  expect(stored[0]).toMatchObject({version:2,lifecycle:true});
+});
+
+test('default and explicit false subscriptions retain legacy null and restore behavior',async()=>{
+  const db=database(),legacy=await createSubscription(db,config);
+  const disabled=await createSubscription(db,{...config,sources:[{...config.sources[0],lifecycle:false}]});
+  db.db.exec("INSERT INTO articles(id) VALUES ('a'); UPDATE articles SET deleted_at='deleted'; UPDATE articles SET deleted_at=NULL; DELETE FROM articles");
+  expect(rows(db,legacy.id)).toEqual([]);expect(rows(db,disabled.id)).toEqual([]);
+  db.db.exec("INSERT INTO articles(id,url) VALUES ('a','https://example.test/a'); UPDATE articles SET deleted_at='deleted'; UPDATE articles SET deleted_at=NULL; DELETE FROM articles");
+  for(const sub of [legacy,disabled])expect(rows(db,sub.id).map(e=>e.operation)).toEqual(['insert','delete','update','delete']);
+});
+
+test('persisted legacy trigger SQL remains byte-for-byte compatible and trusted',async()=>{
+  const db=database(),sub=await createSubscription(db,config);
+  const sources=[{table:'articles',columns:['url','alternate'],hasClock:false,hasHubAt:true}];
+  const fixedId='11111111-1111-4111-8111-111111111111';
+  expect(subscriptionTriggers(fixedId,sources).map(t=>new Bun.CryptoHasher('sha256').update(t.sql).digest('hex'))).toEqual([
+    '6faeb240a8a4848034e4ed26cbda4bb566a311a088e49ea6d3b903f3ac845066',
+    '991d77b94da64c7401713d3df8cacc2b810a5fd4b6b1a07ba4253ddb29d177da',
+    '646d79a2d365db0d140f4df2391c38d2085290059535d1fe243e46e65d450333',
+  ]);
+  db.db.query('UPDATE _change_subscriptions SET trigger_sources_json=? WHERE id=?').run(JSON.stringify(sources),sub.id);
+  for(const t of subscriptionTriggers(sub.id,sources)){
+    db.db.exec(`DROP TRIGGER "${t.name}"; ${t.sql}`);
+    expect(await trustedSubscriptionTrigger(db,{...t,tbl_name:t.table})).toBe(true);
+  }
+  await write(db,change('a','https://example.test/a',1));
+  expect(rows(db,sub.id)).toHaveLength(1);
+});
+
+test('unsupported scalar selectors and malformed lifecycle settings cannot activate recording',async()=>{
+  for(const ddl of ['ALTER TABLE articles ADD COLUMN payload BLOB','ALTER TABLE articles ADD COLUMN payload TEXT GENERATED ALWAYS AS (url) VIRTUAL']){
+    const db=database();db.db.exec(ddl);
+    await expect(createSubscription(db,{...config,sources:[{table:'articles',columns:['payload']}]})).rejects.toThrow();
+  }
+  for(const lifecycle of ['true',1,null]){
+    const db=database();
+    await expect(createSubscription(db,{...config,sources:[{...config.sources[0],lifecycle}]})).rejects.toThrow();
+  }
+});
+
+test('versioned lifecycle triggers allow narrow edits but changed SQL is rejected',async()=>{
+  const db=database(),{call,mint}=await api(db);
+  const res=await call('/v1/subscriptions',{method:'POST',body:{...config,sources:[{...config.sources[0],lifecycle:true}]}});
+  expect(res.status).toBe(201);const sub=await res.json();
+  const token=await mint(['tables:write:articles'],'writer');
+  db.db.exec("INSERT INTO articles(id,updated_at,hub_at) VALUES ('a','2026-10-03T00:00:00.000Z','2026-10-03T00:00:00.000Z')");
+  const body={table:'articles',id:'a',values:{url:'https://example.test/a'},expected_revision:{updated_at:'2026-10-03T00:00:00.000Z',hub_at:'2026-10-03T00:00:00.000Z'}};
+  expect((await call('/v1/rows/patch',{method:'POST',body,token})).status).toBe(200);
+  expect(rows(db,sub.id).map(e=>e.operation)).toEqual(['insert','update']);
+  const trigger=db.db.query("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name=?").get(`_change_${sub.id.replaceAll('-','')}_0_update`);
+  db.db.exec(`DROP TRIGGER "${trigger.name}"; ${trigger.sql.replace('last_seq=last_seq+1','last_seq=last_seq+2')}`);
+  body.expected_revision=db.db.query("SELECT updated_at,hub_at FROM articles WHERE id='a'").get();
+  body.values.url='https://example.test/b';
+  expect((await call('/v1/rows/patch',{method:'POST',body,token})).status).toBe(403);
+  expect(db.db.query("SELECT url FROM articles WHERE id='a'").get().url).toBe('https://example.test/a');
+});
+
+test('sessions advertise scalar lifecycle events separately from the delivery protocol',async()=>{
+  const {call}=await api();
+  const session=await call('/v1/session');
+  expect((await session.json()).capabilities.subscription_features).toBe('scalar-lifecycle-v1');
+});
 
 test('activation records only subsequent accepted changes, including fast A-to-B and deletes',async()=>{
   const db=database();await write(db,change('existing','https://example.test/existing'));

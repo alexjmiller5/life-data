@@ -63,7 +63,9 @@ test('Swift codecs preserve required nulls, optional presence, and safe integers
   expect(swift).toContain('try container.encode(nextCursor, forKey: .nextCursor)');
   expect(swift).toContain('container.contains(.readAt)');
   expect(swift).toContain('9_007_199_254_740_991');
-  expect(swift).toContain('public init(column: String, op: CoreFilterOp, value: CoreFilterValue? = nil)');
+  expect(swift).toContain('public init(column: String, op: CoreFilterOp, value: CoreFilterValue? = nil, relative: CoreFilterRelative? = nil)');
+  expect(swift).toContain('public struct CoreCalendarContext:');
+  expect(swift).toContain('public struct CoreFilterGroup:');
 });
 
 test('generated DTOs and requests carry projection and edit revision requirements', () => {

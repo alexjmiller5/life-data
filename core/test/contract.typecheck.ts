@@ -42,3 +42,8 @@ const incompleteRejections: CoreResult<'rejections'> = { rejections: [] };
 // @ts-expect-error stored sync errors are whole rejection objects, not flattened messages
 const flattenedRejection: CoreResult<'rejections'> = { rejections: [{ table: 'items', rowID: 'a', submitted: { id: 'a' }, errors: ['Denied'] }], nextOffset: null };
 void [invalidRejections, incompleteRejections, flattenedRejection];
+// @ts-expect-error every row action needs the selected row revision
+const unsafeAction: CoreArgs<'runRowAction'> = { viewId:'view',actionId:'close',rowId:'a' };
+// @ts-expect-error layout entries cannot execute code
+const scriptLayout: CoreArgs<'saveView'> = { table:'items',name:'Example',definition:{version:2,layout:[{kind:'script',id:'code'}]} };
+void [unsafeAction, scriptLayout];
