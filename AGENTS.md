@@ -111,7 +111,8 @@ CLI.
   Returned view columns are SQL projection: clients need full rows to edit.
 - `core/src/row-actions.ts` validates version 2 literal action patches and layout
   references. `runRowAction` resolves the current definition and full live row
-  under the mutation session's writer transaction, requires a selected revision,
+  under the mutation session's writer transaction, requires both the displayed
+  saved-view `expectedViewUpdatedAt` and selected row `expectedUpdatedAt`,
   and publishes an ordinary undo receipt only after commit. Keep identity,
   clocks, deletion, derived and immutable fields out of action definitions.
   Actions use ordinary catalog/history/coverage checks and pending sync state.

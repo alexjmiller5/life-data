@@ -2028,13 +2028,18 @@
         },
         "expectedUpdatedAt": {
           "type": "string"
+        },
+        "expectedViewUpdatedAt": {
+          "type": "string",
+          "description": "Revision of the saved-view definition displayed for this action. Checked atomically with the selected row revision."
         }
       },
       "required": [
         "viewId",
         "actionId",
         "rowId",
-        "expectedUpdatedAt"
+        "expectedUpdatedAt",
+        "expectedViewUpdatedAt"
       ]
     },
     "SourceLinkArgs": {

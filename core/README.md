@@ -84,6 +84,11 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   `updated_at`, `deleted_at`, `definition`, `view` and `unavailable`. Malformed
   definitions, unknown versions, missing tables and removed columns disable
   that record without failing the whole list or modifying stored data.
+- `runRowAction({ viewId, actionId, rowId, expectedUpdatedAt, expectedViewUpdatedAt })`
+  runs a saved literal patch through the ordinary writer. Hosts pass the row
+  revision and the saved-view revision whose action they displayed. Both are
+  checked under the same writer transaction; a changed definition requires a
+  reload before execution. Failed actions preserve row history and prior undo.
 - `saveView(driver, { table, name, definition, id?, expectedUpdatedAt? })`
   creates or edits through `writeRow`; an existing ID requires its selected
   revision. `deleteView(driver, { id, expectedUpdatedAt })` tombstones without

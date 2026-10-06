@@ -21,7 +21,7 @@ async function fixture() {
   const h=core.createCoreHandlers(db,()=>{throw Error('Actions must use local writes');},'fixture');
   const definition:core.SavedViewDefinition={version:2,columns:['state'],actions:[{id:'close',label:'Close',values:{state:'Closed'}}],layout:[{kind:'action',id:'close'},{kind:'column',id:'state'}]};
   const view=await core.saveView(db,{table:'items',name:'Review',definition});
-  const run=(extra:Record<string,unknown>={})=>h.runRowAction({viewId:view.id,actionId:'close',rowId:'a',expectedUpdatedAt:T0,...extra});
+  const run=(extra:Record<string,unknown>={})=>h.runRowAction({viewId:view.id,actionId:'close',rowId:'a',expectedUpdatedAt:T0,expectedViewUpdatedAt:view.updated_at!,...extra});
   return {db,h,view,run,definition};
 }
 const item=(db:TestSql,id='a')=>db.all('SELECT * FROM items WHERE id=?',[id]).then(rows=>rows[0]);
@@ -45,12 +45,45 @@ test('double clicks and stale actions cannot overwrite a later edit or append hi
   await expect(run()).rejects.toThrow();expect(await item(db)).toEqual(before);expect(await history(db)).toEqual(log);
 });
 
-test('an action resolves the current saved definition and rejects absent actions and rows',async()=>{
-  const {db,run,view,definition}=await fixture();
-  const changed={...definition,actions:[{id:'close',label:'Rename',values:{name:'Current definition'}}]};
-  await db.run('UPDATE views SET definition=? WHERE id=?',[JSON.stringify(changed),view.id]);
-  expect(await run()).toMatchObject({name:'Current definition',state:'Open'});
-  for(const args of [{actionId:'missing'},{rowId:'missing'},{viewId:'missing'},{expectedUpdatedAt:undefined}])await expect(run(args)).rejects.toThrow();
+test('an action requires the displayed saved-view revision and the selected row revision',async()=>{
+  const {db,h,run,view,definition}=await fixture();
+  const before=await item(db),log=await history(db),undo=await h.undoStatus({});
+  const changed=await core.saveView(db,{table:'items',id:view.id,name:view.name,
+    expectedUpdatedAt:view.updated_at!,definition:{...definition,actions:[{id:'close',label:'Rename',values:{name:'Current definition'}}]}});
+  await expect(run()).rejects.toThrow('Saved view changed');
+  expect(await item(db)).toEqual(before);expect(await history(db)).toEqual(log);
+  expect(await h.undoStatus({})).toEqual(undo);
+  expect(await run({expectedViewUpdatedAt:changed.updated_at})).toMatchObject({name:'Current definition',state:'Open'});
+});
+
+test('a same-ID action changed while execution waits for the writer transaction cannot execute',async()=>{
+  const {db,h,run,view,definition}=await fixture();
+  await h.write({table:'items',patch:{id:'b',qty:9},expectedUpdatedAt:T0});
+  const before=await item(db),log=await history(db),undo=await h.undoStatus({});
+  const transaction=db.transaction.bind(db);
+  let entered!:()=>void,release!:()=>void;
+  const waiting=new Promise<void>(resolve=>{entered=resolve;}),ready=new Promise<void>(resolve=>{release=resolve;});
+  db.transaction=async body=>{db.transaction=transaction;entered();await ready;return transaction(body);};
+  const pending=Promise.resolve(run());
+  // Attach the rejection handler before releasing the transaction gate.
+  const result=pending.then(value=>({value,error:null}),error=>({value:null,error}));
+  await waiting;
+  try {
+    await core.saveView(db,{table:'items',id:view.id,name:view.name,expectedUpdatedAt:view.updated_at!,
+      definition:{...definition,actions:[{id:'close',label:'Close',values:{state:'Closed',qty:99}}]}});
+  } finally { release(); }
+  const outcome=await result;
+  expect(outcome.value).toBeNull();expect(outcome.error?.message).toContain('Saved view changed');
+  expect(await item(db)).toEqual(before);expect(await history(db)).toEqual(log);
+  expect(await h.undoStatus({})).toEqual(undo);
+});
+
+test('absent targets and missing or invalid view and row revisions fail closed',async()=>{
+  const {db,run}=await fixture();
+  for(const args of [{actionId:'missing'},{rowId:'missing'},{viewId:'missing'},
+    {expectedUpdatedAt:undefined},{expectedViewUpdatedAt:undefined},
+    {expectedViewUpdatedAt:null},{expectedViewUpdatedAt:'invalid'}])await expect(run(args)).rejects.toThrow();
+  expect(await item(db)).toMatchObject({name:'Original',state:'Open'});expect(await history(db)).toEqual([]);
 });
 
 test('deleted rows and deleted or invalid saved views cannot run actions',async()=>{

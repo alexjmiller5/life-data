@@ -50,11 +50,13 @@ export function validateRowActions(value: Row, catalog: Catalog, table: string):
 /** Called within the mutation session's writer transaction. Both the saved
  * definition and the complete row are resolved under the same reservation. */
 export async function resolveRowAction(db: SqlDriver, args: RunRowActionArgs): Promise<WriteArgs> {
-  object(args,['viewId','actionId','rowId','expectedUpdatedAt']);
+  object(args,['viewId','actionId','rowId','expectedUpdatedAt','expectedViewUpdatedAt']);
   if (![args.viewId,args.actionId,args.rowId].every(v=>typeof v==='string' && v.trim())
-    || !validEditTimestamp(args.expectedUpdatedAt)) throw new Error('Row actions require a target and selected revision.');
+    || !validEditTimestamp(args.expectedUpdatedAt) || !validEditTimestamp(args.expectedViewUpdatedAt))
+    throw new Error('Row actions require a target and selected row and saved-view revisions.');
   const view=await loadSavedView(db,args.viewId);
   if (view.unavailable || !view.definition) throw new Error(view.unavailable ?? 'Saved view is unavailable.');
+  if (view.updated_at!==args.expectedViewUpdatedAt) throw new Error('Saved view changed. Reload it before running this action.');
   const action=view.definition.actions?.find(a=>a.id===args.actionId);
   if (!action) throw new Error('Saved action is unavailable.');
   const row=(await db.all(`SELECT * FROM main.${qident(view.tbl)} WHERE id=? AND deleted_at IS NULL`,[args.rowId]))[0];
