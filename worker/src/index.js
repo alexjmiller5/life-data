@@ -11,7 +11,13 @@ import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
-import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
+import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority } from "./auth.js";
+import { governanceOperation, governanceFailure } from './governance-protocol.js';
+import { ensureEvidenceStorage } from './governance-evidence.js';
+import {assertGenericBody,assertGenericDDL,assertGenericState} from './governance-isolation.js';
+import {handleGovernance} from './governance.js';
+import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
+import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
@@ -71,10 +77,13 @@ async function resolveTenant(request, env, ctx) {
   }
   if (!token || !env.HUB_TOKEN) return null;
   if (tokensMatch(token, env.HUB_TOKEN)) {
-    return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: ["admin"], name: "admin", admin: true };
+    return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: ["admin"], name: "admin", admin: true, governance:null };
   }
   if (!env.AUTH_DB) return null;
-  await ensureAuthReady(env.AUTH_DB);
+  const preview=governanceOperation(request)?.preview;
+  if (preview) {
+    if (!await env.AUTH_DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_tokens'").first()) return null;
+  } else await ensureAuthReady(env.AUTH_DB);
   const hash = await hashToken(token);
   const row = await env.AUTH_DB.prepare(
     "SELECT name, scopes FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
@@ -82,14 +91,15 @@ async function resolveTenant(request, env, ctx) {
     .bind(hash)
     .first();
   if (!row) return null;
-  ctx.waitUntil(
+  if (!preview) ctx.waitUntil(
     env.AUTH_DB.prepare(
       "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE hash = ?"
     )
       .bind(hash)
       .run()
   );
-  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false };
+  const governance=await readGovernanceAuthority(env.AUTH_DB,hash);
+  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance };
 }
 
 // Decode exactly once and reject ambiguous separators/escape sequences. The same
@@ -156,10 +166,11 @@ const TOKEN_ROUTES = {
     const value =
       "lt_" + [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
     await ensureAuthReady(tenant.authDb);
-    await tenant.authDb
-      .prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)")
-      .bind(await hashToken(value), body.name, body.scopes || "full")
-      .run();
+    const hash=await hashToken(value);
+    await tenant.authDb.batch([
+      tenant.authDb.prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)").bind(hash,body.name,body.scopes || 'full'),
+      authorityStatement(tenant.authDb,hash,'agent'),
+    ]);
     return { name: body.name, scopes: body.scopes || "full", token: value }; // value shown ONCE
   },
   "/v1/tokens/revoke": async (body, tenant) => {
@@ -193,6 +204,8 @@ const logDerive = (p) =>
 
 async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
+  await ensureEvidenceStorage(db);
+  await ensureProposalStorage(db);
 }
 
 // Does the HUB's own schema have hub_at? Never ask the pushed column list:
@@ -262,6 +275,7 @@ const ROUTES = {
     const known = new Set((results ?? []).map((r) => r.ddl));
     let applied = 0;
     for (const entry of body.entries ?? []) {
+      assertGenericDDL(entry.ddl);
       if (known.has(entry.ddl)) continue;
       try {
         await applySubscriptionSchema(db,entry.ddl);
@@ -491,9 +505,14 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-async function handleSession(request, tenant) {
+async function handleSession(request, tenant, env) {
   if (request.method === "GET") {
-    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities: sessionCapabilities(tenant.scopes) });
+    const capabilities=sessionCapabilities(tenant.scopes);
+    if(governanceConfiguration(env) && tenant.governance && (tenant.governance.propose||tenant.governance.approve)){
+      capabilities.governance={protocol:'selected-inverse-proposals-v1',principal:tenant.governance.actor,
+        authority:{propose:tenant.governance.propose,approve:tenant.governance.approve},limits:governanceLimits};
+    }
+    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities });
     response.headers.set("Cache-Control", "no-store");
     return response;
   }
@@ -786,11 +805,18 @@ async function handle(request, env, ctx, url) {
   }
 
   const tenant = await authenticate(request, env, ctx);
+  const governance=governanceOperation(request);
+  if (governance) {
+    if (!tenant) return governanceFailure(governance,401,'permission_denied');
+    if (!tenant.governance || (governance.name==='approveProposal' ? !tenant.governance.approve : governance.read ? !tenant.governance.propose&&!tenant.governance.approve : !tenant.governance.propose))
+      return governanceFailure(governance,governance.read?200:403,'permission_denied');
+    return handleGovernance(request,tenant,env,governance);
+  }
   if (!tenant) {
     const session = url.pathname.startsWith("/v1/session");
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
-  if (url.pathname === "/v1/session") return handleSession(request, tenant);
+  if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
   if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
     return json(scopedReplicaUnsupported, 403);
@@ -884,7 +910,10 @@ async function handle(request, env, ctx, url) {
       return json({ keys: await runBackup(env, new Date()) });
     }
     await ensureReady(tenant.db);
-    const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
+    const body=await request.json();
+    assertGenericBody(body);
+    await assertGenericState(tenant.db);
+    const out = await ROUTES[url.pathname](body, tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {
     if (e instanceof ScopeDenied) return json({error:"insufficient scope"},403);

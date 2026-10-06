@@ -169,3 +169,39 @@ test('table policy changed before commit cannot redirect a narrow edit',async()=
   expect(db.db.query('SELECT value FROM private_rows').get().value).toBe('kept');
   expect(row(db).status).toBe('open');
 });
+
+for(const value of [{value:'test'},['a','b'],true,false])test('conditional patch preserves JSON and boolean serialization: '+JSON.stringify(value),async()=>{
+  const {db,patch}=fresh();
+  const boolean=typeof value==='boolean';
+  db.db.exec(`ALTER TABLE items ADD COLUMN doc ${boolean?'INTEGER':'TEXT'}; INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('doc','items','doc','${boolean?'bool':'json'}')`);
+  const result=await patch({values:{doc:value}});
+  expect(result.status).toBe(200);
+  expect(row(db).doc).toBe(typeof value==='boolean'?Number(value):JSON.stringify(value));
+});
+
+test('wide nonnumeric patches retain bounded binding and commit all fields together',async()=>{
+  const {db,patch}=fresh();
+  db.db.exec(`CREATE TABLE catalog_log(id TEXT PRIMARY KEY,updated_at TEXT,deleted_at TEXT,hub_at TEXT); INSERT INTO catalog_log VALUES ('a','${T0}',NULL,'${T0}')`);
+  const values={};
+  for(let i=0;i<110;i++){
+    db.db.exec(`ALTER TABLE catalog_log ADD COLUMN c${i} TEXT`);
+    values['c'+i]='value-'+i;
+  }
+  const prepare=db.prepare.bind(db);db.prepare=sql=>{
+    const stmt=prepare(sql),bind=stmt.bind;
+    stmt.bind=function(...args){expect(args.length).toBeLessThanOrEqual(100);return bind.apply(this,args);};return stmt;
+  };
+  expect((await patch({table:'catalog_log',values})).status).toBe(200);
+  expect(db.db.query('SELECT * FROM catalog_log').get()).toMatchObject(values);
+});
+
+test('excess distinct native REAL bindings fail explicitly before a wide patch mutates',async()=>{
+  const {db,patch}=fresh();
+  db.db.exec(`CREATE TABLE catalog_log(id TEXT PRIMARY KEY,updated_at TEXT,deleted_at TEXT,hub_at TEXT); INSERT INTO catalog_log VALUES ('a','${T0}',NULL,'${T0}')`);
+  const values={};
+  for(let i=0;i<99;i++){db.db.exec(`ALTER TABLE catalog_log ADD COLUMN c${i} REAL`);values['c'+i]=i+0.5;}
+  const result=await patch({table:'catalog_log',values});
+  expect(result.status).toBe(400);expect(await result.json()).toEqual({error:'invalid_patch'});
+  expect(db.db.query('SELECT updated_at,c0,c98 FROM catalog_log').get()).toEqual({updated_at:T0,c0:null,c98:null});
+  expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
+});

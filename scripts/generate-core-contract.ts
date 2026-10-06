@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 type Schema = true | {
-  $ref?: string; type?: string | string[]; enum?: string[]; anyOf?: Schema[];
+  $ref?: string; type?: string | string[]; enum?: string[]; anyOf?: Schema[]; oneOf?: Schema[];
   properties?: Record<string, Schema>; required?: string[]; items?: Schema;
   additionalProperties?: Schema;
   description?: string;
@@ -12,6 +12,8 @@ type Contract = { $defs: Record<string, Schema>; operations: Record<string, { ar
 const camel = (name: string) => name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 const pascal = (name: string) => name[0].toUpperCase() + name.slice(1);
 const quote = (value: string) => JSON.stringify(value);
+const swiftKeywords = new Set(('associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private precedencegroup protocol public rethrows static struct subscript typealias var break case catch continue default defer do else fallthrough for guard if in repeat return throw switch where while as Any false is nil self Self super throws true try _').split(' '));
+const swiftIdentifier = (name: string) => swiftKeywords.has(name) ? '`' + name + '`' : name;
 
 /** Deliberately restricted build-time schema vocabulary. Unsupported shapes fail
  * generation instead of silently widening either language's public contract. */
@@ -19,17 +21,40 @@ export function generateContract(contract: Contract) {
   const defs = contract.$defs;
   if (!defs || !contract.operations) throw new Error('invalid core contract');
   const hash = createHash('sha256').update(JSON.stringify(contract)).digest('hex');
-  const keys = new Set(['$ref', 'type', 'enum', 'anyOf', 'properties', 'required', 'items', 'additionalProperties', 'description']);
+  const keys = new Set(['$ref', 'type', 'enum', 'anyOf', 'oneOf', 'properties', 'required', 'items', 'additionalProperties', 'description']);
   const comment = (description?: string, indent = '') => description ? description.split(/\r?\n/).map(line => `${indent}/// ${line}\n`).join('') : '';
   const refName = (s: Exclude<Schema, true>) => {
     const name = s.$ref?.replace(/^#\/\$defs\//, '');
     if (!name || s.$ref !== `#/$defs/${name}` || !Object.hasOwn(defs, name)) throw new Error('unknown contract type');
     return name;
   };
+  function variants(s: Exclude<Schema, true>) {
+    if (!s.oneOf || s.oneOf.length < 2) throw new Error('unsupported schema tagged union');
+    const members=s.oneOf.map(ref=>{
+      if (ref===true || !ref.$ref || Object.keys(ref).length!==1) throw new Error('unsupported schema union member');
+      const name=refName(ref), schema=defs[name];
+      if (schema===true || schema.type!=='object' || !schema.properties || !schema.required) throw new Error('unsupported schema union member');
+      return {name,schema};
+    });
+    const tags=members[0].schema.required!.filter(key=>{
+      const values=members.map(({schema})=>{
+        const field=schema.properties![key];
+        return schema.required!.includes(key) && field!==true && field?.type==='string' && field.enum?.length===1 ? field.enum[0] : null;
+      });
+      return values.every(value=>value!==null && /^[a-z][a-z0-9_]*$/.test(value)) && new Set(values).size===members.length;
+    });
+    if(tags.length!==1)throw new Error('unsupported schema union discriminator');
+    const key=tags[0];
+    return {key,members:members.map(({name,schema})=>({name,tag:(schema.properties![key] as Exclude<Schema,true>).enum![0]}))};
+  }
   function validate(s: Schema): void {
     if (s === true) return;
     if (!s || Object.keys(s).some(k => !keys.has(k))) throw new Error('unsupported schema construct');
     if (s.$ref) { refName(s); if (Object.keys(s).length !== 1) throw new Error('unsupported schema reference'); return; }
+    if (s.oneOf) {
+      if (Object.keys(s).some(key=>!['oneOf','description'].includes(key))) throw new Error('unsupported schema union');
+      variants(s);s.oneOf.forEach(validate);return;
+    }
     if (s.anyOf) {
       if (s.anyOf.length !== 2 || s.anyOf[1] === true || s.anyOf[1].type !== 'null') throw new Error('unsupported schema union');
       s.anyOf.forEach(validate); return;
@@ -59,6 +84,7 @@ export function generateContract(contract: Contract) {
   function ts(s: Schema): string {
     if (s === true) return 'unknown';
     if (s.$ref) return refName(s);
+    if (s.oneOf) return s.oneOf.map(ts).join(' | ');
     if (s.anyOf) return s.anyOf.map(ts).join(' | ');
     if (s.enum) return s.enum.map(quote).join(' | ');
     if (Array.isArray(s.type)) return s.type.map(t => ts({ type: t })).join(' | ');
@@ -100,7 +126,7 @@ export function generateContract(contract: Contract) {
       const nullable = schema === true ? undefined : schema.anyOf;
       const presence = optional && nullable;
       const type = presence ? `CorePresence<${sw(nullable[0])}>` : sw(schema) + (optional ? '?' : '');
-      return { wire, name: camel(wire), schema, optional, nullable, presence, type };
+      return { wire, name: swiftIdentifier(camel(wire)), schema, optional, nullable, presence, type };
     });
     const params = fields.map(f => `${f.name}: ${f.type}${f.presence ? ' = .missing' : f.optional ? ' = nil' : ''}`).join(', ');
     const lines = [`public struct Core${name}: Codable, Hashable, Sendable {`,
@@ -150,6 +176,27 @@ export function generateContract(contract: Contract) {
     for (const t of types) lines.push(t === 'null' ? '    case .null: try container.encodeNil()' : `    case .${cases[t][0]}(let value): try container.encode(value)`);
     return lines.concat('    }', '  }', '}').join('\n');
   }
+  function taggedUnion(name:string,s:Exclude<Schema,true>):string {
+    const {key,members}=variants(s);
+    return [
+      `public enum Core${name}: Codable, Hashable, Sendable {`,
+      ...members.map(m=>`  case \`${camel(m.tag)}\`(Core${m.name})`),
+      `  private enum CodingKeys: String, CodingKey { case tag = ${quote(key)} }`,
+      '  public init(from decoder: Decoder) throws {',
+      '    let container = try decoder.container(keyedBy: CodingKeys.self)',
+      '    switch try container.decode(String.self, forKey: .tag) {',
+      ...members.map(m=>`    case ${quote(m.tag)}: self = .\`${camel(m.tag)}\`(try Core${m.name}(from: decoder))`),
+      '    default: throw DecodingError.dataCorruptedError(forKey: .tag, in: container, debugDescription: "Unknown contract discriminator")',
+      '    }','  }',
+      '  public func encode(to encoder: Encoder) throws {','    switch self {',
+      ...members.flatMap(m=>[
+        `    case .\`${camel(m.tag)}\`(let value):`,
+        `      guard value.${swiftIdentifier(camel(key))} == ${quote(m.tag)} else { throw EncodingError.invalidValue(value, .init(codingPath: encoder.codingPath, debugDescription: "Mismatched contract discriminator")) }`,
+        '      try value.encode(to: encoder)',
+      ]),
+      '    }','  }','}',
+    ].join('\n');
+  }
   const banner = `// Generated by life-data/scripts/generate-core-contract.ts. Contract SHA-256: ${hash}\n// Do not edit; change core/contract/core.json and regenerate.\n`;
   const typescript = banner + `export const CORE_CONTRACT_HASH = ${quote(hash)};\n` +
     Object.entries(defs).map(([name, s]) => comment(s === true ? undefined : s.description) + `export type ${name} = ${ts(s)};`).join('\n') +
@@ -158,7 +205,8 @@ export function generateContract(contract: Contract) {
   const swift = banner + `import Foundation\n\npublic enum CoreContract {\n  public static let hash = ${quote(hash)}\n  static func checkInteger(_ value: Int) throws {\n    guard (-9_007_199_254_740_991...9_007_199_254_740_991).contains(value) else {\n      throw EncodingError.invalidValue(value, .init(codingPath: [], debugDescription: "Integer exceeds JavaScript precision"))\n    }\n  }\n}\n\npublic struct CoreNull: Codable, Hashable, Sendable, ExpressibleByNilLiteral {\n  public init() {}\n  public init(nilLiteral: ()) {}\n  public init(from decoder: Decoder) throws {\n    let container = try decoder.singleValueContainer()\n    guard container.decodeNil() else { throw DecodingError.dataCorruptedError(in: container, debugDescription: "Expected null") }\n  }\n  public func encode(to encoder: Encoder) throws { var container = encoder.singleValueContainer(); try container.encodeNil() }\n}\n\npublic enum CorePresence<Value: Codable & Hashable & Sendable>: Hashable, Sendable {\n  case missing, null, value(Value)\n}\n\n` +
     Object.entries(defs).map(([name, s]) => {
       if (s === true) return name === 'JSONValue' ? union(name, ['string', 'number', 'boolean', 'null', 'array', 'object']) : `public typealias Core${name} = CoreJSONValue`;
-      if (s.enum) return `public enum Core${name}: String, Codable, Hashable, Sendable, CaseIterable {\n` + s.enum.map(v => `  case ${camel(v)} = ${quote(v)}`).join('\n') + '\n}';
+      if (s.oneOf) return comment(s.description) + taggedUnion(name,s);
+      if (s.enum) return `public enum Core${name}: String, Codable, Hashable, Sendable, CaseIterable {\n` + s.enum.map(v => `  case ${swiftIdentifier(camel(v))} = ${quote(v)}`).join('\n') + '\n}';
       if (Array.isArray(s.type)) return union(name, s.type);
       if (s.properties) return comment(s.description) + struct(name, s);
       return `public typealias Core${name} = ${sw(s)}`;

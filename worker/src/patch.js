@@ -10,6 +10,14 @@ const now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 /** One existing-row mutation with a client revision and transactional read guards.
  * Receipts come from the committing batch, never a later unguarded row read. */
 export async function patchChecked(db, body, policy = null) {
+  const plan=await preparePatch(db,body,policy);
+  return plan instanceof Response ? plan : commitPreparedPatch(plan);
+}
+
+// Planning captures the same read guards for both preview and commit. The
+// optional view lets a governance operation bind its evidence/proposal reads
+// into this writer transaction instead of doing an unguarded client pre-read.
+export async function preparePatch(db, body, policy = null, options = {}) {
   if (!object(body) || Object.keys(body).some(k=>!['table','id','values','expected_revision'].includes(k))
     || typeof body.id !== 'string' || !body.id.trim() || !object(body.values)
     || !Object.keys(body.values).length || !object(body.expected_revision)) return reply('invalid_patch',400);
@@ -24,7 +32,7 @@ export async function patchChecked(db, body, policy = null) {
   } catch { return reply('invalid_patch',400); }
 
   db=queryBudget(db,750);
-  const view=checkedReads(db);
+  const view=options.view ?? checkedReads(db);
   if (policy) await policy(view,table,true,[body.id]);
   const {results:schema}=await view.prepare('SELECT * FROM pragma_table_info(?) ORDER BY cid').bind(table).all();
   const names=new Set(schema.map(c=>c.name));
@@ -41,20 +49,39 @@ export async function patchChecked(db, body, policy = null) {
   if (rejected.length || accepted.length!==1 || expected.length!==1) return reply('validation_failed',422);
   const rules=await enforcedRules(view,table);
   const log=await historyPlan(view,db,table,accepted,[],transitions);
+  if(log){log.actor=options.actor ?? null;log.operationId=options.operationId ?? null;}
   const changed=[...columns,'updated_at'];
   const stamping=names.has('hub_at');
-  // Bind one JSON document regardless of the number of changed columns.
-  const assignments=changed.map(c=>`${qident(c)}=json_extract(?1,'$."${c}"')`);
+  // Keep ordinary JSON/boolean coercion and wide sparse edits. Only values
+  // vulnerable to SQLite's JSON numeric rounding need separate native binds.
+  const bindings=[JSON.stringify(accepted[0]),body.id],numeric=new Map();
+  const assignments=changed.map(c=>{
+    const value=accepted[0][c];
+    if(typeof value==='number' && !Number.isSafeInteger(value)){
+      if(!numeric.has(value)){bindings.push(value);numeric.set(value,bindings.length);}
+      return `${qident(c)}=?${numeric.get(value)}`;
+    }
+    return `${qident(c)}=json_extract(?1,'$."${c}"')`;
+  });
+  if(bindings.length>100)return reply('invalid_patch',400);
   if (stamping) assignments.push(`"hub_at"=(${now})`);
   const mutation=db.prepare(`UPDATE ${qident(table)} SET ${assignments.join(',')} WHERE id=?2
-    RETURNING id,updated_at${stamping?',hub_at':''}`).bind(JSON.stringify(accepted[0]),body.id);
+    RETURNING id,updated_at${stamping?',hub_at':''}`).bind(...bindings);
   // RAISE(IGNORE) or an AFTER trigger must not turn a missing/suppressed write
   // into a success receipt. This assertion also rolls back its history/outbox.
   const committed=db.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM ${qident(table)} WHERE id=? AND updated_at=?)
     THEN 1 ELSE abs(-9223372036854775808) END AS life_write_conflict`).bind(body.id,updatedAt);
+  return {db,view,table,rules,stamping,statements:[mutation,committed],updatedAt,log,expected,props,transitions};
+}
+
+// Trusted service statements may join the existing transaction. In particular,
+// proposal state and terminal receipts must never commit in a separate batch.
+export async function commitPreparedPatch(plan,{before=[],after=[],probe=false}={}) {
+  const {db,view,table,rules,statements,updatedAt,log,expected,props,transitions}=plan;
   try {
-    const receipts=await commitChecked(db,view.reads,table,rules,[mutation,committed],updatedAt,log,expected,props,transitions);
-    const row=receipts[0].results[0];
+    const receipts=await commitChecked(db,view.reads,table,rules,[...before,...statements,...after],updatedAt,log,expected,props,transitions,probe);
+    if(probe)return null;
+    const row=receipts[before.length].results[0];
     return {id:row.id,revision:{updated_at:row.updated_at,hub_at:row.hub_at ?? null}};
   } catch (error) {
     const message=String(error);

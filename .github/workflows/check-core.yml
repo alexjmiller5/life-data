@@ -15,8 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - working-directory: core
         run: bun install --frozen-lockfile && bun test && bun run check
+      - working-directory: worker
+        run: bun test

@@ -3,6 +3,8 @@
 // refs and options before calling it, and the provenance hashes.
 import { allowed, asList, ident, qident, same, validEditTimestamp, validateRow } from "../../core/src/validate.ts";
 
+import {assertPublicSql} from './governance-isolation.js';
+
 export { allowed, ident, qident, validEditTimestamp, validateRow };
 
 // provenance is engine-created but validated like a user table: clients write edges into it.
@@ -22,6 +24,7 @@ export async function propertiesFor(db, table) {
   const { results } = await db
     .prepare("SELECT * FROM catalog_properties WHERE deleted_at IS NULL AND tbl = ? ORDER BY sort, col")
     .bind(table).all();
+  for(const p of results ?? [])for(const field of ['options_sql','ref_table','default_value'])assertPublicSql(p[field]);
   return (results ?? []).map((p) => ({
     ...p,
     options: p.options ? JSON.parse(p.options) : null,
@@ -171,6 +174,9 @@ export function storageRow(schema, row) {
     if (v == null || typeof v === 'object' || typeof v === 'boolean') continue;
     const type = c.type.toUpperCase();
     if (/INT/.test(type)) {
+      if(typeof v==='string' && /^-?(0|[1-9][0-9]*)$/.test(v) && v.length<=20
+        && BigInt(v)>=-9223372036854775808n && BigInt(v)<=9223372036854775807n
+        && !Number.isSafeInteger(Number(v))) continue;
       if (typeof v === 'string' && /^[\t\n\r ]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[\t\n\r ]*$/.test(v)) v = Number(v);
     } else if (/CHAR|CLOB|TEXT/.test(type)) v = String(v);
     else if (type && !/BLOB/.test(type) && typeof v === 'string' && /^[\t\n\r ]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[\t\n\r ]*$/.test(v)) v = Number(v);

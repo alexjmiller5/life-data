@@ -1544,6 +1544,9 @@
         },
         "replica": {
           "$ref": "#/$defs/ReplicaEligibility"
+        },
+        "governance": {
+          "$ref": "#/$defs/GovernanceCapability"
         }
       },
       "required": [
@@ -1871,6 +1874,9 @@
           "enum": [
             "scalar-lifecycle-v1"
           ]
+        },
+        "governance": {
+          "$ref": "#/$defs/GovernanceCapability"
         }
       },
       "required": [
@@ -2077,6 +2083,1105 @@
         }
       },
       "required": []
+    },
+    "Target": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "rowId"
+      ]
+    },
+    "Revision": {
+      "type": "object",
+      "properties": {
+        "updated_at": {
+          "type": "string"
+        },
+        "hub_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "updated_at",
+        "hub_at"
+      ]
+    },
+    "NullCell": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "TextCell": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "text"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ]
+    },
+    "IntegerCell": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "integer"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ]
+    },
+    "RealCell": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "real"
+          ]
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ]
+    },
+    "CellValue": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/NullCell"
+        },
+        {
+          "$ref": "#/$defs/TextCell"
+        },
+        {
+          "$ref": "#/$defs/IntegerCell"
+        },
+        {
+          "$ref": "#/$defs/RealCell"
+        }
+      ],
+      "description": "Typed stored cell value; integer strings preserve signed 64-bit precision. Unknown history is an outer null, distinct from a null cell."
+    },
+    "ActorKind": {
+      "type": "string",
+      "enum": [
+        "user",
+        "agent",
+        "service"
+      ]
+    },
+    "Actor": {
+      "type": "object",
+      "properties": {
+        "principalId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ActorKind"
+        }
+      },
+      "required": [
+        "principalId",
+        "kind"
+      ]
+    },
+    "Change": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "before": {
+          "$ref": "#/$defs/CellValue"
+        },
+        "after": {
+          "$ref": "#/$defs/CellValue"
+        }
+      },
+      "required": [
+        "column",
+        "before",
+        "after"
+      ]
+    },
+    "ConflictCode": {
+      "type": "string",
+      "enum": [
+        "later_column_change",
+        "history_unavailable",
+        "revision_changed",
+        "validation_failed",
+        "proposal_changed",
+        "unavailable"
+      ]
+    },
+    "Conflict": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ConflictCode"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "eventIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "column",
+        "eventIds",
+        "message"
+      ]
+    },
+    "SelectedInverseIntent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "selected_inverse"
+          ]
+        },
+        "eventIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "eventIds"
+      ]
+    },
+    "ProposedCellChange": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "after": {
+          "$ref": "#/$defs/CellValue"
+        }
+      },
+      "required": [
+        "column",
+        "after"
+      ]
+    },
+    "PatchIntent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "patch"
+          ]
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposedCellChange"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "changes"
+      ]
+    },
+    "Intent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SelectedInverseIntent"
+        },
+        {
+          "$ref": "#/$defs/PatchIntent"
+        }
+      ]
+    },
+    "PreviewRequest": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "intent": {
+          "$ref": "#/$defs/Intent"
+        }
+      },
+      "required": [
+        "target",
+        "intent"
+      ]
+    },
+    "Preview": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Change"
+          }
+        },
+        "selectedEventIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          }
+        },
+        "previewToken": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "target",
+        "revision",
+        "changes",
+        "selectedEventIds",
+        "conflicts",
+        "previewToken",
+        "expiresAt"
+      ],
+      "description": "Authenticated inert service preview. Its opaque token binds exact validated evidence and does not grant authority."
+    },
+    "HistoryEvent": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "operationId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "column": {
+          "type": "string"
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CellValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CellValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurredAt": {
+          "type": "string"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "claimedOrigin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reversible": {
+          "type": "boolean"
+        },
+        "unavailableReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "operationId",
+        "target",
+        "column",
+        "before",
+        "after",
+        "occurredAt",
+        "actor",
+        "claimedOrigin",
+        "reversible",
+        "unavailableReason"
+      ]
+    },
+    "ProposalState": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ]
+    },
+    "Proposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "intent": {
+          "$ref": "#/$defs/Intent"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Change"
+          }
+        },
+        "baseRevision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "state": {
+          "$ref": "#/$defs/ProposalState"
+        },
+        "proposedBy": {
+          "$ref": "#/$defs/Actor"
+        },
+        "claimedOrigin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "target",
+        "intent",
+        "changes",
+        "baseRevision",
+        "state",
+        "proposedBy",
+        "claimedOrigin",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ApprovalReceipt": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "proposalId": {
+          "type": "string"
+        },
+        "proposalVersion": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "historyEventIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approvedBy": {
+          "$ref": "#/$defs/Actor"
+        },
+        "committedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "proposalId",
+        "proposalVersion",
+        "target",
+        "revision",
+        "historyEventIds",
+        "approvedBy",
+        "committedAt"
+      ]
+    },
+    "MutationErrorCode": {
+      "type": "string",
+      "enum": [
+        "proposal_changed",
+        "revision_changed",
+        "history_unavailable",
+        "validation_failed",
+        "permission_denied",
+        "unavailable",
+        "expired_preview",
+        "idempotency_conflict"
+      ]
+    },
+    "MutationResolution": {
+      "type": "string",
+      "enum": [
+        "unresolved",
+        "not_committed"
+      ],
+      "description": "Original-operation settlement, not the outcome of one HTTP attempt. not_committed requires a durable server record preventing this exact key/request from ever applying; other rejections remain unresolved."
+    },
+    "MutationError": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "error"
+          ]
+        },
+        "code": {
+          "$ref": "#/$defs/MutationErrorCode"
+        },
+        "resolution": {
+          "$ref": "#/$defs/MutationResolution"
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "code",
+        "resolution",
+        "conflicts"
+      ]
+    },
+    "PurgedResult": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "purged"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "TransportErrorCode": {
+      "type": "string",
+      "enum": [
+        "offline",
+        "indeterminate"
+      ]
+    },
+    "TransportError": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "transport_error"
+          ]
+        },
+        "code": {
+          "$ref": "#/$defs/TransportErrorCode"
+        }
+      },
+      "required": [
+        "kind",
+        "code"
+      ],
+      "description": "Adapter outcome, not a service JSON response. Preserve the exact original mutation request and key on uncertain delivery."
+    },
+    "UnavailableResult": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "unavailable"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "ProposalSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/Proposal"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ApprovalSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/ApprovalReceipt"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ProposalMutationResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ProposalSuccess"
+        },
+        {
+          "$ref": "#/$defs/PurgedResult"
+        },
+        {
+          "$ref": "#/$defs/MutationError"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "ApprovalResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ApprovalSuccess"
+        },
+        {
+          "$ref": "#/$defs/PurgedResult"
+        },
+        {
+          "$ref": "#/$defs/MutationError"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "ProposalResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ProposalSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "PreviewSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/Preview"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "PreviewResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PreviewSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "HistoryEventsPage": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryEvent"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "events",
+        "nextCursor"
+      ]
+    },
+    "HistoryEventsSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/HistoryEventsPage"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "HistoryEventsResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HistoryEventsSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "ProposalsPage": {
+      "type": "object",
+      "properties": {
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Proposal"
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "proposals",
+        "nextCursor"
+      ]
+    },
+    "ProposalsSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/ProposalsPage"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ProposalsResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ProposalsSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "HistoryEventsArgs": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    },
+    "CreateProposalArgs": {
+      "type": "object",
+      "properties": {
+        "previewToken": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        },
+        "claimedOrigin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "previewToken",
+        "idempotencyKey"
+      ]
+    },
+    "ListProposalsArgs": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "state": {
+          "$ref": "#/$defs/ProposalState"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": []
+    },
+    "GetProposalArgs": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId"
+      ]
+    },
+    "EditProposalArgs": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "expectedVersion": {
+          "type": "string"
+        },
+        "previewToken": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        },
+        "claimedOrigin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "expectedVersion",
+        "previewToken",
+        "idempotencyKey"
+      ]
+    },
+    "PreviewProposalArgs": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "expectedVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "expectedVersion"
+      ]
+    },
+    "ApproveProposalArgs": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "expectedVersion": {
+          "type": "string"
+        },
+        "previewToken": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "expectedVersion",
+        "previewToken",
+        "idempotencyKey"
+      ]
+    },
+    "RejectProposalArgs": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string"
+        },
+        "expectedVersion": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "expectedVersion",
+        "idempotencyKey"
+      ]
+    },
+    "GovernanceLimits": {
+      "type": "object",
+      "properties": {
+        "maxSelectedEvents": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxChangedColumns": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxRequestBytes": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxPageSize": {
+          "$ref": "#/$defs/Count"
+        },
+        "previewTtlSeconds": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "maxSelectedEvents",
+        "maxChangedColumns",
+        "maxRequestBytes",
+        "maxPageSize",
+        "previewTtlSeconds"
+      ]
+    },
+    "GovernanceAuthority": {
+      "type": "object",
+      "properties": {
+        "propose": {
+          "type": "boolean"
+        },
+        "approve": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "propose",
+        "approve"
+      ]
+    },
+    "GovernanceCapability": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "selected-inverse-proposals-v1"
+          ]
+        },
+        "principal": {
+          "$ref": "#/$defs/Actor"
+        },
+        "authority": {
+          "$ref": "#/$defs/GovernanceAuthority"
+        },
+        "limits": {
+          "$ref": "#/$defs/GovernanceLimits"
+        }
+      },
+      "required": [
+        "protocol",
+        "principal",
+        "authority",
+        "limits"
+      ]
     }
   },
   "operations": {
@@ -2331,6 +3436,87 @@
         "$ref": "#/$defs/SourceLinkResult"
       },
       "description": "Resolve supported external source URLs through live whole-record imported_from provenance. Missing mappings remain external; ambiguous identities fail. Hosts re-resolve the destination before guarded navigation."
+    },
+    "historyEvents": {
+      "args": {
+        "$ref": "#/$defs/HistoryEventsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/HistoryEventsResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "previewChanges": {
+      "args": {
+        "$ref": "#/$defs/PreviewRequest"
+      },
+      "result": {
+        "$ref": "#/$defs/PreviewResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "createProposal": {
+      "args": {
+        "$ref": "#/$defs/CreateProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalMutationResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "listProposals": {
+      "args": {
+        "$ref": "#/$defs/ListProposalsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalsResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "getProposal": {
+      "args": {
+        "$ref": "#/$defs/GetProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "editProposal": {
+      "args": {
+        "$ref": "#/$defs/EditProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalMutationResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "previewProposal": {
+      "args": {
+        "$ref": "#/$defs/PreviewProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/PreviewResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "approveProposal": {
+      "args": {
+        "$ref": "#/$defs/ApproveProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ApprovalResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "rejectProposal": {
+      "args": {
+        "$ref": "#/$defs/RejectProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalMutationResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
     }
   }
 }

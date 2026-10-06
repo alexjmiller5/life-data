@@ -60,7 +60,11 @@ CLI.
   Python login behavior and hub routes are independent of these pure UI operations.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
-  codecs; `--check` verifies reproducibility without writing. Edit the contract,
+  codecs, including named discriminated object unions; `--check` verifies
+  reproducibility without writing. Governance operations require an explicitly
+  injected canonical adapter and
+  a validated current credential capability. Generated types alone never activate
+  a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
 - `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
@@ -70,6 +74,39 @@ CLI.
   Dispose handlers with the workspace. No undo persistence, history replay,
   redo or autosave grouping. Hosts preserve newer drafts and pause autosave
   during undo and until retained drafts are explicitly reviewed/saved.
+- `core/src/governance.ts` plans selected-column historical inverses from
+  trusted complete, commit-ordered typed evidence. It rejects later unselected
+  same-column changes and produces no partial patch on conflict. No RPC,
+  authorization, evidence loader, preview token, or proposal writer is supplied
+  by this pure primitive; generated governance DTOs are not service capabilities.
+  Mutation errors carry required original-operation `resolution`; an unresolved
+  retry rejection cannot clear a pending journal. `not_committed` requires a
+  durable negative receipt excluding late execution, not just an HTTP error.
+- `worker/src/governance.js` implements the nine configured governance HTTP
+  handlers over the existing checked writer. Private immutable versions,
+  canonical typed evidence and terminal receipts live in the data store;
+  authenticated approval authority remains in the separate auth store.
+  Preview performs a rollback-only validation probe and never initializes,
+  meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/governance-store.js` inserts terminal receipts in the same batch
+  as mutation. Unique key exclusion also makes negative settlement durable.
+  Replays reauthorize current disclosure before returning the original result,
+  ahead of current row/catalog validation. Purge removes affected proposal
+  versions and receipt payloads, retains exclusion keys, and revokes outstanding
+  stateless previews with a private target invalidation nonce.
+- `worker/src/governance-continuity.js` installs permanent mutation guards on
+  ordinary base tables. Indirect writes and lifecycle changes invalidate history
+  continuity and preview bindings. Exact stored table DDL detects column identity
+  changes; guard reinstallation breaks prior proofs. Only the checked writer with
+  verified trigger topology records typed evidence under transaction-local private
+  context. REAL evidence stays in native REAL columns, not SQLite JSON decimals.
+- `worker/src/governance-isolation.js` reserves `_governance_*` state from generic
+  schema/row/purge/catalog-SQL routes, including broad credentials. Private SQL
+  shapes and history invalidation triggers require exact service-owned DDL.
+  Schema replay accepts DDL, never arbitrary data SQL or PRAGMA statements.
+  Configured handlers require `GOVERNANCE_DEPLOYMENT_ID` and a separately
+  purposed `GOVERNANCE_PREVIEW_KEY`; see `docs/governance-service.md`.
+  Generated DTOs alone do not activate an adapter or advertise this protocol.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one
@@ -498,12 +535,21 @@ and skip broad post-commit purge recovery. Validation errors are generic; intern
 are still checked server-side. The exact timestamp trigger is trusted by its SQL,
 not its name. Broad callers retain their existing behavior.
 
-`authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
+`authenticate` in `worker/src/index.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth
 registry. Browser approval uses the platform-provided Access identity and the
 configured audience; it admits one owner to one dataset. API tokens and browser
 Access sessions are separate authorities: revoking one does not revoke the other.
+`auth.js` records opaque governance principals separately from token names and
+scopes. Verified browser enrollment can establish user approval authority;
+operator-created tokens receive agent proposal authority only. Legacy tokens
+without that record remain ineligible; no name or full/admin scope substitutes
+for it. Authority revocation and token revocation are checked on each request.
+Exact governance preview routes bypass auth last-use writes, initialization and
+the usage flush while still authenticating and reading the current cap. Cold or
+unready service state is unavailable. The protocol remains unadvertised until
+all documented operations and writer guarantees exist.
 
 Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
