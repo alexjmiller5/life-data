@@ -13,6 +13,8 @@ The optional `/v1/session` field is `capabilities.governance`:
 ```ts
 type GovernanceCapability = {
   protocol: "selected-inverse-proposals-v1";
+  deploymentId: string;
+  sessionId: string;
   principal: Actor;
   authority: { propose: boolean; approve: boolean };
   limits: {
@@ -26,7 +28,11 @@ type GovernanceCapability = {
 ```
 
 This capability, `Actor`, and all nine operation argument/result pairs have
-canonical TypeScript and Swift generation. Limits are positive
+canonical TypeScript and Swift generation. The required non-secret deployment
+and credential-session identities scope durable journals; clients copy the
+advertised fields and never derive them from endpoint URLs or credentials.
+Older exact capability validators safely disable governance until upgraded;
+ordinary session validation and replica sync remain independent. Limits are positive
 safe integers, supplied by the service; clients never use guessed defaults to
 enable a request. Expiry in an issued preview remains authoritative. Unknown
 protocols, absent capability, invalid limits, or an unsupported adapter leave
