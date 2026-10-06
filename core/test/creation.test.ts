@@ -41,3 +41,15 @@ test('creation readiness never accepts a writer or invented policy even in injec
  }
  expect(validateCreationSession({status:200,data:{...session,capabilities:{rowCreation:{protocol:'atomic-origin-v1',policies:[policy,{id:'other',revision}]}}}},policy,scopes)).toBe(false);
 });
+
+for(const suffix of ['\n','\r','\u2028','\u2029'])test('wire identifiers reject trailing line separators: '+JSON.stringify(suffix),()=>{
+ const altered={id:policy.id+suffix,revision};
+ expect(validateCreationReceipt({...request,policy:altered},{status:200,data:{...receipt,policy:altered}})).toBeNull();
+ expect(validateCreationReceipt(request,{status:200,data:{...receipt,originId:'fixture'+suffix+':source-1:'+request.target.id}})).toBeNull();
+});
+
+import cases from '../../tests/fixtures/creation-boundary.json';
+for(const c of cases)test('shared Python/JS boundary: '+c.name,()=>{
+ if(c.kind==='receipt')expect(validateCreationReceipt(c.request as RowCreationRequest,c.reply)!==null).toBe(c.accept);
+ else expect(validateCreationSession(c.reply,c.expected!,c.expectedScopes!)).toBe(c.accept);
+});

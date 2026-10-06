@@ -1,0 +1,2075 @@
+[
+  {
+    "name": "created",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": true
+  },
+  {
+    "name": "existing",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "existing",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": true
+  },
+  {
+    "name": "adopted existing",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "adopted",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "existing",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": true
+  },
+  {
+    "name": "adopted created",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "adopted",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "null",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": null
+    },
+    "accept": false
+  },
+  {
+    "name": "array",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": []
+    },
+    "accept": false
+  },
+  {
+    "name": "empty",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {}
+    },
+    "accept": false
+  },
+  {
+    "name": "unknown kind",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "unknown",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "target mismatch",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "other",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "policy mismatch",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "extra field",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rows": []
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "existing attribution",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "existing",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "empty origin",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": ""
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin !:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "!:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin extra:segments:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "extra:segments:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp 2026-02-30T00:00:00.000Z",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-02-30T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp 2026-01-01",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-01"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp 2026-01-02T00:00:00Z",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp 0000-01-01T00:00:00.000Z",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "0000-01-01T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp 2026-01-02T00:00:00.000Z\n",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z\n"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp None",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": null
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "hub timestamp 1",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": 1
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "submitted timestamp mismatch",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-03T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 201",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 201,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 400",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 400,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 401",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 401,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 403",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 403,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 409",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 409,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 422",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 422,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 429",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 429,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 500",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 500,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "status 503",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 503,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "exact session",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": true
+  },
+  {
+    "name": "missing capability",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {}
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "governance",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          },
+          "governance": {}
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "wrong protocol",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "other",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "extra policy",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              {
+                "id": "other",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "repeated scopes",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "repeated expectation",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "unauthorized",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id"
+    ],
+    "reply": {
+      "status": 401,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "broader expected full",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "full"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "full"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "broader expected admin",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "admin"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "admin"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "broader expected tables:write:items",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "tables:write:items"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "tables:write:items"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "broader expected tables:read:items",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "tables:read:items"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "tables:read:items"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "broader expected files:read:files/",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "files:read:files/"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "files:read:files/"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "broader expected rows:create:other:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id",
+      "rows:create:other:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id",
+          "rows:create:other:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "policy end '\\n'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture\n",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture\n",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin end '\\n'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture\n:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "scope end '\\n'",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id\n"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id\n"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "policy end '\\r'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture\r",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture\r",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin end '\\r'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture\r:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "scope end '\\r'",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id\r"
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id\r"
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "policy end '\\u2028'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture ",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture ",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin end '\\u2028'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture :source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "scope end '\\u2028'",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id "
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id "
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "policy end '\\u2029'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture ",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture ",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture:source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "origin end '\\u2029'",
+    "kind": "receipt",
+    "request": {
+      "policy": {
+        "id": "fixture",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "sourceId": "source-1",
+      "occurrenceKey": 2030,
+      "target": {
+        "kind": "generated",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "values": {
+        "title": "synthetic"
+      }
+    },
+    "reply": {
+      "status": 200,
+      "data": {
+        "kind": "created",
+        "policy": {
+          "id": "fixture",
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": {
+          "updated_at": "2026-01-01T00:00:00.000Z",
+          "hub_at": "2026-01-02T00:00:00.000Z"
+        },
+        "originId": "fixture :source-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "accept": false
+  },
+  {
+    "name": "scope end '\\u2029'",
+    "kind": "session",
+    "expected": {
+      "id": "fixture",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expectedScopes": [
+      "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tables:read:sources:id "
+    ],
+    "reply": {
+      "status": 200,
+      "data": {
+        "scopes": [
+          "rows:create:fixture:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tables:read:sources:id "
+        ],
+        "capabilities": {
+          "rowCreation": {
+            "protocol": "atomic-origin-v1",
+            "policies": [
+              {
+                "id": "fixture",
+                "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "accept": false
+  }
+]
