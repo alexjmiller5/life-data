@@ -4,6 +4,7 @@ import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { compileView, validateView } from './view.ts';
 import { writeRow } from './write.ts';
+import { validateRowActions } from './row-actions.ts';
 import storage from '../schema/saved-views.json';
 
 // Recognition only. Ordinary replicas receive these statements via logged DDL;
@@ -62,9 +63,9 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
   try {
     object(value);
     if (value.version !== 1 && value.version !== 2) throw new Error('Unsupported saved-view definition version.');
-    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone']:[])]);
+    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','actions','layout']:[])]);
     if (!catalog.tables.some(t => t.id === table)) throw new Error('Saved-view target is absent from the catalog.');
-    const { version, widths, timeZone, ...query } = value;
+    const { version, widths, timeZone, actions: _actions, layout: _layout, ...query } = value;
     view = { table, ...query } as View;
     validateView(view, catalog.properties);
     const filters=[...(view.filters ?? []),...(view.groups ?? []).flatMap(g=>g.filters)];
@@ -73,6 +74,7 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
     if (filters.some(f=>f.relative!==undefined) && timeZone===undefined) throw new Error('Relative saved views require a timezone.');
     if (view.columns && new Set(view.columns).size !== view.columns.length) throw new Error('Duplicate saved-view columns.');
     referenced = [...(view.columns ?? []), ...filters.map(f => f.column), ...(view.sort ?? []).map(s => s.column)];
+    referenced.push(...validateRowActions(value,catalog,table));
     if (widths !== undefined) {
       object(widths);
       for (const [column, width] of Object.entries(widths)) {
@@ -112,6 +114,15 @@ async function record(db: SqlDriver, catalog: Catalog, row: Row): Promise<SavedV
     result.unavailable = error.message;
   }
   return result;
+}
+
+/** Internal action lookup; the caller holds the writer transaction. */
+export async function loadSavedView(db: SqlDriver, id: string): Promise<SavedViewRecord> {
+  const catalog=await readCatalog(db),problem=await storageProblem(db,catalog);
+  if(problem)throw new Error(problem);
+  const row=(await db.all('SELECT * FROM main.views WHERE id=? AND deleted_at IS NULL',[id]))[0];
+  if(!row)throw new Error('Saved view is unavailable.');
+  return record(db,catalog,row);
 }
 
 /** Lists shared definitions only. Returned view.columns is SQL projection and

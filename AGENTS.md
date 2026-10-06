@@ -101,6 +101,12 @@ CLI.
   advancing each affected revision beyond its previous value and at least to
   database time so LWW and push discovery retain the rename under clock skew.
   Returned view columns are SQL projection: clients need full rows to edit.
+- `core/src/row-actions.ts` validates version 2 literal action patches and layout
+  references. `runRowAction` resolves the current definition and full live row
+  under the mutation session's writer transaction, requires a selected revision,
+  and publishes an ordinary undo receipt only after commit. Keep identity,
+  clocks, deletion, derived and immutable fields out of action definitions.
+  Actions use ordinary catalog/history/coverage checks and pending sync state.
 - `syncStatus` includes durable `skippedTables` from the last completed pull
   round, stored in the final ready transaction even when pushes are rejected.
   `last_sync` advances only without rejections. Hosts consume this

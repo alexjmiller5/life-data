@@ -1048,6 +1048,18 @@
         },
         "timeZone": {
           "type": "string"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RowAction"
+          }
+        },
+        "layout": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ViewLayoutItem"
+          }
         }
       },
       "required": [
@@ -1959,6 +1971,67 @@
         "start",
         "end"
       ]
+    },
+    "RowAction": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "values": {
+          "$ref": "#/$defs/Row"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "values"
+      ]
+    },
+    "ViewLayoutItem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "column",
+            "action"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "RunRowActionArgs": {
+      "type": "object",
+      "properties": {
+        "viewId": {
+          "type": "string"
+        },
+        "actionId": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "viewId",
+        "actionId",
+        "rowId",
+        "expectedUpdatedAt"
+      ]
     }
   },
   "operations": {
@@ -2195,6 +2268,14 @@
       },
       "result": {
         "$ref": "#/$defs/RejectionsPage"
+      }
+    },
+    "runRowAction": {
+      "args": {
+        "$ref": "#/$defs/RunRowActionArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
       }
     }
   }

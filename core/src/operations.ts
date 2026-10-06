@@ -62,6 +62,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     deleteView: args => writes.otherMutation(args, input => deleteView(db, input, { origin })),
     options: args => readOptions(db, args),
     write: writes.write,
+    runRowAction: writes.runRowAction,
     undo: writes.undo,
     undoStatus: writes.undoStatus,
     writeability: args => writeability(db, args),

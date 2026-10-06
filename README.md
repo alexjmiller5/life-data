@@ -387,6 +387,20 @@ remain visible after known options, then empty values, in either direction.
 Remaining clauses apply in order, with a stable ID tie-breaker. Omitted mode
 keeps ordinary value sorting. Older clients report version 2 unavailable.
 
+Version 2 definitions may also store `actions: [{id, label, values}]` and an
+ordered `layout: [{kind: "column" | "action", id}]`. Actions contain literal
+property patches. They cannot change identity, clocks, deletion state or
+read-only fields. Layout references must identify selected columns or existing
+actions. Invalid definitions make that saved view unavailable.
+
+Call core `runRowAction({viewId, actionId, rowId, expectedUpdatedAt})` with the
+full selected row's revision. The mutation session resolves the current saved
+action and row inside its writer transaction, then uses the ordinary validated
+write, history and pending-sync path. A successful action supplies the same
+undo receipt as an edit. A stale action or failed commit preserves the row and
+previous undo receipt. This is a local commit; normal sync rejection handling
+still applies. Definitions contain no executable expressions or workflow rules.
+
 ### Durable change subscriptions
 
 `POST /v1/subscriptions` accepts `{label, start: "now", sources}`. Each
