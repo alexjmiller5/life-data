@@ -16,6 +16,7 @@
 // {allowance, cap, alert_at}) and USAGE_PERIOD_ANCHOR_DAY override them.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ensureAuthReady } from "./auth.js";
+import { governanceOperation, governanceFailure } from './governance-protocol.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const als = new AsyncLocalStorage();
@@ -219,6 +220,13 @@ async function capState(env, now) {
     seen.set(db, c);
   }
   return over(limits(env), c.totals, p);
+}
+
+async function previewCapState(env,now) {
+  const db=env.AUTH_DB;
+  if (!db || !await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_usage'").first()) return null;
+  const p=period(now,anchorDay(env));
+  return over(limits(env),await db.prepare(TOTALS).bind(p.start).first(),p);
 }
 
 const gaugeAt = new WeakMap();
@@ -474,6 +482,18 @@ export function withUsage(hub, { authenticate, sweepCron }) {
     ...hub,
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
+      const governance=governanceOperation(request);
+      if (governance?.preview) {
+        // Preview is authenticated and capped, but never initialized, metered,
+        // flushed or scheduled. Provider security logs are outside this seam.
+        try {
+          const tenant=await authenticate(request,env,ctx);
+          const cap=tenant && await previewCapState(env,new Date());
+          if (cap) return cors(request,env,governanceFailure(governance,429,'unavailable',
+            {'Retry-After':String(Math.max(1,Math.ceil((Date.parse(cap.resets_at)-Date.now())/1000)))}));
+          return hub.fetch(request,env,ctx);
+        } catch { return cors(request,env,governanceFailure(governance,503)); }
+      }
       return measure(env, ctx, async (menv, mctx, meter) => {
         if (!url.pathname.startsWith("/v1/")) return hub.fetch(request, menv, mctx);
         if (request.method === "OPTIONS") {
@@ -491,7 +511,12 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           // later (e.g. one that reads the request body) must not bypass the cap.
           if (tenant && !UNCAPPED_ROUTE.test(url.pathname)) {
             const cap = await capState(env, new Date());
-            if (cap) return cors(request, env, capResponse(cap, READ_SCOPES.some((s) => tenant.scopes.includes(s))));
+            if (cap) {
+              const capped=capResponse(cap,READ_SCOPES.some(s=>tenant.scopes.includes(s)));
+              return cors(request,env,governance
+                ? governanceFailure(governance,429,'unavailable',{'Retry-After':capped.headers.get('Retry-After')})
+                : capped);
+            }
           }
         } catch (e) {
           return cors(request, env, json({ error: String(e) }, 500));

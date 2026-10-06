@@ -11,7 +11,8 @@ import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
-import { TOKENS_TABLE, ensureAuthReady, hashToken } from "./auth.js";
+import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority } from "./auth.js";
+import { governanceOperation, governanceFailure } from './governance-protocol.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
@@ -71,10 +72,13 @@ async function resolveTenant(request, env, ctx) {
   }
   if (!token || !env.HUB_TOKEN) return null;
   if (tokensMatch(token, env.HUB_TOKEN)) {
-    return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: ["admin"], name: "admin", admin: true };
+    return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: ["admin"], name: "admin", admin: true, governance:null };
   }
   if (!env.AUTH_DB) return null;
-  await ensureAuthReady(env.AUTH_DB);
+  const preview=governanceOperation(request)?.preview;
+  if (preview) {
+    if (!await env.AUTH_DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_tokens'").first()) return null;
+  } else await ensureAuthReady(env.AUTH_DB);
   const hash = await hashToken(token);
   const row = await env.AUTH_DB.prepare(
     "SELECT name, scopes FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
@@ -82,14 +86,15 @@ async function resolveTenant(request, env, ctx) {
     .bind(hash)
     .first();
   if (!row) return null;
-  ctx.waitUntil(
+  if (!preview) ctx.waitUntil(
     env.AUTH_DB.prepare(
       "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE hash = ?"
     )
       .bind(hash)
       .run()
   );
-  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false };
+  const governance=await readGovernanceAuthority(env.AUTH_DB,hash);
+  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance };
 }
 
 // Decode exactly once and reject ambiguous separators/escape sequences. The same
@@ -156,10 +161,11 @@ const TOKEN_ROUTES = {
     const value =
       "lt_" + [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
     await ensureAuthReady(tenant.authDb);
-    await tenant.authDb
-      .prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)")
-      .bind(await hashToken(value), body.name, body.scopes || "full")
-      .run();
+    const hash=await hashToken(value);
+    await tenant.authDb.batch([
+      tenant.authDb.prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)").bind(hash,body.name,body.scopes || 'full'),
+      authorityStatement(tenant.authDb,hash,'agent'),
+    ]);
     return { name: body.name, scopes: body.scopes || "full", token: value }; // value shown ONCE
   },
   "/v1/tokens/revoke": async (body, tenant) => {
@@ -786,6 +792,15 @@ async function handle(request, env, ctx, url) {
   }
 
   const tenant = await authenticate(request, env, ctx);
+  const governance=governanceOperation(request);
+  if (governance) {
+    if (!tenant) return governanceFailure(governance,401,'permission_denied');
+    if (!tenant.governance || (governance.name==='approveProposal' ? !tenant.governance.approve : !tenant.governance.propose))
+      return governanceFailure(governance,governance.read?200:403,'permission_denied');
+    // No partial protocol advertisement: storage/planner/handlers must all be
+    // ready before the governance service can answer supported operations.
+    return governanceFailure(governance,503);
+  }
   if (!tenant) {
     const session = url.pathname.startsWith("/v1/session");
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);

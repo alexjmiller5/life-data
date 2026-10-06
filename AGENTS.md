@@ -80,6 +80,11 @@ CLI.
   Mutation errors carry required original-operation `resolution`; an unresolved
   retry rejection cannot clear a pending journal. `not_committed` requires a
   durable negative receipt excluding late execution, not just an HTTP error.
+- `worker/src/governance-store.js` owns private terminal receipt statements.
+  Insert them in the same data-writer batch as the mutation; the unique key
+  excludes delayed originals after negative settlement. Receipt lookup requires
+  current disclosure authorization; purge preserves key exclusion but erases
+  payloads. These storage primitives do not advertise governance operations.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one
@@ -508,12 +513,21 @@ and skip broad post-commit purge recovery. Validation errors are generic; intern
 are still checked server-side. The exact timestamp trigger is trusted by its SQL,
 not its name. Broad callers retain their existing behavior.
 
-`authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
+`authenticate` in `worker/src/index.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth
 registry. Browser approval uses the platform-provided Access identity and the
 configured audience; it admits one owner to one dataset. API tokens and browser
 Access sessions are separate authorities: revoking one does not revoke the other.
+`auth.js` records opaque governance principals separately from token names and
+scopes. Verified browser enrollment can establish user approval authority;
+operator-created tokens receive agent proposal authority only. Legacy tokens
+without that record remain ineligible; no name or full/admin scope substitutes
+for it. Authority revocation and token revocation are checked on each request.
+Exact governance preview routes bypass auth last-use writes, initialization and
+the usage flush while still authenticating and reading the current cap. Cold or
+unready service state is unavailable. The protocol remains unadvertised until
+all documented operations and writer guarantees exist.
 
 Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from

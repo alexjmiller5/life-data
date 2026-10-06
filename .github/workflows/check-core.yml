@@ -20,3 +20,5 @@ jobs:
           bun-version: 1.4.2
       - working-directory: core
         run: bun install --frozen-lockfile && bun test && bun run check
+      - working-directory: worker
+        run: bun test
