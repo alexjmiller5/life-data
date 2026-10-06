@@ -2,6 +2,7 @@
 // (col NULL) or one column's history, never its content, and syncs like any
 // row. Mirrors purge/apply_purges/_uncovered in src/life_data/__init__.py.
 import { qident } from "./validate.js";
+import { redactReceipts } from './governance-store.js';
 
 export const PURGES = "purges";
 
@@ -45,8 +46,10 @@ export async function applyPurges(db, markers) {
   const live = markers.filter((m) => !m.deleted_at);
   if (!live.length) return;
   const [hasHistory, hasProvenance] = [await exists(db, "history"), await exists(db, "provenance")];
+  const hasReceipts=await exists(db,'_governance_receipts');
   const stmts = [];
   for (const { tbl, row_id, col, purged_at } of live) {
+    if(hasReceipts)stmts.push(...redactReceipts(db,{table:tbl,rowId:row_id},col));
     if (col == null) {
       if (await exists(db, tbl)) {
         stmts.push(db.prepare(`DELETE FROM ${qident(tbl)} WHERE id = ? AND updated_at <= ?`).bind(row_id, purged_at));

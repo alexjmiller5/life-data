@@ -13,6 +13,7 @@ import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
 import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority } from "./auth.js";
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
+import { ensureEvidenceStorage } from './governance-evidence.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
@@ -199,6 +200,7 @@ const logDerive = (p) =>
 
 async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
+  await ensureEvidenceStorage(db);
 }
 
 // Does the HUB's own schema have hub_at? Never ask the pushed column list:

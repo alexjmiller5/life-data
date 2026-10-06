@@ -13,10 +13,21 @@ export function checkedReads(db) {
     prepare(sql) {
       let args = [];
       const read = async (first) => {
-        const query = first ? `SELECT * FROM (${sql}) LIMIT 1` : sql;
+        let query = first ? `SELECT * FROM (${sql}) LIMIT 1` : sql;
         const key = JSON.stringify([query, args]);
         if (!reads.has(key)) {
-          const { results } = await db.prepare(query).bind(...args).all();
+          let { results } = await db.prepare(query).bind(...args).all();
+          // D1 exposes numbers as doubles. Preserve unsafe SQLite INTEGERs as
+          // decimal text in BOTH the read and its later guard; leave REALs as
+          // numbers. A rounded preflight snapshot can never authorize a write.
+          if (results?.some(row=>Object.values(row).some(v=>typeof v==='number' && Number.isInteger(v) && !Number.isSafeInteger(v)))) {
+            const columns=Object.keys(results[0]);
+            query=`SELECT ${columns.map(c=>{
+              const name=quoteColumn(c);
+              return `CASE WHEN typeof(${name})='integer' AND (${name}>9007199254740991 OR ${name} < -9007199254740991) THEN CAST(${name} AS TEXT) ELSE ${name} END AS ${name}`;
+            }).join(',')} FROM (${query})`;
+            ({results}=await db.prepare(query).bind(...args).all());
+          }
           reads.set(key, { sql: query, args: [...args], rows: results ?? [] });
         }
         const rows = reads.get(key).rows;
@@ -81,7 +92,14 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
         ${rule.sql});`;
     }).join('\n');
     if (expected.length) {
-      const matches = cols.map(c=>`(json_type(value,${literal('$.row."'+c+'"')}) IS NULL OR NEW.${qident(c)} IS json_extract(value,${literal('$.row."'+c+'"')}))`).join(' AND ');
+      const matches = cols.map(c=>{
+        const path=literal('$.row."'+c+'"'),actual=`NEW.${qident(c)}`,value=`json_extract(value,${path})`;
+        // Trigger NEW operands do not inherit a table column's comparison
+        // affinity. Match lossless INTEGER decimal text explicitly.
+        const integer=/INT/i.test(schema.find(s=>s.name===c).type)
+          ? ` OR (typeof(${actual})='integer' AND json_type(value,${path})='text' AND CAST(${actual} AS TEXT) IS ${value})` : '';
+        return `(json_type(value,${path}) IS NULL OR ${actual} IS ${value}${integer})`;
+      }).join(' AND ');
       checks += dependencyChecks(props, event, approval);
       checks += ` SELECT RAISE(ABORT, 'life_write_conflict') WHERE NOT EXISTS (SELECT 1 FROM ${qident(approval)} WHERE ${matches});`;
     }

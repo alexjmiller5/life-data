@@ -23,6 +23,7 @@ export function sessionCapabilities(scopes) {
 import { qident } from './validate.js';
 import { trustedSubscriptionTrigger } from './subscription-triggers.js';
 import { checkedReads, readGuards } from './write.js';
+import { trustedEvidenceTrigger } from './governance-evidence.js';
 
 export class ScopeDenied extends Error {}
 const deny = () => { throw new ScopeDenied('insufficient scope'); };
@@ -105,7 +106,7 @@ export async function scopedTable(view, table, write=false, rowIds=null) {
   const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (?, 'history', 'provenance', '_change_events', '_change_subscriptions') ORDER BY name").bind(table).all();
   for (const trigger of triggers) {
     if (['_change_events','_change_subscriptions'].includes(trigger.tbl_name.toLowerCase())) deny();
-    if (!timestampTrigger(trigger) && !await trustedSubscriptionTrigger(view,trigger)) deny();
+    if (!timestampTrigger(trigger) && !trustedEvidenceTrigger(trigger) && !await trustedSubscriptionTrigger(view,trigger)) deny();
   }
   const {results:foreignKeys}=await view.prepare("SELECT m.name,f.id,f.seq FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f WHERE m.type='table' AND m.name NOT LIKE '_cf_%' ORDER BY m.name,f.id,f.seq").all();
   if (foreignKeys.length) deny();

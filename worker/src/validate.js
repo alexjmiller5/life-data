@@ -171,6 +171,9 @@ export function storageRow(schema, row) {
     if (v == null || typeof v === 'object' || typeof v === 'boolean') continue;
     const type = c.type.toUpperCase();
     if (/INT/.test(type)) {
+      if(typeof v==='string' && /^-?(0|[1-9][0-9]*)$/.test(v) && v.length<=20
+        && BigInt(v)>=-9223372036854775808n && BigInt(v)<=9223372036854775807n
+        && !Number.isSafeInteger(Number(v))) continue;
       if (typeof v === 'string' && /^[\t\n\r ]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[\t\n\r ]*$/.test(v)) v = Number(v);
     } else if (/CHAR|CLOB|TEXT/.test(type)) v = String(v);
     else if (type && !/BLOB/.test(type) && typeof v === 'string' && /^[\t\n\r ]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[\t\n\r ]*$/.test(v)) v = Number(v);

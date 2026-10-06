@@ -1,6 +1,7 @@
 // Original replica events keep their IDs. Value trails, not timestamp order,
 // decide whether those facts already explain the hub's cell transition.
 import { literal, qident, validEditTimestamp } from './validate.js';
+import { EVIDENCE_TRIGGERS, evidenceHistorySql } from './governance-evidence.js';
 
 const FIELDS = ['id','tbl','row_id','col','old','new','origin','created_at','updated_at'];
 const ENGINE = new Set(['catalog_tables','catalog_properties','catalog_rules','catalog_log','history','provenance']);
@@ -98,7 +99,8 @@ export async function historyPlan(view, db, table, rows, supplied = [], transiti
     summaries.push({...change,valid});
   }
   const histCols = exists ? (await db.prepare('PRAGMA table_info(history)').all()).results.map(c=>c.name) : [...FIELDS,'deleted_at','hub_at'];
-  return {cols, unseen, summaries, exists, stamp:histCols.includes('hub_at')};
+  const evidence=!!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_governance_history'").first();
+  return {cols, unseen, summaries, exists, stamp:histCols.includes('hub_at'),evidence};
 }
 
 // Let SQLite apply column affinity and render OLD/NEW, using the same upsert
@@ -140,12 +142,18 @@ export function historyStatements(db, table, key, plan) {
       begin.push(db.prepare(ddl));
       begin.push(db.prepare('INSERT INTO _schema_log (ddl) VALUES (?)').bind(ddl));
     }
+    if(plan.evidence)for(const {sql} of EVIDENCE_TRIGGERS)begin.push(db.prepare(sql));
   }
   const receipts = key + '_receipts', trigger = key + '_history';
   begin.push(db.prepare(`CREATE TABLE ${qident(receipts)} AS SELECT value FROM json_each(?)`).bind(JSON.stringify(plan.summaries)));
   const cell = (c) => `SELECT value FROM ${qident(receipts)} WHERE json_extract(value,'$.row_id') IS NEW.id AND json_extract(value,'$.col')=${literal(c)} AND json_extract(value,'$.updated_at') IS NEW.updated_at`;
   const checks = plan.cols.filter(c=>!['updated_at','hub_at'].includes(c)).map(c=> {
     const old = `CAST(OLD.${qident(c)} AS TEXT)`, value = `CAST(NEW.${qident(c)} AS TEXT)`;
+    const origin=`CASE WHEN EXISTS (${cell(c)}) THEN 'hub:reconcile' ELSE 'hub' END`;
+    const condition=`OLD.${qident(c)} IS NOT NEW.${qident(c)} AND NOT EXISTS (
+        ${cell(c)} AND json_extract(value,'$.valid')=1
+        AND json_extract(value,'$.old') IS ${old} AND json_extract(value,'$.new') IS ${value})`;
+    if(plan.evidence)return evidenceHistorySql(table,c,origin,condition,plan.stamp,plan.actor,plan.operationId);
     return `INSERT INTO history (id,tbl,row_id,col,old,new,origin,created_at,updated_at${plan.stamp?',hub_at':''})
       SELECT lower(hex(randomblob(16))),${literal(table)},NEW.id,${literal(c)},${old},${value},
         CASE WHEN EXISTS (${cell(c)}) THEN 'hub:reconcile' ELSE 'hub' END,
