@@ -72,6 +72,11 @@ CLI.
   Dispose handlers with the workspace. No undo persistence, history replay,
   redo or autosave grouping. Hosts preserve newer drafts and pause autosave
   during undo and until retained drafts are explicitly reviewed/saved.
+- `core/src/governance.ts` plans selected-column historical inverses from
+  trusted complete, commit-ordered typed evidence. It rejects later unselected
+  same-column changes and produces no partial patch on conflict. No RPC,
+  authorization, evidence loader, preview token, or proposal writer is supplied
+  by this pure primitive; generated governance DTOs are not service capabilities.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one

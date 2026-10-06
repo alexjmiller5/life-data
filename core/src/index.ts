@@ -16,3 +16,4 @@ export * from './remote.ts';
 export * from './enrollment.ts';
 
 export * from './references.ts';
+export * from './governance.ts';

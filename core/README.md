@@ -148,6 +148,23 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
 
 `SqlDriver.transaction` must serialize other callers through commit/rollback.
 The browser host must exclude overlapping rounds across tabs with a Web Lock.
+
+`planSelectedInverse({ target, eventIds }, evidence)` is a pure governance
+planning primitive. A trusted service loader must supply complete, canonical
+commit-ordered events through the current row revision and exact typed current
+cells. Pagination, timestamps, and matching values are not completeness proof.
+The planner preserves unrelated fields, rejects later unselected same-column
+events (including value cycles), and returns no partial differences on conflict.
+Legacy unknown values stay unavailable; integer strings preserve SQLite int64
+precision. A selected cycle can produce no differences and must not manufacture
+a timestamp-only write.
+
+This function does not load/authenticate history, validate catalog dependencies,
+issue a preview token, or write a row. It is not a CoreOperations RPC accepting
+client-asserted evidence. The service must acquire and guard evidence again in
+its atomic approval transaction. Governance DTOs in the canonical contract do
+not advertise a working governance service; `docs/governance-api-contract.md`
+defines the remaining boundary.
 A native host sharing a Python replica must hold `<database>.sync.lock` around
 sync. The core additionally refuses overlap on one driver instance.
 

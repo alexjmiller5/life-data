@@ -31,7 +31,7 @@ export function generateContract(contract: Contract) {
     const members=s.oneOf.map(ref=>{
       if (ref===true || !ref.$ref || Object.keys(ref).length!==1) throw new Error('unsupported schema union member');
       const name=refName(ref), schema=defs[name];
-      if (schema===true || !schema.properties || !schema.required) throw new Error('unsupported schema union member');
+      if (schema===true || schema.type!=='object' || !schema.properties || !schema.required) throw new Error('unsupported schema union member');
       return {name,schema};
     });
     const tags=members[0].schema.required!.filter(key=>{

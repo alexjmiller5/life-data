@@ -29,12 +29,13 @@ function read(value: Cell): string { return value.kind==='text'?value.value:'emp
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-test.each(['repeated','optional','missing','inline'])('ambiguous tagged union %s fails generation',kind=>{
+test.each(['repeated','optional','missing','inline','nonobject'])('ambiguous tagged union %s fails generation',kind=>{
   const contract:any=fixture();
   if(kind==='repeated')contract.$defs.Text.properties.kind.enum=['empty'];
   if(kind==='optional')contract.$defs.Text.required=['value'];
   if(kind==='missing')delete contract.$defs.Text.properties.kind;
   if(kind==='inline')contract.$defs.Cell.oneOf[0]=contract.$defs.Empty;
+  if(kind==='nonobject')contract.$defs.Text.type='string';
   expect(()=>generateContract(contract)).toThrow(/unsupported schema/);
 });
 
