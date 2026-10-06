@@ -10,6 +10,16 @@ const fixture = () => ({ $defs: {
   Cell: { oneOf: [{ $ref: '#/$defs/Empty' }, { $ref: '#/$defs/Text' }] },
 }, operations: {} });
 
+async function runCommand(args:string[],timeoutMs:number){
+  const child=Bun.spawn(args,{stdout:'pipe',stderr:'pipe'});
+  const timer=setTimeout(()=>child.kill(),timeoutMs);
+  try{
+    const [code,stdout,stderr]=await Promise.all([child.exited,
+      new Response(child.stdout).text(),new Response(child.stderr).text()]);
+    return {code,stdout,stderr};
+  }finally{clearTimeout(timer);if(child.exitCode===null)child.kill();}
+}
+
 test('named tagged unions preserve discriminant narrowing and reject mixed payloads in TypeScript', async () => {
   const output=generateContract(fixture());
   const dir=await mkdtemp(join(tmpdir(),'life-contract-union-'));
@@ -23,11 +33,10 @@ const missing: Cell = {kind:'text'};
 const mixed: Cell = {kind:'empty',value:'hidden'};
 function read(value: Cell): string { return value.kind==='text'?value.value:'empty'; }
 `);
-    const child=Bun.spawn([resolve(import.meta.dir,'../node_modules/.bin/tsc'),'--noEmit','--strict','--skipLibCheck',join(dir,'types.ts')],{stdout:'pipe',stderr:'pipe'});
-    const result=await child.exited;
-    expect({code:result,stdout:await new Response(child.stdout).text(),stderr:await new Response(child.stderr).text()}).toEqual({code:0,stdout:'',stderr:''});
+    const result=await runCommand([resolve(import.meta.dir,'../node_modules/.bin/tsc'),'--noEmit','--strict','--skipLibCheck',join(dir,'types.ts')],30_000);
+    expect(result).toEqual({code:0,stdout:'',stderr:''});
   } finally { await rm(dir,{recursive:true,force:true}); }
-});
+},45_000);
 
 test.each(['repeated','optional','missing','inline','nonobject'])('ambiguous tagged union %s fails generation',kind=>{
   const contract:any=fixture();
@@ -60,10 +69,11 @@ for json in [#"{}"#, #"{"kind":"unknown"}"#, #"{"kind":"text"}"#, #"{"kind":fals
 precondition((try? encoder.encode(CoreCell.text(CoreText(kind:"empty",value:"hidden")))) == nil)
 print("tagged codecs pass")
 `);
-    const compile=Bun.spawn(['swiftc','-module-cache-path',join(dir,'cache'),join(dir,'Contract.swift'),join(dir,'main.swift'),'-o',join(dir,'check')],{stdout:'pipe',stderr:'pipe'});
-    const code=await compile.exited,err=await new Response(compile.stderr).text();
-    expect({code,err}).toEqual({code:0,err:''});
-    const run=Bun.spawn([join(dir,'check')],{stdout:'pipe',stderr:'pipe'});
-    expect(await run.exited).toBe(0);expect((await new Response(run.stdout).text()).trim()).toBe('tagged codecs pass');
+    // Linux CI compiles Foundation into a cold private cache. Keep a generous
+    // compile deadline separate from the tiny executable's runtime deadline.
+    const compile=await runCommand(['swiftc','-module-cache-path',join(dir,'cache'),join(dir,'Contract.swift'),join(dir,'main.swift'),'-o',join(dir,'check')],150_000);
+    expect(compile).toEqual({code:0,stdout:'',stderr:''});
+    const run=await runCommand([join(dir,'check')],5_000);
+    expect(run).toEqual({code:0,stdout:'tagged codecs pass\n',stderr:''});
   } finally { await rm(dir,{recursive:true,force:true}); }
-},60_000);
+},180_000);
