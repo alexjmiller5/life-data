@@ -37,6 +37,10 @@ CLI.
   contracts and current boundaries. `worker/src/validate.js` re-exports the
   shared validator and adds hub-specific validation.
   `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
+- `core/src/source-links.ts` resolves supported Notion URLs through live,
+  whole-record `imported_from` provenance. It never infers a destination from
+  coincidental row IDs. Missing mappings stay external; ambiguous mappings fail.
+  Hosts re-read the returned destination through their usual navigation guards.
 - `core/src/references.ts` owns incoming catalog relations. `referenceSources`
   lists metadata without scanning data; `referencedBy` reads one bounded local
   group (20 default, 100 maximum). Identity comparisons use the target primary

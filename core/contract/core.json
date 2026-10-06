@@ -2032,6 +2032,42 @@
         "rowId",
         "expectedUpdatedAt"
       ]
+    },
+    "SourceLinkArgs": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "SourceRecordDestination": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "row": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "row"
+      ]
+    },
+    "SourceLinkResult": {
+      "type": "object",
+      "properties": {
+        "destination": {
+          "$ref": "#/$defs/SourceRecordDestination"
+        }
+      },
+      "required": []
     }
   },
   "operations": {
@@ -2277,6 +2313,15 @@
       "result": {
         "$ref": "#/$defs/Row"
       }
+    },
+    "resolveSourceLink": {
+      "args": {
+        "$ref": "#/$defs/SourceLinkArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SourceLinkResult"
+      },
+      "description": "Resolve supported external source URLs through live whole-record imported_from provenance. Missing mappings remain external; ambiguous identities fail. Hosts re-resolve the destination before guarded navigation."
     }
   }
 }
