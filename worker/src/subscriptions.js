@@ -1,3 +1,4 @@
+import {trustedContinuityTrigger} from './governance-continuity.js';
 import { checkedReads, readGuards } from './write.js';
 import { scopedTable, timestampTrigger } from './scopes.js';
 import { subscriptionTriggers, trustedSubscriptionTrigger } from './subscription-triggers.js';
@@ -35,24 +36,25 @@ export async function createSubscription(db,input) {
   const view=checkedReads(db),sources=[],triggerSources=[],seen=new Set();
   for(const source of input.sources) {
     if (!source || seen.has(source.table) || !Array.isArray(source.columns) || !source.columns.length
-      || source.columns.length>16 || new Set(source.columns).size!==source.columns.length) throw new Error('invalid subscription source');
+      || source.columns.length>16 || new Set(source.columns).size!==source.columns.length
+      || (Object.hasOwn(source,'lifecycle') && typeof source.lifecycle!=='boolean')) throw new Error('invalid subscription source');
     const columns=await scopedTable(view,source.table);
     if (!columns.some(c=>c.name==='deleted_at')) throw new Error('invalid subscription source');
     for(const column of source.columns) {
       const info=columns.find(c=>c.name===column);
       if (!info || ['id','created_at','updated_at','deleted_at','hub_at'].includes(column)
-        || !/CHAR|CLOB|TEXT/i.test(info.type)) throw new Error('invalid subscription column');
+        || !/CHAR|CLOB|TEXT|^(?:INTEGER|REAL)$/i.test(info.type)) throw new Error('invalid subscription column');
     }
     const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (?, '_change_events', '_change_subscriptions') ORDER BY name").bind(source.table).all();
     let hasClock=false;
     for(const trigger of triggers) {
       if (trigger.tbl_name!==source.table) throw new Error('invalid subscription triggers');
       if (timestampTrigger(trigger)) hasClock=true;
-      else if (!await trustedSubscriptionTrigger(view,trigger)) throw new Error('invalid subscription triggers');
+      else if (!trustedContinuityTrigger(trigger,columns.map(c=>c.name)) && !await trustedSubscriptionTrigger(view,trigger)) throw new Error('invalid subscription triggers');
     }
     seen.add(source.table);
-    sources.push({table:source.table,columns:[...source.columns]});
-    triggerSources.push({...sources.at(-1),hasClock,hasHubAt:columns.some(c=>c.name==='hub_at')});
+    sources.push({table:source.table,columns:[...source.columns],...(source.lifecycle?{lifecycle:true}:{})});
+    triggerSources.push({...sources.at(-1),version:2,hasClock,hasHubAt:columns.some(c=>c.name==='hub_at')});
   }
   const id=crypto.randomUUID();
   await db.batch([

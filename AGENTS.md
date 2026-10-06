@@ -40,6 +40,10 @@ CLI.
   contracts and current boundaries. `worker/src/validate.js` re-exports the
   shared validator and adds hub-specific validation.
   `tests/fixtures/validation-cases.json` is the Python/TypeScript contract.
+- `core/src/source-links.ts` resolves supported Notion URLs through live,
+  whole-record `imported_from` provenance. It never infers a destination from
+  coincidental row IDs. Missing mappings stay external; ambiguous mappings fail.
+  Hosts re-read the returned destination through their usual navigation guards.
 - `core/src/references.ts` owns incoming catalog relations. `referenceSources`
   lists metadata without scanning data; `referencedBy` reads one bounded local
   group (20 default, 100 maximum). Identity comparisons use the target primary
@@ -59,7 +63,11 @@ CLI.
   Python login behavior and hub routes are independent of these pure UI operations.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
-  codecs; `--check` verifies reproducibility without writing. Edit the contract,
+  codecs, including named discriminated object unions; `--check` verifies
+  reproducibility without writing. Governance operations require an explicitly
+  injected canonical adapter and
+  a validated current credential capability. Generated types alone never activate
+  a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
 - `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
@@ -69,6 +77,39 @@ CLI.
   Dispose handlers with the workspace. No undo persistence, history replay,
   redo or autosave grouping. Hosts preserve newer drafts and pause autosave
   during undo and until retained drafts are explicitly reviewed/saved.
+- `core/src/governance.ts` plans selected-column historical inverses from
+  trusted complete, commit-ordered typed evidence. It rejects later unselected
+  same-column changes and produces no partial patch on conflict. No RPC,
+  authorization, evidence loader, preview token, or proposal writer is supplied
+  by this pure primitive; generated governance DTOs are not service capabilities.
+  Mutation errors carry required original-operation `resolution`; an unresolved
+  retry rejection cannot clear a pending journal. `not_committed` requires a
+  durable negative receipt excluding late execution, not just an HTTP error.
+- `worker/src/governance.js` implements the nine configured governance HTTP
+  handlers over the existing checked writer. Private immutable versions,
+  canonical typed evidence and terminal receipts live in the data store;
+  authenticated approval authority remains in the separate auth store.
+  Preview performs a rollback-only validation probe and never initializes,
+  meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/governance-store.js` inserts terminal receipts in the same batch
+  as mutation. Unique key exclusion also makes negative settlement durable.
+  Replays reauthorize current disclosure before returning the original result,
+  ahead of current row/catalog validation. Purge removes affected proposal
+  versions and receipt payloads, retains exclusion keys, and revokes outstanding
+  stateless previews with a private target invalidation nonce.
+- `worker/src/governance-continuity.js` installs permanent mutation guards on
+  ordinary base tables. Indirect writes and lifecycle changes invalidate history
+  continuity and preview bindings. Exact stored table DDL detects column identity
+  changes; guard reinstallation breaks prior proofs. Only the checked writer with
+  verified trigger topology records typed evidence under transaction-local private
+  context. REAL evidence stays in native REAL columns, not SQLite JSON decimals.
+- `worker/src/governance-isolation.js` reserves `_governance_*` state from generic
+  schema/row/purge/catalog-SQL routes, including broad credentials. Private SQL
+  shapes and history invalidation triggers require exact service-owned DDL.
+  Schema replay accepts DDL, never arbitrary data SQL or PRAGMA statements.
+  Configured handlers require `GOVERNANCE_DEPLOYMENT_ID` and a separately
+  purposed `GOVERNANCE_PREVIEW_KEY`; see `docs/governance-service.md`.
+  Generated DTOs alone do not activate an adapter or advertise this protocol.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one
@@ -87,6 +128,15 @@ CLI.
   separate from local edits/search and deduplicate IDs across changing pages.
   No coverage, count or snapshot guarantee follows from browsing; usage caps
   still apply and core never retries. The bridge contract owns both operations.
+- `core/src/view.ts` compiles bounded AND/OR groups, runtime Today operands and
+  option-rank sorting. Version 2 saved definitions retain timezone, groups and
+  optional `dayStartMinutes` (integer 0..1439, absent means midnight). Hosts
+  supply consecutive local policy boundaries on each query, never persist the
+  calendar, and refresh at the boundary/resume. Resolve a DST gap to the next
+  valid local instant and a repeated boundary to its first occurrence. The
+  date label belongs to the interval's start; source timestamps stay intact.
+  Multi-select order uses the first selected
+  option; unknown/empty values trail known ones. Version 1 remains supported.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.
@@ -99,6 +149,13 @@ CLI.
   advancing each affected revision beyond its previous value and at least to
   database time so LWW and push discovery retain the rename under clock skew.
   Returned view columns are SQL projection: clients need full rows to edit.
+- `core/src/row-actions.ts` validates version 2 literal action patches and layout
+  references. `runRowAction` resolves the current definition and full live row
+  under the mutation session's writer transaction, requires both the displayed
+  saved-view `expectedViewUpdatedAt` and selected row `expectedUpdatedAt`,
+  and publishes an ordinary undo receipt only after commit. Keep identity,
+  clocks, deletion, derived and immutable fields out of action definitions.
+  Actions use ordinary catalog/history/coverage checks and pending sync state.
 - `syncStatus` includes durable `skippedTables` from the last completed pull
   round, stored in the final ready transaction even when pushes are rejected.
   `last_sync` advances only without rejections. Hosts consume this
@@ -468,7 +525,9 @@ access. Core enrollment requires advertised schema `full-ddl-v1` and
 `replica_sync: true`; only entirely absent capabilities use the legacy full-token
 default. Consumer enrollment still rejects operator/admin credentials. Capabilities
 never broaden route scopes. The generated contract includes the wire types.
-Subscriptions are advertised as null until durable pull routes are implemented.
+Subscriptions advertise `durable-pull-v1`; conditional row edits advertise
+`conditional_patch: revision-v1`. Missing optional capabilities never authorize
+falling back to an unconditional write.
 
 Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
 body.table before data access. Narrow consumers use bounded direct rows APIs;
@@ -493,12 +552,21 @@ and skip broad post-commit purge recovery. Validation errors are generic; intern
 are still checked server-side. The exact timestamp trigger is trusted by its SQL,
 not its name. Broad callers retain their existing behavior.
 
-`authenticate` in `worker/src/auth.js` is the auth seam. It accepts the
+`authenticate` in `worker/src/index.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth
 registry. Browser approval uses the platform-provided Access identity and the
 configured audience; it admits one owner to one dataset. API tokens and browser
 Access sessions are separate authorities: revoking one does not revoke the other.
+`auth.js` records opaque governance principals separately from token names and
+scopes. Verified browser enrollment can establish user approval authority;
+operator-created tokens receive agent proposal authority only. Legacy tokens
+without that record remain ineligible; no name or full/admin scope substitutes
+for it. Authority revocation and token revocation are checked on each request.
+Exact governance preview routes bypass auth last-use writes, initialization and
+the usage flush while still authenticating and reading the current cap. Cold or
+unready service state is unavailable. The protocol remains unadvertised until
+all documented operations and writer guarantees exist.
 
 Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
 prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
@@ -696,6 +764,12 @@ mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
 writes create no event. Paused subscriptions keep recording; retired ones stop.
 Capacity and per-event size failures roll back the source mutation. Canonical
 shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
+Selected columns support TEXT, INTEGER and REAL, preserving numeric JSON values.
+Per-source `lifecycle: true` records live insertion/deletion/restoration even with
+empty changes; restoration is `restore`. Default subscriptions retain value-only
+events and `update` on restore. Stored trigger sources carry version 2; missing
+version regenerates the original SQL exactly. Never reinterpret persisted trigger
+definitions. `subscription_features: scalar-lifecycle-v1` advertises the extension.
 Activation rejects custom source/outbox triggers; only complete canonical timestamp
 statements (quoted or unquoted CLI identifiers) and exact generated recording
 triggers are supported. Timestamp revisions use the same

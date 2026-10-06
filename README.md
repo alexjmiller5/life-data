@@ -305,6 +305,24 @@ strings retain SQLite INTEGER/REAL coercion. References and dynamic options are
 checked at each mutation, including changes earlier in the batch. Enforced catalog invariants and history are transactional on both hubs;
 advisory rules remain advisory.
 
+Use `POST /v1/rows/patch` for conditional edits to one existing row. Send
+`{table, id, values, expected_revision: {updated_at, hub_at}}`, using the
+revision from a prior row read (`hub_at: null` for a table without that clock).
+The response is `{id, revision: {updated_at, hub_at}}` from the committed
+transaction. The server advances the edit clock, including under client clock
+skew, and validates sparse values, references, invariants and history together.
+Identity, creation/edit/arrival clocks and tombstones cannot be patched here.
+Empty or malformed patches return 400; a stale revision, missing row or
+tombstone returns 409 `revision_conflict`; invalid values return 422
+`validation_failed`. A failed write changes neither the row nor its history
+or durable change events. After a timeout or conflict, reread and recompute
+the intended edit; never fall back to an unconditional push.
+
+The session capability `conditional_patch: "revision-v1"` advertises this
+operation. Broad `tables:write` and exact `tables:write:<table>` grants are
+supported; narrow callers retain all table eligibility checks. A write-only
+credential receives the revision receipt, not the row's other values.
+
 An optional `history` array carries original replica events for submitted rows,
 using the history-table shape and original IDs. Matching IDs are idempotent;
 conflicting reuse rejects the row. Original events that explain a cell transition
@@ -349,6 +367,71 @@ Normal 500-row pushes and 200-row provenance chunks with schema-derived options
 and references use bulk reads/upserts and transaction-scoped triggers.
 D1 statement/text budgets fail closed with per-row rejections; retry those rows
 in smaller batches. No partial history remains after a failed transaction.
+
+### Saved view query semantics
+
+Version 1 saved definitions remain supported. Version 2 adds bounded filter
+groups, relative dates and catalog option sorting. Flat filters and outer
+groups combine with AND; each `{match: "all" | "any", filters}` group uses
+AND or OR internally. Groups cannot nest. Queries permit at most 16 groups,
+64 filters per group, 128 filters total and 16 ordered sort clauses.
+
+`{column, op: "lte", relative: "today"}` compares a date or datetime with
+the current local day. Relative filters also support `eq`, `ne`, `lt`, `gt`
+and `gte`, and cannot include `value`. The saved definition retains `timeZone`
+and optional `dayStartMinutes` (integer 0 through 1439, omitted means midnight).
+The host resolves that policy and supplies runtime `calendar: {today, start, end}`.
+`today` labels the civil date on which the current policy interval began;
+the bounds are consecutive configured local boundaries expressed as exact UTC
+millisecond timestamps, with an exclusive end. For a boundary in a daylight-saving
+gap use the next valid local instant; for a repeated boundary use its first
+occurrence. Resolve each boundary in the named timezone, never by subtracting a
+fixed UTC offset. Date-only comparisons use `today`; timed comparisons use the
+interval without changing source values. Refresh at the policy boundary and on
+resume. Never persist this runtime clock.
+Absent or invalid calendar context rejects execution instead of broadening it.
+
+Sort `mode: "options"` uses catalog option order. Multi-selects use the
+first stored selection; later selections do not break ties. Unknown values
+remain visible after known options, then empty values, in either direction.
+Remaining clauses apply in order, with a stable ID tie-breaker. Omitted mode
+keeps ordinary value sorting. Older clients report version 2 unavailable.
+
+Version 2 definitions may also store `actions: [{id, label, values}]` and an
+ordered `layout: [{kind: "column" | "action", id}]`. Actions contain literal
+property patches. They cannot change identity, clocks, deletion state or
+read-only fields. Layout references must identify selected columns or existing
+actions. Invalid definitions make that saved view unavailable.
+
+Call core `runRowAction({viewId, actionId, rowId, expectedUpdatedAt})` with the
+full selected row's revision. The mutation session resolves the current saved
+action and row inside its writer transaction, then uses the ordinary validated
+write, history and pending-sync path. A successful action supplies the same
+undo receipt as an edit. A stale action or failed commit preserves the row and
+previous undo receipt. This is a local commit; normal sync rejection handling
+still applies. Definitions contain no executable expressions or workflow rules.
+
+### Durable change subscriptions
+
+`POST /v1/subscriptions` accepts `{label, start: "now", sources}`. Each
+source names a table and a list of scalar TEXT, INTEGER or REAL columns.
+Numeric changes preserve JSON numbers, including checkbox values `0` and `1`.
+Add `lifecycle: true` to a source to record live row insertion, deletion and
+restoration even when all watched values are null. Such events may have an
+empty `changes` array; restoration uses operation `restore`. Without this
+option, only watched value changes emit events and restoration retains the
+legacy `update` operation. Timestamp-only edits and physical cleanup of an
+already deleted row emit no event.
+
+The optional session capability `subscription_features: "scalar-lifecycle-v1"`
+advertises these semantics alongside the `durable-pull-v1` delivery protocol.
+Poll `GET /v1/subscriptions/<id>/events?wait=30`, then acknowledge its durable
+delivery with `POST /v1/subscriptions/<id>/ack` and `{delivery_id}` only after
+retaining recoverable work. Consumers require `subscriptions:consume:<id>`
+plus read grants for every source. A delivery repeats until acknowledged;
+polling does not move the cursor. Capacity failures roll back the source
+mutation. Source definitions are immutable; retire a subscription to replace
+them. Existing subscriptions retain their exact stored trigger semantics.
 
 ### Files
 

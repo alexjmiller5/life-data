@@ -7,11 +7,10 @@
 # Refs are BY NAME: op-project-bootstrap parses this file to create the vault
 # and items, so IDs cannot exist yet. See the global AGENTS.md exception.
 #
-# NOT here on purpose: the hub's own API token (what clients present as a
-# bearer token, and what the Worker holds as its HUB_TOKEN secret). It lives
-# in the AI Agent vault because the machines' launchd sync agent reads it with
-# the agent service account, which cannot see project vaults. CI never needs
-# it — Worker secrets persist across deploys.
+# Service runtime secrets persist in the Worker's supported secret storage.
+# HUB_TOKEN is operator-only; clients enroll independent revocable credentials.
+# Governance's stable deployment identity and dedicated preview key belong to
+# server configuration, never client settings. See docs/governance-service.md.
 
 CLOUDFLARE_API_TOKEN=op://Life Data/Life Data CI Cloudflare Token/api-token
 CLOUDFLARE_ACCOUNT_ID=op://Life Data/Life Data CI Cloudflare Token/account-id

@@ -177,7 +177,7 @@ test("cursor creates a hub_at index on every user table with the column", async 
   const db = await seed();
   await db.prepare("CREATE TABLE legacy (id TEXT PRIMARY KEY, updated_at TEXT)").run();
   const indexes = async () => (await db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' AND tbl_name NOT GLOB '_*' ORDER BY name"
   ).all()).results.map((r) => r.name);
   expect(await indexes()).toEqual([]);
   await ROUTES["/v1/cursor"]({ tables: ["records", "legacy"] }, db);

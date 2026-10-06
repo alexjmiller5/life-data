@@ -97,6 +97,25 @@ def test_rename_retargets_shared_views_and_journals_the_change(db):
     assert client(db, "listViews", {"table": "records"})["views"][0]["view"] == {"table": "records"}
 
 
+def test_v2_definition_preserves_grouping_and_timezone_across_python_rename(db):
+    definition = {
+        "version": 2,
+        "timeZone": "UTC",
+        "groups": [{"match": "any", "filters": [{"column": "qty", "op": "empty"}]}],
+    }
+    insert_rows(
+        db,
+        "views",
+        [{"id": "v2", "name": "Grouped", "tbl": "items", "definition": json.dumps(definition)}],
+    )
+    rename_table(db, "items", "records")
+    result = client(db, "listViews", {"table": "records"})
+    view = next(v for v in result["views"] if v["id"] == "v2")
+    assert view["unavailable"] is None
+    assert view["definition"] == definition
+    assert view["view"] == {"table": "records", "groups": definition["groups"]}
+
+
 @pytest.mark.parametrize(
     "collision",
     [

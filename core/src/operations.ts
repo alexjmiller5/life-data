@@ -1,8 +1,10 @@
 import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
+import {unavailableGovernance,type GovernanceAPI} from './governance-service.ts';
 import type { SqlDriver } from './driver.ts';
 import type { ServiceHub } from './services.ts';
 import { readCatalog } from './catalog.ts';
 import { referenceSources, referencedBy } from './references.ts';
+import { resolveSourceLink } from './source-links.ts';
 import { allowed } from './validate.ts';
 import { compileView, displayName } from './view.ts';
 import { isReadOnlyTable, writeability } from './write.ts';
@@ -40,9 +42,10 @@ export async function readOptions(db: SqlDriver, { table, column }: OptionsArgs)
 }
 
 /** Typed local dispatch, not a network protocol. Credentials stay in the host. */
-export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local'): CoreHandlers {
+export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local', governance: GovernanceAPI | null = null): CoreHandlers {
   const writes = createWriteSession(db, origin);
   return {
+    ...(governance ?? unavailableGovernance()),
     enrollmentApproval,
     validateDeviceSession: ({ data }) => validateDeviceSession(data),
     enrollmentPollResult: ({ reply, expectedFingerprint }) => enrollmentPollResult(reply, expectedFingerprint),
@@ -54,6 +57,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     rows: view => readRows(db, view),
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),
+    resolveSourceLink: args => resolveSourceLink(db, args),
     remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
@@ -62,6 +66,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     deleteView: args => writes.otherMutation(args, input => deleteView(db, input, { origin })),
     options: args => readOptions(db, args),
     write: writes.write,
+    runRowAction: writes.runRowAction,
     undo: writes.undo,
     undoStatus: writes.undoStatus,
     writeability: args => writeability(db, args),

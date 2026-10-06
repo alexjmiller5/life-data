@@ -1,4 +1,4 @@
-import type { CoreArgs, CoreHandlers, CoreResult, Filter, View } from '../src/contract.generated.ts';
+import type { CoreArgs, CoreHandlers, CoreResult, Filter, View, ApprovalResult, ProposalMutationResult } from '../src/contract.generated.ts';
 
 // Compile-only negative examples: widening the generated API must fail tsc.
 // @ts-expect-error table is required
@@ -42,3 +42,17 @@ const incompleteRejections: CoreResult<'rejections'> = { rejections: [] };
 // @ts-expect-error stored sync errors are whole rejection objects, not flattened messages
 const flattenedRejection: CoreResult<'rejections'> = { rejections: [{ table: 'items', rowID: 'a', submitted: { id: 'a' }, errors: ['Denied'] }], nextOffset: null };
 void [invalidRejections, incompleteRejections, flattenedRejection];
+// @ts-expect-error every row action needs the selected row revision
+const unsafeAction: CoreArgs<'runRowAction'> = { viewId:'view',actionId:'close',rowId:'a' };
+// @ts-expect-error layout entries cannot execute code
+const scriptLayout: CoreArgs<'saveView'> = { table:'items',name:'Example',definition:{version:2,layout:[{kind:'script',id:'code'}]} };
+void [unsafeAction, scriptLayout];
+
+// A rejection of a retry cannot settle the original operation without evidence.
+const deniedRetry: ApprovalResult = { kind: 'error', code: 'permission_denied', conflicts: [], resolution: 'unresolved' };
+const settledRejection: ProposalMutationResult = { kind: 'error', code: 'revision_changed', conflicts: [], resolution: 'not_committed' };
+// @ts-expect-error old errors without original-operation resolution are incomplete
+const ambiguousRejection: ApprovalResult = { kind: 'error', code: 'unavailable', conflicts: [] };
+// @ts-expect-error clients cannot invent a committed error settlement
+const inventedResolution: ProposalMutationResult = { kind: 'error', code: 'unavailable', conflicts: [], resolution: 'committed' };
+void [deniedRetry, settledRejection, ambiguousRejection, inventedResolution];

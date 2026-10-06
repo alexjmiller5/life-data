@@ -1,10 +1,10 @@
-import { qident, type Property, type Row } from "./validate.ts";
+import { qident, validEditTimestamp, type Property, type Row } from "./validate.ts";
 import { compileSearch } from './search.ts';
 
-import type { View } from './contract.generated.ts';
+import type { View, Filter, CalendarContext } from './contract.generated.ts';
 export type { Filter, View } from './contract.generated.ts';
 
-const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at"]);
+const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at", "hub_at"]);
 
 function checkObject(value: unknown, keys: string[], label: string): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)
@@ -21,7 +21,23 @@ function checkObject(value: unknown, keys: string[], label: string): asserts val
  * which drains its queue and queries in the same transaction.
  */
 export function compileView(view: View, properties: Property[]): { sql: string; params: (string | number | null)[] } {
-  checkObject(view, ["table", "columns", "filters", "sort", "limit", "offset", "trash", "search"], "view");
+  return compile(view, properties, true);
+}
+
+/** Saved definitions validate without a host clock; executing a relative query requires one. */
+export function validateView(view: View, properties: Property[]): void { compile(view, properties, false); }
+
+function calendarContext(value: CalendarContext | undefined): CalendarContext | undefined {
+  if (value === undefined) return undefined;
+  checkObject(value, ['today','start','end'], 'calendar');
+  if (typeof value.today !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.today)
+    || !validEditTimestamp(value.today+'T00:00:00.000Z') || !validEditTimestamp(value.start) || !validEditTimestamp(value.end)
+    || Date.parse(value.end)<=Date.parse(value.start) || Date.parse(value.end)-Date.parse(value.start)>27*3600000) throw new Error('Invalid calendar context');
+  return value;
+}
+
+function compile(view: View, properties: Property[], requireCalendar: boolean): { sql: string; params: (string | number | null)[] } {
+  checkObject(view, ["table", "columns", "filters", "sort", "limit", "offset", "trash", "search", "groups", "calendar"], "view");
   if (typeof view.table !== "string") throw new Error("Invalid table");
   const table = qident(view.table);
   const props = new Map(properties.filter((p) => p.tbl === undefined || p.tbl === view.table).map((p) => [p.col, p]));
@@ -33,7 +49,7 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
     if (!SYSTEM_COLUMNS.has(name) && !props.has(name)) throw new Error(`Unknown column: ${name}`);
     return `${row}.${quoted}`;
   };
-  for (const key of ["columns", "filters", "sort"] as const) {
+  for (const key of ["columns", "filters", "sort", "groups"] as const) {
     if (view[key] !== undefined && !Array.isArray(view[key])) throw new Error(`Invalid ${key}`);
   }
   if (view.columns?.length === 0) throw new Error("columns must not be empty");
@@ -53,34 +69,63 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
     params.push(typeof value === "boolean" ? Number(value) : value as string | number | null);
     return "?";
   };
+  const calendar=calendarContext(view.calendar);
+  if ((view.groups?.length ?? 0)>16 || (view.sort?.length ?? 0)>16) throw new Error('View exceeds group or sort limit');
+  let filterCount=0;
   const where = [`${column("deleted_at")} IS ${view.trash ? "NOT " : ""}NULL`];
-  for (const filter of view.filters ?? []) {
-    checkObject(filter, ["column", "op", "value"], "filter");
+  const filterSQL = (filter: Filter): string => {
+    if (++filterCount>128) throw new Error('View exceeds filter limit');
+    checkObject(filter, ["column", "op", "value", "relative"], "filter");
+    const conditions: string[]=[];
     const col = column(filter.column);
-    const type = props.get(filter.column)?.type;
+    const type = SYSTEM_COLUMNS.has(filter.column) && filter.column!=="id" ? "datetime" : props.get(filter.column)?.type;
     const multi = type === "multi_select" || type === "multi_ref";
     // CASE guards both JSON functions, including against legacy malformed cells.
     const array = `CASE WHEN json_valid(${col}) THEN CASE WHEN json_type(${col}) = 'array' THEN ${col} END END`;
+    if (filter.relative !== undefined) {
+      if (filter.relative!=='today' || Object.hasOwn(filter,'value') || !['date','datetime'].includes(type ?? '')
+        || !['eq','ne','gt','gte','lt','lte'].includes(filter.op)) throw new Error('Invalid relative date filter');
+      if (!calendar) {
+        if (requireCalendar) throw new Error('Relative query requires a calendar context');
+        return '0';
+      }
+      const op={eq:'=',ne:'!=',gt:'>',gte:'>=',lt:'<',lte:'<='}[filter.op as 'eq'|'ne'|'gt'|'gte'|'lt'|'lte'];
+      const dateOnly=`(length(${col})=10 AND ${col} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(${col},'+0 days')=${col})`;
+      const dateComparison=`${col} ${op} ${bind(calendar.today)}`;
+      const instant=`julianday(${col})`;
+      const bound=(value:string)=>`julianday(${bind(value)})`;
+      let timed:string;
+      switch(filter.op) {
+        case 'eq':timed=`${instant} >= ${bound(calendar.start)} AND ${instant} < ${bound(calendar.end)}`;break;
+        case 'ne':timed=`${instant} < ${bound(calendar.start)} OR ${instant} >= ${bound(calendar.end)}`;break;
+        case 'gt':timed=`${instant} >= ${bound(calendar.end)}`;break;
+        case 'gte':timed=`${instant} >= ${bound(calendar.start)}`;break;
+        case 'lt':timed=`${instant} < ${bound(calendar.start)}`;break;
+        default:timed=`${instant} < ${bound(calendar.end)}`;
+      }
+      const zoned=`(${col} GLOB '????-??-??T??:??*' AND (substr(${col},-1)='Z' OR (substr(${col},-6,1) IN ('+','-') AND substr(${col},-3,1)=':')))`;
+      return `(CASE WHEN ${dateOnly} THEN ${dateComparison} WHEN ${zoned} THEN (${timed}) ELSE 0 END)`;
+    }
     switch (filter.op) {
       case "empty":
       case "not_empty": {
         if (filter.value !== undefined) throw new Error(`${filter.op} takes no value`);
         const empty = `(${col} IS NULL OR ${col} = ${bind("")}${multi ? ` OR json_array_length(${array}) IS ${bind(0)}` : ""})`;
-        where.push(filter.op === "empty" ? empty : `NOT ${empty}`);
+        conditions.push(filter.op === "empty" ? empty : `NOT ${empty}`);
         break;
       }
       case "contains":
         if (multi) {
           const item = qident("_view_item");
-          where.push(`EXISTS (SELECT 1 FROM json_each(${array}) AS ${item} WHERE ${item}.${qident("value")} IS ${bind(filter.value)})`);
+          conditions.push(`EXISTS (SELECT 1 FROM json_each(${array}) AS ${item} WHERE ${item}.${qident("value")} IS ${bind(filter.value)})`);
         } else {
           if (typeof filter.value !== "string") throw new Error("Text contains requires a string");
-          where.push(`instr(lower(${col}), lower(${bind(filter.value)})) > 0`);
+          conditions.push(`instr(lower(${col}), lower(${bind(filter.value)})) > 0`);
         }
         break;
       case "eq":
       case "ne":
-        where.push(`${col} IS ${filter.op === "ne" ? "NOT " : ""}${bind(filter.value)}`);
+        conditions.push(`${col} IS ${filter.op === "ne" ? "NOT " : ""}${bind(filter.value)}`);
         break;
       case "gt":
       case "gte":
@@ -88,12 +133,19 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
       case "lte": {
         if (filter.value === null) throw new Error("Ordered comparisons require a non-null value");
         const op = { gt: ">", gte: ">=", lt: "<", lte: "<=" }[filter.op];
-        where.push(`${col} ${op} ${bind(filter.value)}`);
+        conditions.push(`${col} ${op} ${bind(filter.value)}`);
         break;
       }
       default:
         throw new Error("Invalid filter operator");
     }
+    return conditions[0]!;
+  };
+  for (const filter of view.filters ?? []) where.push(filterSQL(filter));
+  for (const group of view.groups ?? []) {
+    checkObject(group,['match','filters'],'filter group');
+    if (!['all','any'].includes(group.match) || !Array.isArray(group.filters) || !group.filters.length || group.filters.length>64) throw new Error('Invalid filter group');
+    where.push(`(${group.filters.map(filterSQL).join(group.match==='all'?' AND ':' OR ')})`);
   }
 
   if (view.search) {
@@ -103,9 +155,22 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
   const order: string[] = [];
   let sortedById = false;
   for (const sort of view.sort ?? []) {
-    checkObject(sort, ["column", "direction"], "sort");
+    checkObject(sort, ["column", "direction", "mode"], "sort");
     if (sort.direction !== "asc" && sort.direction !== "desc") throw new Error("Invalid sort direction");
-    order.push(`${column(sort.column)} ${sort.direction.toUpperCase()}`);
+    if (sort.mode!==undefined && !['value','options'].includes(sort.mode)) throw new Error('Invalid sort mode');
+    const col=column(sort.column);
+    if (sort.mode==='options') {
+      const prop=props.get(sort.column);
+      if (!prop || !['select','multi_select'].includes(prop.type ?? '')) throw new Error('Option sort requires a select property');
+      const options=(prop.options ?? []).map(o=>o.v);
+      // Multi-select order follows the first stored selection. Later selections
+      // do not break ties; the remaining sort clauses and stable id do.
+      const key=prop.type==='multi_select'
+        ? `CASE WHEN json_valid(${col}) THEN CASE WHEN json_type(${col})='array' THEN json_extract(${col},'$[0]') END END` : col;
+      const rank=()=>`(SELECT opt.key FROM json_each(${bind(JSON.stringify(options))}) AS opt WHERE opt.value IS (${key}) LIMIT 1)`;
+      order.push(`CASE WHEN (${key}) IS NULL OR (${key})='' THEN 2 WHEN ${rank()} IS NULL THEN 1 ELSE 0 END ASC`);
+      order.push(`${rank()} ${sort.direction.toUpperCase()}`,`(${key}) ASC`);
+    } else order.push(`${col} ${sort.direction.toUpperCase()}`);
     if (sort.column === "id") sortedById = true;
   }
   if (!sortedById) order.push(`${column("id")} ASC`);

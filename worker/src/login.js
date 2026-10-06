@@ -3,6 +3,7 @@ import {
   ensureAuthReady,
   validFingerprint,
   validLabel,
+  authorityStatement,
 } from "./auth.js";
 
 const HTML_HEADERS = {
@@ -132,17 +133,13 @@ async function approvedLogin(request, env, url) {
       409,
     );
   }
-  if (existing) {
-    await env.AUTH_DB.prepare("UPDATE _tokens SET label = ? WHERE name = ?")
-      .bind(form.name.trim(), name)
-      .run();
-  } else {
-    await env.AUTH_DB.prepare(
+  const registration=existing
+    ? env.AUTH_DB.prepare("UPDATE _tokens SET label = ? WHERE name = ?").bind(form.name.trim(),name)
+    : env.AUTH_DB.prepare(
       "INSERT INTO _tokens (hash, name, scopes, label) VALUES (?, ?, 'full', ?)",
     )
-      .bind(form.key, name, form.name.trim())
-      .run();
-  }
+      .bind(form.key, name, form.name.trim());
+  await env.AUTH_DB.batch([registration,authorityStatement(env.AUTH_DB,form.key,'user')]);
   return page(
     "Life device approved",
     '<p>If the device is still waiting, it will finish signing in automatically. If you abandoned this request, revoke its API token in <a href="/login/devices">Life devices</a>.</p>',
