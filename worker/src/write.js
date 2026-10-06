@@ -6,6 +6,23 @@ import {assertPublicSql} from './governance-isolation.js';
 import { supportedRuleSql } from '../../core/src/rule-sql.ts';
 
 const quoteColumn = (v) => '"' + v.replaceAll('"', '""') + '"';
+const JSON_BYTES = 256 * 1024;
+const byteLength = value => new TextEncoder().encode(value).length;
+
+// Keep each JSON value well below D1's length limit, including UTF-8 and JSON
+// escaping. A single oversized row must use native cells instead.
+function jsonChunks(rows) {
+  const chunks=[];
+  let chunk=[],bytes=2;
+  for(const row of rows){
+    const encoded=JSON.stringify(row),size=byteLength(encoded);
+    if(size+2>JSON_BYTES)return null;
+    if(bytes+size+Number(chunk.length>0)>JSON_BYTES){chunks.push('['+chunk.join(',')+']');chunk=[];bytes=2;}
+    chunk.push(encoded);bytes+=size+Number(chunk.length>1);
+  }
+  if(chunk.length)chunks.push('['+chunk.join(',')+']');
+  return chunks;
+}
 
 export function checkedReads(db) {
   const reads = new Map();
@@ -60,32 +77,46 @@ export function readGuards(db, reads) {
     if(numbers.length+args.length+1<=99){
       const index=new Map(numbers.map((n,i)=>[n,i]));
       const encoded=rows.map(row=>Object.fromEntries(Object.entries(row).map(([c,v])=>[c,index.has(v)?{native:index.get(v)}:v])));
-      const expected=cols.map(c=>{
-        const path=literal('$.'+JSON.stringify(c)),value=`json_extract(j.value,${path})`;
-        return (numbers.length?`CASE WHEN json_type(j.value,${path})='object' THEN (SELECT n.value FROM ${nativeName} n WHERE n.id=json_extract(${value},'$.native')) ELSE ${value} END`:value)+` AS ${quoteColumn(c)}`;
-      }).join(',');
-      // Repeated native values share one binding. This keeps bulk snapshots
-      // cheap without passing any REAL through SQLite's JSON number parser.
-      // IDs are SQL integer literals, leaving exactly one bind per native value.
-      const nativeSQL=numbers.length?`${nativeName}(id,value) AS (VALUES ${numbers.map((_,i)=>`(${i},?)`).join(',')}),`:'';
-      const guard=equal(sql,`SELECT ${expected} FROM json_each(?) j`,cols).replace(`WITH ${actualName} AS`,`WITH ${nativeSQL}${actualName} AS`);
-      guards.push(assertion(guard,[...numbers,...args,JSON.stringify(encoded)]));
-      continue;
+      const chunks=jsonChunks(encoded);
+      if(chunks && numbers.length+args.length+chunks.length<=99){
+        const expected=cols.map(c=>{
+          const path=literal('$.'+JSON.stringify(c)),value=`json_extract(j.value,${path})`;
+          return (numbers.length?`CASE WHEN json_type(j.value,${path})='object' THEN (SELECT n.value FROM ${nativeName} n WHERE n.id=json_extract(${value},'$.native')) ELSE ${value} END`:value)+` AS ${quoteColumn(c)}`;
+        }).join(',');
+        // Repeated native values share one binding. This keeps bulk snapshots
+        // cheap without passing any REAL through SQLite's JSON number parser.
+        // IDs are SQL integer literals, leaving exactly one bind per native value.
+        const nativeSQL=numbers.length?`${nativeName}(id,value) AS (VALUES ${numbers.map((_,i)=>`(${i},?)`).join(',')}),`:'';
+        const source=chunks.map(()=>'SELECT value FROM json_each(?)').join(' UNION ALL ');
+        const guard=equal(sql,`SELECT ${expected} FROM (${source}) j`,cols).replace(`WITH ${actualName} AS`,`WITH ${nativeSQL}${actualName} AS`);
+        guards.push(assertion(guard,[...numbers,...args,...chunks]));
+        continue;
+      }
     }
     // SQLite JSON numeric parsing can change a double by one ULP. Native binds
     // preserve those values; bounded slices stay below D1's parameter limit.
     const capacity=99-args.length;
-    if(capacity<1)throw new Error('life_write_budget');
+    if(capacity<cols.length)throw new Error('life_write_budget');
     guards.push(assertion(`(SELECT count(*) FROM (${sql}))=${rows.length}`,args));
-    const step=Math.max(1,Math.floor(capacity/cols.length));
-    for(let offset=0;offset<rows.length;offset+=step){
-      const slice=rows.slice(offset,offset+step);
-      for(let col=0;col<cols.length;col+=capacity){
-        const selected=cols.slice(col,col+capacity);
-        const actual=`SELECT ${selected.map(quoteColumn).join(',')} FROM (${sql}) LIMIT ${slice.length} OFFSET ${offset}`;
-        const expected=slice.map(()=>`SELECT ${selected.map(c=>'? AS '+quoteColumn(c)).join(',')}`).join(' UNION ALL ');
-        guards.push(assertion(equal(actual,expected,selected),[...args,...slice.flatMap(row=>selected.map(c=>row[c]))]));
-      }
+    // Every distinct expected row must retain its GLOBAL multiplicity, and
+    // total cardinality excludes extra rows. This is independent of query
+    // order and never loses correlations by comparing columns separately.
+    const groups=new Map();
+    for(const row of rows){
+      const key=JSON.stringify(cols.map(c=>typeof row[c]==='number'?['number',String(row[c])]:row[c]));
+      if(groups.has(key))groups.get(key).count++;
+      else groups.set(key,{row,count:1});
+    }
+    const keys=cols.map(c=>quoteColumn(c)+' COLLATE BINARY').join(',');
+    const countName=quoteColumn(prefix+'_count');
+    const actual=`SELECT ${keys},count(*) AS ${countName} FROM (${sql}) GROUP BY ${keys}`;
+    const unique=[...groups.values()],step=Math.floor(capacity/cols.length);
+    for(let offset=0;offset<unique.length;offset+=step){
+      const slice=unique.slice(offset,offset+step);
+      const expected=slice.map(({count})=>`SELECT ${cols.map(c=>'? AS '+quoteColumn(c)).join(',')},${count} AS ${countName}`).join(' UNION ALL ');
+      guards.push(assertion(`WITH ${actualName} AS (${actual}),${expectedName} AS (${expected})
+        SELECT NOT EXISTS (SELECT * FROM ${expectedName} EXCEPT SELECT * FROM ${actualName})`,
+      [...args,...slice.flatMap(({row})=>cols.map(c=>row[c]))]));
     }
   }
   return guards;
@@ -114,12 +145,26 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   const begin = readGuards(db, reads);
   const end = [];
   const approval = key + '_approved',numbers=key+'_numbers';
-  const nativeValues=[...new Set(expected.flatMap(row=>Object.values(row).filter(v=>typeof v==='number' && !Number.isSafeInteger(v))))];
+  // Large unchanged stored text must not be expanded into an oversized JSON
+  // approval value by a sparse write. Native cells also preserve exact REALs.
+  const nativeValues=[...new Set(expected.flatMap(row=>{
+    const large=byteLength(JSON.stringify(row))>JSON_BYTES;
+    return Object.entries(row).filter(([c,v])=>!['id','updated_at','hub_at'].includes(c)
+      && (typeof v==='number' && !Number.isSafeInteger(v) || large && typeof v==='string')).map(([,v])=>v);
+  }))];
   const nativeIndex=new Map(nativeValues.map((n,i)=>[n,i]));
   if (expected.length) {
-    begin.push(db.prepare(`CREATE TABLE ${qident(approval)} AS SELECT key AS row_index,value FROM json_each(?)`)
-      .bind(JSON.stringify(expected.map(({hub_at, ...row},i)=>({row,touched:transitions[i]?.touched ?? Object.keys(row),numbers:Object.fromEntries(Object.entries(row).filter(([,v])=>nativeIndex.has(v)).map(([c,v])=>[c,nativeIndex.get(v)]))})))));
-    begin.push(db.prepare(`CREATE TABLE ${qident(numbers)} (id INTEGER,value REAL)`));
+    const approved=expected.map(({hub_at,...row},i)=>({
+      // Dependency checks address these two fields directly in the JSON.
+      row:Object.fromEntries(Object.entries(row).map(([c,v])=>[c,!['id','updated_at'].includes(c) && nativeIndex.has(v)?{native:nativeIndex.get(v)}:v])),
+      touched:transitions[i]?.touched ?? Object.keys(row),
+    }));
+    const chunks=jsonChunks(approved);
+    if(!chunks)throw new Error('life_write_budget');
+    begin.push(db.prepare(`CREATE TABLE ${qident(approval)} AS SELECT value FROM json_each(?)`).bind(chunks[0]));
+    for(const chunk of chunks.slice(1))begin.push(db.prepare(`INSERT INTO ${qident(approval)} SELECT value FROM json_each(?)`).bind(chunk));
+    // No affinity: binding a numeric-looking TEXT must never coerce its type.
+    begin.push(db.prepare(`CREATE TABLE ${qident(numbers)} (id INTEGER,value)`));
     for(let i=0;i<nativeValues.length;i+=99){
       const chunk=nativeValues.slice(i,i+99);
       begin.push(db.prepare(`INSERT INTO ${qident(numbers)} VALUES ${chunk.map((_,j)=>`(${i+j},?)`).join(',')}`).bind(...chunk));
@@ -142,9 +187,10 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
         // affinity. Match lossless INTEGER decimal text explicitly.
         const integer=/INT/i.test(schema.find(s=>s.name===c).type)
           ? ` OR (typeof(${actual})='integer' AND json_type(value,${path})='text' AND CAST(${actual} AS TEXT) IS ${value})` : '';
+        const nativeInteger=integer ? ` OR (typeof(${actual})='integer' AND typeof(n.value)='text' AND CAST(${actual} AS TEXT) IS n.value)` : '';
         if(!nativeValues.length)return `(json_type(a.value,${path}) IS NULL OR ${actual} IS ${value}${integer})`;
-        return `(json_type(a.value,${path}) IS NULL OR CASE WHEN json_type(a.value,${path})='real' OR abs(${value})>9007199254740991 AND json_type(a.value,${path})='integer'
-          THEN EXISTS (SELECT 1 FROM ${qident(numbers)} n WHERE n.id=json_extract(a.value,${literal('$.numbers.'+JSON.stringify(c))}) AND ${actual} IS n.value)
+        return `(json_type(a.value,${path}) IS NULL OR CASE WHEN json_type(a.value,${path})='object'
+          THEN EXISTS (SELECT 1 FROM ${qident(numbers)} n WHERE n.id=json_extract(${value},'$.native') AND (${actual} IS n.value${nativeInteger}))
           ELSE (${actual} IS ${value}${integer}) END)`;
       }).join(' AND ');
       checks += dependencyChecks(props, event, approval);

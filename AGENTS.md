@@ -265,7 +265,14 @@ CLI.
   defaults are resolved once, validated, and stored explicitly. Physical column
   affinity normalizes approved values. References/options_sql run at each
   mutation to observe earlier accepted rows. Read assertions run before helper
-  DDL using SELECT CASE and SQLite integer overflow on mismatch. A failed
+  DDL using SELECT CASE and SQLite integer overflow on mismatch. Read/approval
+  JSON snapshots use bounded UTF-8 chunks. Read guards retain whole-result
+  multiplicity and binary comparison; oversized encoded rows or exhausted JSON
+  binding capacity use native cells and global counts within 99 parameters.
+  A native row wider than the remaining bindings fails with the write budget.
+  Large stored approval text and non-integral/unsafe numeric values stay native;
+  this does not raise D1's individual value limits or bound incoming row/history
+  payloads. A failed
   invariant rolls back the batch; ordered splitting isolates rejected rows and
   revalidates duplicate IDs against earlier accepted state. Unexpected SQL
   failures roll back the submitted batch and surface as errors.
