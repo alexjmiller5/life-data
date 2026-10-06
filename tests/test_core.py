@@ -1,6 +1,8 @@
 import io
 import json
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -863,6 +865,36 @@ def http_hub(tmp_path):
     server = _serve(tmp_path / "server.db")
     yield HttpHub(f"http://127.0.0.1:{server.server_port}", {"Authorization": "Bearer testtoken"})
     server.shutdown()
+
+
+def test_cli_backdated_import_reaches_http_hub(tmp_path, http_hub, monkeypatch):
+    """A successful CLI sync must deliver imports without changing source stamps."""
+    replica = tmp_path / "cli"
+    replica.mkdir()
+    (replica / "config.json").write_text(json.dumps({"hub_url": http_hub.base}))
+    monkeypatch.setenv("LIFE_DATA_DIR", str(replica))
+    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+
+    def cli(*args, rows=None):
+        result = subprocess.run(
+            [sys.executable, "-c", "from life_data import main; main()", *args],
+            input=json.dumps(rows) if rows is not None else "",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
+
+    cli("init")
+    cli("table", "create", "items", "name:text")
+    cli("sync")
+    stamp = "2001-01-01T00:00:00.000Z"
+    cli("insert", "items", rows=[{"id": "old", "name": "import", "updated_at": stamp}])
+    assert not json.loads(cli("sync"))["rejected"]
+    assert http_hub.rows_pull("items", ["id", "updated_at"], "") == [
+        {"id": "old", "updated_at": stamp}
+    ]
+    assert http_hub.cursor(["items"])
 
 
 def test_sync_works_end_to_end_over_http(db, http_hub, tmp_path):

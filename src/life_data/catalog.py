@@ -342,6 +342,8 @@ def _upsert(path: Path, table: str, row_id: str, fields: dict) -> dict:
     ensure_catalog(path)
     enc = {k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in fields.items()}
     with pkg.connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        pkg.changes.track(conn)
         existing = conn.execute(f"SELECT 1 FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
         if existing:
             sets = ", ".join([*(f"{qi(k)} = ?" for k in enc), "deleted_at = NULL"])
@@ -368,6 +370,8 @@ def _upsert(path: Path, table: str, row_id: str, fields: dict) -> dict:
 
 def _soft_delete(path: Path, table: str, row_id: str) -> None:
     with _pkg().connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _pkg().changes.track(conn)
         conn.execute(f"UPDATE {qi(table)} SET deleted_at = updated_at WHERE id = ?", (row_id,))
         conn.execute(
             "INSERT INTO catalog_log (tbl, row_id, action, payload) VALUES (?, ?, 'rm', NULL)",
@@ -698,6 +702,7 @@ def write(path: Path, fn, *, ddl: bool = False):
                 conn.execute(stmt)
                 conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (stmt,))
         t0 = conn.execute(f"SELECT {pkg.NOW}").fetchone()[0]
+        pkg.changes.track(conn)
         marks = {}
         for t in tables:
             # ponytail: whole-table snapshot per write; scope by rowid past ~1M rows
