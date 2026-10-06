@@ -61,7 +61,8 @@ CLI.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
   codecs, including named discriminated object unions; `--check` verifies
-  reproducibility without writing. Governance operations require an explicitly injected canonical adapter and
+  reproducibility without writing. Governance operations require an explicitly
+  injected canonical adapter and
   a validated current credential capability. Generated types alone never activate
   a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
@@ -93,6 +94,12 @@ CLI.
   ahead of current row/catalog validation. Purge removes affected proposal
   versions and receipt payloads, retains exclusion keys, and revokes outstanding
   stateless previews with a private target invalidation nonce.
+- `worker/src/governance-continuity.js` installs permanent mutation guards on
+  ordinary base tables. Indirect writes and lifecycle changes invalidate history
+  continuity and preview bindings. Exact stored table DDL detects column identity
+  changes; guard reinstallation breaks prior proofs. Only the checked writer with
+  verified trigger topology records typed evidence under transaction-local private
+  context. REAL evidence stays in native REAL columns, not SQLite JSON decimals.
 - `worker/src/governance-isolation.js` reserves `_governance_*` state from generic
   schema/row/purge/catalog-SQL routes, including broad credentials. Private SQL
   shapes and history invalidation triggers require exact service-owned DDL.

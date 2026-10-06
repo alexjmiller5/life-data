@@ -373,3 +373,63 @@ test('malformed legacy history makes a read unavailable instead of returning an 
   f.env.DB.db.exec("INSERT INTO history(id,tbl,row_id,col,old,new,origin,created_at,updated_at) VALUES ('bad','items','r',NULL,'a','b','claimed','2025','2025')");
   expect((await f.call('governance/history/events',{target})).body).toEqual({kind:'unavailable'});
 });
+
+test('object key order does not change sealed proposal identity or approval',async()=>{
+  const f=await fixture();
+  const p=await f.call('governance/preview',{intent:{changes:[{after:{value:'second',type:'text'},column:'label'}],kind:'patch'},target:{rowId:'r',table:'items'}},f.agent);
+  expect(p.body.value.previewToken).toBeString();
+  const created=await f.call('governance/proposals/create',{previewToken:p.body.value.previewToken,idempotencyKey:'ordered-create'},f.agent);
+  expect(created.body.kind).toBe('success');
+  const a=await approval(f,created.body.value),done=await f.call('governance/proposals/approve',a);
+  expect(done.body.kind).toBe('success');expect(f.row().label).toBe('second');
+});
+
+test('selected inverse restores the exact stored REAL through preview, proposal and approval',async()=>{
+  const f=await fixture(),before=1.2345678901234567,after=2.345678901234567;
+  expect((await f.call('schema/push',{entries:[{ddl:'ALTER TABLE items ADD COLUMN precise REAL',applied_at:'2025-01-01'}]})).status).toBe(200);
+  f.env.DB.db.exec("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('precise','items','precise','float')");
+  expect((await f.update({precise:before})).status).toBe(200);
+  expect((await f.update({precise:after})).status).toBe(200);
+  const id=f.env.DB.db.query("SELECT event_id AS id FROM _governance_history WHERE col='precise' ORDER BY seq DESC LIMIT 1").get().id;
+  const p=await f.call('governance/preview',{target,intent:{kind:'selected_inverse',eventIds:[id]}},f.agent);
+  expect(p.body.value.changes).toEqual([{column:'precise',before:{type:'real',value:after},after:{type:'real',value:before}}]);
+  const c=await f.call('governance/proposals/create',{previewToken:p.body.value.previewToken,idempotencyKey:'real-inverse'},f.agent);
+  expect(c.body.kind).toBe('success');
+  expect((await f.call('governance/proposals/approve',await approval(f,c.body.value))).body.kind).toBe('success');
+  expect(f.row().precise).toBe(before);
+});
+
+for(const removeTrigger of [false,true])test('indirect untracked value cycle invalidates inverse even after trigger removal: '+removeTrigger,async()=>{
+  const f=await fixture();await f.update({label:'second'});
+  const id=f.env.DB.db.query("SELECT id FROM history WHERE col='label'").get().id;
+  const p=await f.call('governance/preview',{target,intent:{kind:'selected_inverse',eventIds:[id]}},f.agent);
+  expect(p.body.value.previewToken).toBeString();
+  const ddl=async sql=>{
+    const r=await f.call('schema/push',{entries:[{ddl:sql,applied_at:'2025-01-01'}]});expect(r.status).toBe(200);
+  };
+  await ddl('CREATE TABLE auxiliary(id TEXT PRIMARY KEY,value TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)');
+  expect(await f.call('rows/push',{table:'auxiliary',columns:['id','value','updated_at'],rows:[{id:'a',value:'old',updated_at:'2025-01-01T00:00:00.000Z'}]})).toMatchObject({status:200});
+  await ddl("CREATE TRIGGER auxiliary_cycle AFTER UPDATE ON auxiliary BEGIN UPDATE items SET label='third' WHERE id='r'; UPDATE items SET label='second' WHERE id='r'; END");
+  const aux=f.env.DB.db.query('SELECT updated_at,hub_at FROM auxiliary').get();
+  expect((await f.call('rows/patch',{table:'auxiliary',id:'a',values:{value:'new'},expected_revision:aux})).status).toBe(200);
+  if(removeTrigger)await ddl('DROP TRIGGER auxiliary_cycle');
+  expect(f.row().label).toBe('second');
+  const r=await f.call('governance/preview',{target,intent:{kind:'selected_inverse',eventIds:[id]}});
+  expect(r.body.value.conflicts[0]?.code).toBe('history_unavailable');expect(r.body.value.previewToken).toBeNull();
+  const late=await f.call('governance/proposals/create',{previewToken:p.body.value.previewToken,idempotencyKey:'before-cycle'},f.agent);
+  expect(late.body.kind).toBe('error');expect(late.body.resolution).toBe('not_committed');
+});
+
+for(const value of [1e-300,-1e300,Number.MIN_VALUE,Number.MAX_VALUE])
+test('approved REAL patch stores the exact previewed native value: '+value,async()=>{
+  const f=await fixture();
+  f.env.DB.db.exec("ALTER TABLE items ADD COLUMN precise REAL; INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('precise','items','precise','float')");
+  await f.call('schema/pull');
+  const p=await f.call('governance/preview',{target,intent:{kind:'patch',changes:[{column:'precise',after:{type:'real',value}}]}},f.agent);
+  expect(p.body.value.previewToken).toBeString();
+  const c=await f.call('governance/proposals/create',{previewToken:p.body.value.previewToken,idempotencyKey:'precise-create'},f.agent);
+  expect(c.body.kind).toBe('success');
+  const done=await f.call('governance/proposals/approve',await approval(f,c.body.value));
+  expect(done.body.kind).toBe('success');expect(f.row().precise).toBe(value);
+  expect(await f.update({other:'later'})).toMatchObject({status:200});expect(f.row().precise).toBe(value);
+});

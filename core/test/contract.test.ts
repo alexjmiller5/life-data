@@ -105,3 +105,24 @@ test('check mode detects stale output without rewriting either artifact', async 
   expect(await readFile(swift, 'utf8')).toBe('// stale');
   expect(await readFile(ts, 'utf8')).toBe(generated.typescript);
 });
+
+test.skipIf(!Bun.which('swiftc'))('generated governance capability compiles and round-trips its protocol wire key in Swift',async()=>{
+  const {rm}=await import('node:fs/promises');
+  const temp=await mkdtemp(resolve(tmpdir(),'core-swift-contract-'));
+  try{
+    const source=resolve(temp,'Core.swift'),main=resolve(temp,'main.swift'),executable=resolve(temp,'contract-check');
+    await writeFile(source,generateContract(contract).swift);
+    await writeFile(main,`import Foundation
+let input = #"{"protocol":"selected-inverse-proposals-v1","principal":{"principalId":"synthetic","kind":"user"},"authority":{"propose":true,"approve":true},"limits":{"maxSelectedEvents":100,"maxChangedColumns":64,"maxRequestBytes":65536,"maxPageSize":100,"previewTtlSeconds":300}}"#.data(using: .utf8)!
+let capability = try JSONDecoder().decode(CoreGovernanceCapability.self, from: input)
+precondition(capability.protocol == "selected-inverse-proposals-v1")
+let decoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capability)) as! NSDictionary
+let expected = try JSONSerialization.jsonObject(with: input) as! NSDictionary
+precondition(decoded == expected)
+`);
+    const build=Bun.spawn(['swiftc',source,main,'-o',executable],{stdout:'pipe',stderr:'pipe'});
+    const errors=await new Response(build.stderr).text();
+    expect({code:await build.exited,errors}).toEqual({code:0,errors:''});
+    expect(await Bun.spawn([executable],{stdout:'pipe',stderr:'pipe'}).exited).toBe(0);
+  }finally{await rm(temp,{recursive:true,force:true});}
+},30000);

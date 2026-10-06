@@ -25,7 +25,17 @@ stable across key rotation so committed original-operation receipts remain
 recoverable. Uncommitted tokens require their original signing material for
 revalidation; do not discard it while requests remain unresolved.
 
-Ordinary workspace initialization creates private operational tables. A cold
+Ordinary workspace initialization creates private operational tables and exact
+mutation guards on ordinary base tables. Untracked direct/indirect writes break
+continuity even if a value cycles back. Exact stored table DDL protects column
+identity; missing or rebuilt guards revoke prior proof and preview bindings.
+Typed REAL evidence uses native REAL columns. Conditional writes and transaction
+checks preserve native doubles without SQLite JSON numeric conversion. The
+shared conditional patch allows at most 98 distinct numeric values requiring
+native bindings; wider ordinary JSON/text patches retain their compact JSON
+binding. Governance's 64-column limit stays within that bound.
+
+A cold
 preview returns unavailable without initialization. Verified Access enrollment
 records user authority; operator-minted credentials receive agent proposal
 authority and cannot claim approval authority. Existing unrecorded credentials

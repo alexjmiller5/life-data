@@ -40,20 +40,55 @@ export function checkedReads(db) {
 }
 
 export function readGuards(db, reads) {
-  return [...reads.values()].map(({ sql, args, rows }) => {
-    let equal;
-    if (!rows.length) equal = `NOT EXISTS (${sql})`;
-    else {
-      const cols = Object.keys(rows[0]);
-      const expected = cols.map(c => `json_extract(value, ${literal('$."' + c + '"')}) AS ${quoteColumn(c)}`).join(',');
-      equal = `WITH actual AS (${sql}), expected AS (SELECT ${expected} FROM json_each(?))
-        SELECT (SELECT count(*) FROM actual) = (SELECT count(*) FROM expected)
-        AND NOT EXISTS (SELECT * FROM actual EXCEPT SELECT * FROM expected)
-        AND NOT EXISTS (SELECT * FROM expected EXCEPT SELECT * FROM actual)`;
+  const guards=[];
+  const assertion=(equal,args)=>db.prepare(`SELECT CASE WHEN (${equal}) THEN 1 ELSE abs(-9223372036854775808) END AS life_write_conflict`).bind(...args);
+  for(const {sql,args,rows} of reads.values()){
+    if(!rows.length){guards.push(assertion(`NOT EXISTS (${sql})`,args));continue;}
+    const cols=Object.keys(rows[0]);
+    const prefix='_life_write_'+crypto.randomUUID().replaceAll('-','');
+    const [actualName,expectedName,nativeName]=['actual','expected','native'].map(n=>qident(prefix+'_'+n));
+    const equal=(actual,expected,columns)=>{
+      const keys=columns.map(c=>quoteColumn(c)+' COLLATE BINARY').join(',');
+      // Include multiplicity and explicit binary equality, independent of source
+      // column collation. Matching only DISTINCT rows can miss duplicate drift.
+      const a=`SELECT ${keys},count(*) FROM ${actualName} GROUP BY ${keys}`;
+      const e=`SELECT ${keys},count(*) FROM ${expectedName} GROUP BY ${keys}`;
+      return `WITH ${actualName} AS (${actual}),${expectedName} AS (${expected})
+        SELECT NOT EXISTS (${a} EXCEPT ${e}) AND NOT EXISTS (${e} EXCEPT ${a})`;
+    };
+    const numbers=[...new Set(rows.flatMap(row=>Object.values(row).filter(v=>typeof v==='number' && !Number.isSafeInteger(v))))];
+    if(numbers.length+args.length+1<=99){
+      const index=new Map(numbers.map((n,i)=>[n,i]));
+      const encoded=rows.map(row=>Object.fromEntries(Object.entries(row).map(([c,v])=>[c,index.has(v)?{native:index.get(v)}:v])));
+      const expected=cols.map(c=>{
+        const path=literal('$.'+JSON.stringify(c)),value=`json_extract(j.value,${path})`;
+        return (numbers.length?`CASE WHEN json_type(j.value,${path})='object' THEN (SELECT n.value FROM ${nativeName} n WHERE n.id=json_extract(${value},'$.native')) ELSE ${value} END`:value)+` AS ${quoteColumn(c)}`;
+      }).join(',');
+      // Repeated native values share one binding. This keeps bulk snapshots
+      // cheap without passing any REAL through SQLite's JSON number parser.
+      // IDs are SQL integer literals, leaving exactly one bind per native value.
+      const nativeSQL=numbers.length?`${nativeName}(id,value) AS (VALUES ${numbers.map((_,i)=>`(${i},?)`).join(',')}),`:'';
+      const guard=equal(sql,`SELECT ${expected} FROM json_each(?) j`,cols).replace(`WITH ${actualName} AS`,`WITH ${nativeSQL}${actualName} AS`);
+      guards.push(assertion(guard,[...numbers,...args,JSON.stringify(encoded)]));
+      continue;
     }
-    return db.prepare(`SELECT CASE WHEN (${equal}) THEN 1 ELSE abs(-9223372036854775808) END AS life_write_conflict`)
-      .bind(...args, ...(rows.length ? [JSON.stringify(rows)] : []));
-  });
+    // SQLite JSON numeric parsing can change a double by one ULP. Native binds
+    // preserve those values; bounded slices stay below D1's parameter limit.
+    const capacity=99-args.length;
+    if(capacity<1)throw new Error('life_write_budget');
+    guards.push(assertion(`(SELECT count(*) FROM (${sql}))=${rows.length}`,args));
+    const step=Math.max(1,Math.floor(capacity/cols.length));
+    for(let offset=0;offset<rows.length;offset+=step){
+      const slice=rows.slice(offset,offset+step);
+      for(let col=0;col<cols.length;col+=capacity){
+        const selected=cols.slice(col,col+capacity);
+        const actual=`SELECT ${selected.map(quoteColumn).join(',')} FROM (${sql}) LIMIT ${slice.length} OFFSET ${offset}`;
+        const expected=slice.map(()=>`SELECT ${selected.map(c=>'? AS '+quoteColumn(c)).join(',')}`).join(' UNION ALL ');
+        guards.push(assertion(equal(actual,expected,selected),[...args,...slice.flatMap(row=>selected.map(c=>row[c]))]));
+      }
+    }
+  }
+  return guards;
 }
 
 export async function enforcedRules(db, table) {
@@ -78,11 +113,18 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   const context = (prefix) => cols.map(c => `${prefix}.${qident(c)} AS ${qident(c)}`).join(',');
   const begin = readGuards(db, reads);
   const end = [];
-  const approval = key + '_approved';
+  const approval = key + '_approved',numbers=key+'_numbers';
+  const nativeValues=[...new Set(expected.flatMap(row=>Object.values(row).filter(v=>typeof v==='number' && !Number.isSafeInteger(v))))];
+  const nativeIndex=new Map(nativeValues.map((n,i)=>[n,i]));
   if (expected.length) {
-    begin.push(db.prepare(`CREATE TABLE ${qident(approval)} AS SELECT value FROM json_each(?)`)
-      .bind(JSON.stringify(expected.map(({hub_at, ...row},i)=>({row,touched:transitions[i]?.touched ?? Object.keys(row)})))));
-    end.unshift(db.prepare(`DROP TABLE ${qident(approval)}`));
+    begin.push(db.prepare(`CREATE TABLE ${qident(approval)} AS SELECT key AS row_index,value FROM json_each(?)`)
+      .bind(JSON.stringify(expected.map(({hub_at, ...row},i)=>({row,touched:transitions[i]?.touched ?? Object.keys(row),numbers:Object.fromEntries(Object.entries(row).filter(([,v])=>nativeIndex.has(v)).map(([c,v])=>[c,nativeIndex.get(v)]))})))));
+    begin.push(db.prepare(`CREATE TABLE ${qident(numbers)} (id INTEGER,value REAL)`));
+    for(let i=0;i<nativeValues.length;i+=99){
+      const chunk=nativeValues.slice(i,i+99);
+      begin.push(db.prepare(`INSERT INTO ${qident(numbers)} VALUES ${chunk.map((_,j)=>`(${i+j},?)`).join(',')}`).bind(...chunk));
+    }
+    end.unshift(db.prepare(`DROP TABLE ${qident(approval)}`),db.prepare(`DROP TABLE ${qident(numbers)}`));
   }
   if (rules.length || expected.length) for (const event of ['INSERT', 'UPDATE']) {
     const trigger = key + '_' + event.toLowerCase();
@@ -95,15 +137,18 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
     }).join('\n');
     if (expected.length) {
       const matches = cols.map(c=>{
-        const path=literal('$.row."'+c+'"'),actual=`NEW.${qident(c)}`,value=`json_extract(value,${path})`;
+        const path=literal('$.row."'+c+'"'),actual=`NEW.${qident(c)} COLLATE BINARY`,value=`json_extract(a.value,${path})`;
         // Trigger NEW operands do not inherit a table column's comparison
         // affinity. Match lossless INTEGER decimal text explicitly.
         const integer=/INT/i.test(schema.find(s=>s.name===c).type)
           ? ` OR (typeof(${actual})='integer' AND json_type(value,${path})='text' AND CAST(${actual} AS TEXT) IS ${value})` : '';
-        return `(json_type(value,${path}) IS NULL OR ${actual} IS ${value}${integer})`;
+        if(!nativeValues.length)return `(json_type(a.value,${path}) IS NULL OR ${actual} IS ${value}${integer})`;
+        return `(json_type(a.value,${path}) IS NULL OR CASE WHEN json_type(a.value,${path})='real' OR abs(${value})>9007199254740991 AND json_type(a.value,${path})='integer'
+          THEN EXISTS (SELECT 1 FROM ${qident(numbers)} n WHERE n.id=json_extract(a.value,${literal('$.numbers.'+JSON.stringify(c))}) AND ${actual} IS n.value)
+          ELSE (${actual} IS ${value}${integer}) END)`;
       }).join(' AND ');
       checks += dependencyChecks(props, event, approval);
-      checks += ` SELECT RAISE(ABORT, 'life_write_conflict') WHERE NOT EXISTS (SELECT 1 FROM ${qident(approval)} WHERE ${matches});`;
+      checks += ` SELECT RAISE(ABORT, 'life_write_conflict') WHERE NOT EXISTS (SELECT 1 FROM ${qident(approval)} a WHERE ${matches});`;
     }
     begin.push(db.prepare(`CREATE TRIGGER ${qident(trigger)} AFTER ${event} ON ${qident(table)} BEGIN ${checks} END`));
     end.unshift(db.prepare(`DROP TRIGGER ${qident(trigger)}`));

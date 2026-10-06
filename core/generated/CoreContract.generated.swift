@@ -4081,32 +4081,32 @@ public struct CoreGovernanceAuthority: Codable, Hashable, Sendable {
 }
 
 public struct CoreGovernanceCapability: Codable, Hashable, Sendable {
-  public var protocol: String
+  public var `protocol`: String
   public var principal: CoreActor
   public var authority: CoreGovernanceAuthority
   public var limits: CoreGovernanceLimits
-  public init(protocol: String, principal: CoreActor, authority: CoreGovernanceAuthority, limits: CoreGovernanceLimits) {
-    self.protocol = protocol
+  public init(`protocol`: String, principal: CoreActor, authority: CoreGovernanceAuthority, limits: CoreGovernanceLimits) {
+    self.`protocol` = `protocol`
     self.principal = principal
     self.authority = authority
     self.limits = limits
   }
   private enum CodingKeys: String, CodingKey {
-    case protocol
+    case `protocol` = "protocol"
     case principal
     case authority
     case limits
   }
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    protocol = try container.decode(String.self, forKey: .protocol)
+    `protocol` = try container.decode(String.self, forKey: .`protocol`)
     principal = try container.decode(CoreActor.self, forKey: .principal)
     authority = try container.decode(CoreGovernanceAuthority.self, forKey: .authority)
     limits = try container.decode(CoreGovernanceLimits.self, forKey: .limits)
   }
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(protocol, forKey: .protocol)
+    try container.encode(`protocol`, forKey: .`protocol`)
     try container.encode(principal, forKey: .principal)
     try container.encode(authority, forKey: .authority)
     try container.encode(limits, forKey: .limits)

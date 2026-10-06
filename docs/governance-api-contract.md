@@ -1,4 +1,4 @@
-# Governance API contract draft
+# Governance API contract
 
 This is the canonical service boundary with generated TypeScript and Swift
 DTOs. Configured Workers implement and advertise the complete protocol for
@@ -22,10 +22,10 @@ offline approval are unavailable in this slice.
   operation linkage, and authenticated actor attribution need evidence before
   a historical event can be offered as reversible. Do not infer missing types
   or an uninterrupted history from matching current values.
-- Current authentication identifies a token and scopes. It does not establish
-  user approval authority. A token name, `origin`, `full`, or table write access
-  must not confer that authority. Service-issued user approval authority must
-  be distinct from agent proposal authority before approval is enabled.
+- Verified browser enrollment establishes service-owned user authority in the
+  auth registry. Operator-minted credentials establish agent proposal authority;
+  legacy credentials without a recorded authority remain ineligible. A token
+  name, `origin`, `full`, or table-write scope never grants approval authority.
 - Life Data owns validation, inverse derivation, scope enforcement, proposal
   storage, approval, history linkage, and receipts. Clients own selection,
   review presentation, explicit confirmation, and stale-response invalidation.

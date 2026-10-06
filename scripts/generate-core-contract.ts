@@ -12,6 +12,8 @@ type Contract = { $defs: Record<string, Schema>; operations: Record<string, { ar
 const camel = (name: string) => name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 const pascal = (name: string) => name[0].toUpperCase() + name.slice(1);
 const quote = (value: string) => JSON.stringify(value);
+const swiftKeywords = new Set(('associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private precedencegroup protocol public rethrows static struct subscript typealias var break case catch continue default defer do else fallthrough for guard if in repeat return throw switch where while as Any false is nil self Self super throws true try _').split(' '));
+const swiftIdentifier = (name: string) => swiftKeywords.has(name) ? '`' + name + '`' : name;
 
 /** Deliberately restricted build-time schema vocabulary. Unsupported shapes fail
  * generation instead of silently widening either language's public contract. */
@@ -124,7 +126,7 @@ export function generateContract(contract: Contract) {
       const nullable = schema === true ? undefined : schema.anyOf;
       const presence = optional && nullable;
       const type = presence ? `CorePresence<${sw(nullable[0])}>` : sw(schema) + (optional ? '?' : '');
-      return { wire, name: camel(wire), schema, optional, nullable, presence, type };
+      return { wire, name: swiftIdentifier(camel(wire)), schema, optional, nullable, presence, type };
     });
     const params = fields.map(f => `${f.name}: ${f.type}${f.presence ? ' = .missing' : f.optional ? ' = nil' : ''}`).join(', ');
     const lines = [`public struct Core${name}: Codable, Hashable, Sendable {`,
@@ -189,7 +191,7 @@ export function generateContract(contract: Contract) {
       '  public func encode(to encoder: Encoder) throws {','    switch self {',
       ...members.flatMap(m=>[
         `    case .\`${camel(m.tag)}\`(let value):`,
-        `      guard value.${camel(key)} == ${quote(m.tag)} else { throw EncodingError.invalidValue(value, .init(codingPath: encoder.codingPath, debugDescription: "Mismatched contract discriminator")) }`,
+        `      guard value.${swiftIdentifier(camel(key))} == ${quote(m.tag)} else { throw EncodingError.invalidValue(value, .init(codingPath: encoder.codingPath, debugDescription: "Mismatched contract discriminator")) }`,
         '      try value.encode(to: encoder)',
       ]),
       '    }','  }','}',
@@ -204,7 +206,7 @@ export function generateContract(contract: Contract) {
     Object.entries(defs).map(([name, s]) => {
       if (s === true) return name === 'JSONValue' ? union(name, ['string', 'number', 'boolean', 'null', 'array', 'object']) : `public typealias Core${name} = CoreJSONValue`;
       if (s.oneOf) return comment(s.description) + taggedUnion(name,s);
-      if (s.enum) return `public enum Core${name}: String, Codable, Hashable, Sendable, CaseIterable {\n` + s.enum.map(v => `  case ${camel(v)} = ${quote(v)}`).join('\n') + '\n}';
+      if (s.enum) return `public enum Core${name}: String, Codable, Hashable, Sendable, CaseIterable {\n` + s.enum.map(v => `  case ${swiftIdentifier(camel(v))} = ${quote(v)}`).join('\n') + '\n}';
       if (Array.isArray(s.type)) return union(name, s.type);
       if (s.properties) return comment(s.description) + struct(name, s);
       return `public typealias Core${name} = ${sw(s)}`;

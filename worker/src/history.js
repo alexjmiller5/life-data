@@ -1,6 +1,10 @@
 // Original replica events keep their IDs. Value trails, not timestamp order,
 // decide whether those facts already explain the hub's cell transition.
 import { literal, qident, validEditTimestamp } from './validate.js';
+import {timestampTrigger} from './scopes.js';
+import {trustedSubscriptionTrigger} from './subscription-triggers.js';
+import {hasContinuityGuards,trustedContinuityTrigger,storageChanged} from './governance-continuity.js';
+import {trustedEvidenceTrigger} from './governance-evidence.js';
 import { EVIDENCE_TRIGGERS, evidenceHistorySql } from './governance-evidence.js';
 
 const FIELDS = ['id','tbl','row_id','col','old','new','origin','created_at','updated_at'];
@@ -99,7 +103,13 @@ export async function historyPlan(view, db, table, rows, supplied = [], transiti
     summaries.push({...change,valid});
   }
   const histCols = exists ? (await db.prepare('PRAGMA table_info(history)').all()).results.map(c=>c.name) : [...FIELDS,'deleted_at','hub_at'];
-  const evidence=!!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_governance_history'").first();
+  let evidence=!!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_governance_history'").first();
+  if(evidence){
+    evidence=await hasContinuityGuards(view,table);
+    const {results:triggers}=await view.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (?, 'history', 'provenance', '_change_events', '_change_subscriptions') ORDER BY name").bind(table).all();
+    for(const trigger of triggers)if(!timestampTrigger(trigger) && !trustedEvidenceTrigger(trigger)
+      && !trustedContinuityTrigger(trigger,cols) && !await trustedSubscriptionTrigger(view,trigger))evidence=false;
+  }
   return {cols, unseen, summaries, exists, stamp:histCols.includes('hub_at'),evidence};
 }
 
@@ -118,7 +128,7 @@ async function storedTransitions(db, table, schema, rows, upsertSql) {
     db.prepare(`INSERT INTO ${copy} (${cols}) SELECT ${cols} FROM ${qident(table)} WHERE id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`).bind(JSON.stringify(rows)),
     db.prepare(`CREATE TABLE ${changes} (row_id TEXT, col TEXT, updated_at TEXT, old TEXT, new TEXT)`),
     db.prepare(`CREATE TRIGGER ${qident(key + '_capture')} AFTER UPDATE ON ${copy} BEGIN ${schema.filter(c=>!['updated_at','hub_at'].includes(c.name)).map(c=>
-      `INSERT INTO ${changes} SELECT NEW.id,${literal(c.name)},NEW.updated_at,CAST(OLD.${qident(c.name)} AS TEXT),CAST(NEW.${qident(c.name)} AS TEXT) WHERE OLD.${qident(c.name)} IS NOT NEW.${qident(c.name)};`
+      `INSERT INTO ${changes} SELECT NEW.id,${literal(c.name)},NEW.updated_at,CAST(OLD.${qident(c.name)} AS TEXT),CAST(NEW.${qident(c.name)} AS TEXT) WHERE ${storageChanged('OLD.'+qident(c.name),'NEW.'+qident(c.name))};`
     ).join('\n')} END`),
   ];
   const groups = [];
@@ -144,23 +154,27 @@ export function historyStatements(db, table, key, plan) {
     }
     if(plan.evidence)for(const {sql} of EVIDENCE_TRIGGERS)begin.push(db.prepare(sql));
   }
+  if(plan.evidence){
+    begin.push(db.prepare('INSERT INTO _governance_writes(tbl) VALUES (?)').bind(table));
+    end.push(db.prepare('DELETE FROM _governance_writes WHERE tbl=?').bind(table));
+  }
   const receipts = key + '_receipts', trigger = key + '_history';
   begin.push(db.prepare(`CREATE TABLE ${qident(receipts)} AS SELECT value FROM json_each(?)`).bind(JSON.stringify(plan.summaries)));
   const cell = (c) => `SELECT value FROM ${qident(receipts)} WHERE json_extract(value,'$.row_id') IS NEW.id AND json_extract(value,'$.col')=${literal(c)} AND json_extract(value,'$.updated_at') IS NEW.updated_at`;
   const checks = plan.cols.filter(c=>!['updated_at','hub_at'].includes(c)).map(c=> {
     const old = `CAST(OLD.${qident(c)} AS TEXT)`, value = `CAST(NEW.${qident(c)} AS TEXT)`;
     const origin=`CASE WHEN EXISTS (${cell(c)}) THEN 'hub:reconcile' ELSE 'hub' END`;
-    const condition=`OLD.${qident(c)} IS NOT NEW.${qident(c)} AND NOT EXISTS (
+    const condition=`${storageChanged('OLD.'+qident(c),'NEW.'+qident(c))} AND NOT EXISTS (
         ${cell(c)} AND json_extract(value,'$.valid')=1
-        AND json_extract(value,'$.old') IS ${old} AND json_extract(value,'$.new') IS ${value})`;
+        AND json_extract(value,'$.old') IS ${old} COLLATE BINARY AND json_extract(value,'$.new') IS ${value} COLLATE BINARY)`;
     if(plan.evidence)return evidenceHistorySql(table,c,origin,condition,plan.stamp,plan.actor,plan.operationId);
     return `INSERT INTO history (id,tbl,row_id,col,old,new,origin,created_at,updated_at${plan.stamp?',hub_at':''})
       SELECT lower(hex(randomblob(16))),${literal(table)},NEW.id,${literal(c)},${old},${value},
         CASE WHEN EXISTS (${cell(c)}) THEN 'hub:reconcile' ELSE 'hub' END,
         NEW.updated_at,${NOW}${plan.stamp?','+NOW:''}
-      WHERE OLD.${qident(c)} IS NOT NEW.${qident(c)} AND NOT EXISTS (
+      WHERE ${storageChanged('OLD.'+qident(c),'NEW.'+qident(c))} AND NOT EXISTS (
         ${cell(c)} AND json_extract(value,'$.valid')=1
-        AND json_extract(value,'$.old') IS ${old} AND json_extract(value,'$.new') IS ${value});`;
+        AND json_extract(value,'$.old') IS ${old} COLLATE BINARY AND json_extract(value,'$.new') IS ${value} COLLATE BINARY);`;
   }).join('\n');
   if (checks) {
     begin.push(db.prepare(`CREATE TRIGGER ${qident(trigger)} AFTER UPDATE ON ${qident(table)} BEGIN ${checks} END`));

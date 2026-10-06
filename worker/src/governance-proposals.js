@@ -2,7 +2,6 @@ import {ensureReceiptStorage} from './governance-store.js';
 import {permits} from './governance-preview.js';
 import {ScopeDenied} from './scopes.js';
 export const PROPOSAL_DDL=[
-  `CREATE TABLE IF NOT EXISTS _governance_invalidations (tbl TEXT NOT NULL,row_id TEXT NOT NULL,version TEXT NOT NULL,PRIMARY KEY(tbl,row_id))`,
   `CREATE TABLE IF NOT EXISTS _governance_proposals (
       id TEXT PRIMARY KEY,tbl TEXT NOT NULL,row_id TEXT NOT NULL,version TEXT NOT NULL,
       state TEXT NOT NULL CHECK(state IN ('pending','approved','rejected','purged')),

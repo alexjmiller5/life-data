@@ -4,6 +4,8 @@ import {scopedTable,authorizeTable,broadTableAccess,ScopeDenied} from './scopes.
 import {inverseEvidence,typedCells} from './governance-evidence.js';
 import {planSelectedInverse} from '../../core/src/governance.ts';
 import {qident,sha256hex,validEditTimestamp} from './validate.js';
+import {hasContinuityGuards} from './governance-continuity.js';
+import {canonical} from './governance-store.js';
 import {assertGenericState} from './governance-isolation.js';
 
 export const limits=Object.freeze({maxSelectedEvents:100,maxChangedColumns:64,maxRequestBytes:65536,maxPageSize:100,previewTtlSeconds:300});
@@ -11,7 +13,7 @@ export {object,nonempty,exact,isTarget as validTarget} from '../../core/src/gove
 export {isCellValue as cell} from '../../core/src/governance.ts';
 import {object,nonempty,exact,isTarget as validTarget,isIntent} from '../../core/src/governance-wire.ts';
 import {isCellValue as cell} from '../../core/src/governance.ts';
-export const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+export const same=(a,b)=>canonical(a)===canonical(b);
 export const validIntent=intent=>isIntent(intent,limits);
 const from64=text=>Uint8Array.from(atob(text.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0));
 const to64=bytes=>btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
@@ -55,6 +57,7 @@ export async function planPreview(db,tenant,args,{actor=null,operationId=null}={
   const {results:props}=await view.prepare('SELECT * FROM catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY id').bind(target.table).all();
   for(const p of props)if(p.ref_table && !permits(tenant,{table:p.ref_table,rowId:target.rowId}))throw new ScopeDenied();
   const schema=await scopedTable(view,target.table,true,[target.rowId]);
+  if(!await hasContinuityGuards(view,target.table))throw new ScopeDenied();
   // Supported static refs and same-table unique rules have bounded, explicit
   // dependencies. Do not infer a dependency from SQL text or a current value.
   const dependencies=new Set(props.filter(p=>p.ref_table).map(p=>p.ref_table));

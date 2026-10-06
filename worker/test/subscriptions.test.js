@@ -482,3 +482,15 @@ for(const ackFirst of [false,true]) test(`physical tombstone cleanup does not re
   expect(rows(a.env.DB,a.sub.id)).toHaveLength(ackFirst?0:2);
   expect(a.env.DB.db.query('SELECT last_seq FROM _change_subscriptions').get().last_seq).toBe(2);
 });
+
+test('governance continuity guards coexist with subscription creation and exact trigger trust',async()=>{
+  const {ensureEvidenceStorage}=await import('../src/governance-evidence.js');
+  const db=database();await ensureEvidenceStorage(db);
+  const sub=await createSubscription(db,config);
+  db.db.exec("INSERT INTO articles(id,url,updated_at) VALUES ('a','https://example.test/a','2025-01-01'); UPDATE articles SET url='https://example.test/b'");
+  expect(rows(db,sub.id).map(e=>e.operation)).toEqual(['insert','update']);
+  const guard=db.db.query("SELECT name,sql FROM sqlite_master WHERE name GLOB '_governance_rows_*_update'").get();
+  db.db.exec(`DROP TRIGGER "${guard.name}"; ${guard.sql.replace('event_id=NULL',"event_id='forged'")}`);
+  await expect(createSubscription(db,config)).rejects.toThrow('invalid subscription triggers');
+  db.db.close();
+});

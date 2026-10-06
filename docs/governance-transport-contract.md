@@ -154,9 +154,8 @@ Unexpected responses, timeouts or lost replies after dispatch are indeterminate.
 Retain the exact request and key for every unresolved/transport result. Never
 create a replacement approval or silently move the old request to a different
 endpoint, session, principal or workspace. Preview invalidation and journal
-settlement are separate decisions. The existing UI rule clearing on every
-non-transport result must be updated against this generated resolution contract
-before any adapter is enabled; the injected API remains null meanwhile.
+settlement are separate decisions. Hosts must preserve unresolved requests under
+this generated resolution contract before enabling their injected adapter.
 
 ## Preview and mutation implementation boundaries
 
@@ -172,7 +171,7 @@ unavailable; it never creates tables from a preview request.
 The service generates a verifiable opaque preview token bound as specified in
 the API contract. Its signing material is service-owned, separately purposed
 and absent from clients; no new secret provisioning or deployment is included
-in this documentation change. Authorization and all bound evidence are checked
+in this source change. Authorization and all bound evidence are checked
 again when applying the proposal. The token is not an authorization grant.
 
 Proposal versions, approval state, row changes, linked canonical history and
@@ -181,15 +180,16 @@ reside in the separate auth database. Current auth is checked for each request;
 cross-database atomic revocation ordering is not promised. Existing direct
 conditional patch is a prerequisite to reuse, not an approval or preview alias.
 
-The first service implementation sequence remains:
+The implemented service boundaries are:
 
 1. Trusted authority and typed, ordered canonical history evidence, including
    detection of missing or changed events and purge propagation.
 2. Shared validated planning and zero-persistence authenticated preview.
 3. Versioned proposals and online atomic approval/receipt, including every
    retry, denial and conflict response above.
-4. Canonical capability DTO and operations, real HTTP adapter conformance,
-   then capability advertisement. Root owns downstream generated integration.
+4. Canonical capability DTO and operations, strict raw HTTP adapter conformance,
+   and credential-bound capability advertisement. The consuming application
+   owns generated integration and explicit adapter activation.
 
 The gate tests exercise the actual usage wrapper, auth path and data writer,
 not a replacement mock implementation. They include cold/denied preview side

@@ -158,3 +158,134 @@ test('changing retained history after planning prevents commit through the share
   expect(db.db.query('SELECT label FROM items').get().label).toBe('second');
   db.db.close();
 });
+
+for(const sql of [
+  "UPDATE items SET label='third'; UPDATE items SET label='second'",
+  "UPDATE items SET deleted_at='deleted'; UPDATE items SET deleted_at=NULL",
+  "INSERT OR REPLACE INTO items SELECT * FROM items",
+  "DELETE FROM items; INSERT INTO items VALUES ('r','second',1,'keep','2025-01-01T00:00:00.000Z',NULL,NULL)",
+])test('untracked row mutation cannot retain the old inverse chain: '+sql,async()=>{
+  const {db,patch,events,plan}=await fixture();await patch({label:'second'});const id=events()[0].id;
+  db.db.exec(sql);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  expect(db.db.query('SELECT * FROM _governance_writes').all()).toEqual([]);
+  db.db.close();
+});
+
+test('reinstalling missing guards permanently breaks old continuity and token bindings',async()=>{
+  const {db,patch,events,plan}=await fixture();await patch({label:'second'});const id=events()[0].id;
+  const old=db.db.query("SELECT version FROM _governance_invalidations WHERE tbl='items' AND row_id='r'").get().version;
+  const guard=db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_governance_rows_*_update'").get().name;
+  db.db.exec(`DROP TRIGGER "${guard}"; UPDATE items SET label='third'; UPDATE items SET label='second'`);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  await ensureEvidenceStorage(db);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  expect(db.db.query("SELECT version FROM _governance_invalidations WHERE tbl='items' AND row_id='r'").get().version).not.toBe(old);
+  await patch({label:'fresh'});
+  expect((await plan([events().at(-1).id])).conflicts).toEqual([]);
+  db.db.close();
+});
+
+test('dropping and recreating an identical table cannot reuse retained evidence',async()=>{
+  const {db,patch,events,plan}=await fixture();await patch({label:'second'});const id=events()[0].id;
+  const ddl=db.db.query("SELECT sql FROM sqlite_master WHERE name='items'").get().sql;
+  db.db.exec(`DROP TABLE items; ${ddl}; INSERT INTO items VALUES ('r','second',1,'keep','2025-01-01T00:00:00.000Z',NULL,NULL)`);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  await ensureEvidenceStorage(db);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  db.db.close();
+});
+
+test('a custom target trigger cannot create a trusted writer context or reusable typed chain',async()=>{
+  const {db,patch,events,plan}=await fixture();await patch({label:'second'});const id=events()[0].id;
+  db.db.exec("CREATE TRIGGER target_cycle AFTER UPDATE OF other ON items BEGIN UPDATE items SET label='third'; UPDATE items SET label='second'; END");
+  const prepared=await preparePatch(db,{table:'items',id:'r',values:{other:'later'},expected_revision:db.db.query('SELECT updated_at,hub_at FROM items').get()});
+  expect(prepared.log.evidence).toBe(false);
+  db.db.exec("UPDATE items SET other='later'; DROP TRIGGER target_cycle");
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  expect(db.db.query('SELECT * FROM _governance_writes').all()).toEqual([]);
+  db.db.close();
+});
+
+test('REAL typed reads preserve finite extremes, subnormals and adjacent doubles; infinity stays unknown',async()=>{
+  const {typedCells}=await import('../src/governance-evidence.js');
+  const db=new D1Shim();db.db.exec('CREATE TABLE numbers(id TEXT PRIMARY KEY,n REAL)');
+  const values=[0,0.1,1.0000000000000002,1.2345678901234567,Number.MAX_VALUE,Number.MIN_VALUE,-Number.MIN_VALUE,1e-300,-1e300];
+  const bytes=new DataView(new ArrayBuffer(8));
+  let state=0x123456789abcdef0n;
+  for(let i=0;i<128;i++){
+    state=BigInt.asUintN(64,state*6364136223846793005n+1n);bytes.setBigUint64(0,state);
+    const n=bytes.getFloat64(0);if(Number.isFinite(n))values.push(n);
+  }
+  for(const n of values){
+    db.db.query("INSERT OR REPLACE INTO numbers VALUES ('r',?)").run(n);
+    expect((await typedCells(checkedReads(db),{table:'numbers',rowId:'r'},['n'])).n).toEqual({type:'real',value:n});
+  }
+  db.db.exec("UPDATE numbers SET n=1e999");
+  expect((await typedCells(checkedReads(db),{table:'numbers',rowId:'r'},['n'])).n).toBeNull();
+  db.db.close();
+});
+
+test('column renames cannot transfer a historical inverse to a different field',async()=>{
+  const {db,patch,events,plan}=await fixture();db.db.exec("UPDATE items SET other='second'");
+  await patch({label:'second'});const id=events()[0].id;
+  db.db.exec('ALTER TABLE items RENAME COLUMN label TO archived; ALTER TABLE items RENAME COLUMN other TO label');
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  await ensureEvidenceStorage(db);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  db.db.close();
+});
+
+test('ordinary initialization excludes virtual tables from continuity guards',async()=>{
+  const db=new D1Shim();db.db.exec('CREATE VIRTUAL TABLE searchable USING fts5(id,updated_at,content)');
+  await ensureEvidenceStorage(db);
+  expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_governance_rows_*'").all()).toEqual([]);
+  db.db.close();
+});
+
+for(const [collation,next] of [['NOCASE','SECOND'],['RTRIM','second ']])
+for(const checked of [true,false])test(`storage-exact history detects ${collation} value cycles (checked=${checked})`,async()=>{
+  const {db,patch,events,plan}=await fixture();
+  db.db.exec(`DROP TABLE items; CREATE TABLE items(id TEXT PRIMARY KEY,label TEXT COLLATE ${collation},qty INTEGER,other TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT);
+    INSERT INTO items VALUES ('r','first',1,'keep','2025-01-01T00:00:00.000Z',NULL,NULL)`);
+  await ensureEvidenceStorage(db);
+  await patch({label:'second'});const id=events()[0].id;
+  if(checked){await patch({label:next});await patch({label:'second'});}
+  else {db.db.query('UPDATE items SET label=?').run(next);db.db.exec("UPDATE items SET label='second'");}
+  expect((await plan([id])).conflicts[0]?.code).toBe(checked?'later_column_change':'history_unavailable');
+  db.db.close();
+});
+
+test('read guards preserve native REALs and detect exact collated text changes',async()=>{
+  const {readGuards}=await import('../src/write.js');
+  const db=new D1Shim();db.db.exec('CREATE TABLE samples(n REAL,t TEXT COLLATE NOCASE)');
+  const bytes=new DataView(new ArrayBuffer(8));let state=0x123456789abcdef0n;
+  for(let i=0;i<128;i++){
+    state=BigInt.asUintN(64,state*6364136223846793005n+1n);bytes.setBigUint64(0,state);
+    const n=bytes.getFloat64(0);if(Number.isFinite(n))db.db.query("INSERT INTO samples VALUES (?,'case')").run(n);
+  }
+  const view=checkedReads(db);await view.prepare('SELECT * FROM samples').all();
+  await db.batch(readGuards(db,view.reads));
+  db.db.exec("UPDATE samples SET t='CASE'");
+  await expect(db.batch(readGuards(db,view.reads))).rejects.toThrow();
+  db.db.close();
+});
+
+test('continuity guards permit ordinary user-column removal and invalidate the old layout',async()=>{
+  const {db,patch,events,plan}=await fixture();await patch({label:'second'});const id=events()[0].id;
+  db.db.exec('ALTER TABLE items DROP COLUMN other');
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  await ensureEvidenceStorage(db);
+  expect((await plan([id])).conflicts[0]?.code).toBe('history_unavailable');
+  db.db.close();
+});
+
+for(const table of ['native','actual','expected'])test('read proof helpers cannot shadow ordinary user table '+table,async()=>{
+  const db=new D1Shim();
+  db.db.exec(`CREATE TABLE "${table}"(id TEXT PRIMARY KEY,n REAL,label TEXT,updated_at TEXT,deleted_at TEXT);
+    INSERT INTO "${table}" VALUES ('r',0.5,'before','2025-01-01T00:00:00.000Z',NULL)`);
+  const result=await patchChecked(db,{table,id:'r',values:{label:'after'},expected_revision:{updated_at:'2025-01-01T00:00:00.000Z',hub_at:null}});
+  expect(result).not.toBeInstanceOf(Response);
+  expect(db.db.query(`SELECT label FROM "${table}"`).get().label).toBe('after');
+  db.db.close();
+});

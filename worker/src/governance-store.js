@@ -18,7 +18,7 @@ export async function ensureReceiptStorage(db) {
 
 // Request identity is semantic JSON object identity; array order is significant.
 // Callers validate their canonical arguments before computing this identity.
-function canonical(value) {
+export function canonical(value) {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';

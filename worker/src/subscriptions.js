@@ -1,3 +1,4 @@
+import {trustedContinuityTrigger} from './governance-continuity.js';
 import { checkedReads, readGuards } from './write.js';
 import { scopedTable, timestampTrigger } from './scopes.js';
 import { subscriptionTriggers, trustedSubscriptionTrigger } from './subscription-triggers.js';
@@ -49,7 +50,7 @@ export async function createSubscription(db,input) {
     for(const trigger of triggers) {
       if (trigger.tbl_name!==source.table) throw new Error('invalid subscription triggers');
       if (timestampTrigger(trigger)) hasClock=true;
-      else if (!await trustedSubscriptionTrigger(view,trigger)) throw new Error('invalid subscription triggers');
+      else if (!trustedContinuityTrigger(trigger,columns.map(c=>c.name)) && !await trustedSubscriptionTrigger(view,trigger)) throw new Error('invalid subscription triggers');
     }
     seen.add(source.table);
     sources.push({table:source.table,columns:[...source.columns],...(source.lifecycle?{lifecycle:true}:{})});

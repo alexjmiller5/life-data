@@ -162,9 +162,15 @@ a timestamp-only write.
 This function does not load/authenticate history, validate catalog dependencies,
 issue a preview token, or write a row. It is not a CoreOperations RPC accepting
 client-asserted evidence. The service must acquire and guard evidence again in
-its atomic approval transaction. Governance DTOs in the canonical contract do
-not advertise a working governance service; `docs/governance-api-contract.md`
-defines the remaining boundary.
+its atomic approval transaction. The configured Worker supplies that service;
+`docs/governance-api-contract.md` and `docs/governance-transport-contract.md`
+define its boundary. `createGovernanceAPI(capability, transport)` returns null
+without a supported credential capability and raw transport. Pass the resulting
+adapter as the fourth `createCoreHandlers` argument; omission keeps all nine
+operations unavailable. `createHttpHub().governancePost` preserves real HTTP
+status/body pairs, including errors, for canonical validation. Hosts own current
+session binding, transport cancellation and durable pending-request journals;
+regenerating types does not activate those integrations.
 Mutation errors require `resolution: unresolved | not_committed`. A typed denial
 of a retry does not resolve the original request; only a durable authoritative
 negative receipt can supply `not_committed`. Clients keep the exact journaled
@@ -534,8 +540,9 @@ The host supplies the actual HTTP status and bounded parsed JSON on 200. For
 non-success replies, policy ignores the body; hosts may supply `null`. Never
 parse an error string to recover status. The host transport
 uses the fixed session route, refuses redirects/cookies, enforces the response
-byte bound, and sanitizes network/body parsing failures. Core's existing Hub HTTP
-transport is unchanged; it does not yet expose this session envelope.
+byte bound, and sanitizes network/body parsing failures. Hosts supply this
+fixed-route enrollment/session transport independently of the core Hub's raw
+`governancePost` adapter.
 
 Polling accepts 200 only after nonadmin session validation and exact
 `device:<expectedFingerprint>` identity matching. Generic session validation

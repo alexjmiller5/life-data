@@ -1,5 +1,6 @@
 // Generic data credentials may edit rows/schema, but cannot manufacture user
 // approval or erase original-operation exclusion keys through another route.
+import {continuitySchemas,trustedContinuityTrigger} from './governance-continuity.js';
 import {ScopeDenied} from './scopes.js';
 import {trustedEvidenceTrigger,EVIDENCE_DDL} from './governance-evidence.js';
 import {PROPOSAL_DDL} from './governance-proposals.js';
@@ -27,10 +28,11 @@ export function assertGenericDDL(ddl){
 }
 export async function assertGenericState(view){
   const {results:objects}=await view.prepare("SELECT name,type,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all();
+  const schemas=await continuitySchemas(view);
   for(const object of objects){
     if(!reserved(object.sql))continue;
     if([...EVIDENCE_DDL,...PROPOSAL_DDL,RECEIPTS_DDL].some(sql=>normalized(sql)===normalized(object.sql)))continue;
-    if(trustedEvidenceTrigger(object))continue;
+    if(trustedEvidenceTrigger(object) || trustedContinuityTrigger(object,schemas.get(object.tbl_name) ?? []))continue;
     deny();
   }
   for(const [table,columns] of [['catalog_properties',['options_sql','default_value','ref_table','derived_by']],['catalog_rules',['sql']]]){
