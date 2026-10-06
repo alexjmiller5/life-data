@@ -3,7 +3,7 @@
 export class LimitedD1 {
   constructor() {
     this.process = Bun.spawn(['uv', 'run', '--quiet', '--project', `${import.meta.dir}/../..`,
-      'python', '-B', `${import.meta.dir}/fixtures/limited-d1.py`], {stdin:'pipe',stdout:'pipe',stderr:'inherit'});
+      'python', '-B', `${import.meta.dir}/fixtures/limited_d1.py`], {stdin:'pipe',stdout:'pipe',stderr:'inherit'});
     this.reader = this.process.stdout.getReader();
     this.decoder = new TextDecoder();
     this.buffer = '';
