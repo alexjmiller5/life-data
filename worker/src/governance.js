@@ -14,24 +14,8 @@ const unavailable=()=>governanceReply({kind:'unavailable'});
 const errorBody=(code,resolution='unresolved',conflicts=[])=>({kind:'error',code,resolution,conflicts});
 const error=(status,code,conflicts=[])=>governanceReply(errorBody(code,'unresolved',conflicts),status);
 const columns=planned=>planned?.preview.changes.map(c=>c.column) ?? [];
-const argsByOperation={
-  historyEvents:[['target'],['cursor','limit']],previewChanges:[['target','intent'],[]],
-  createProposal:[['previewToken','idempotencyKey'],['claimedOrigin']],
-  listProposals:[[],['target','state','cursor','limit']],getProposal:[['proposalId'],['version']],
-  editProposal:[['proposalId','expectedVersion','previewToken','idempotencyKey'],['claimedOrigin']],
-  previewProposal:[['proposalId','expectedVersion'],[]],approveProposal:[['proposalId','expectedVersion','previewToken','idempotencyKey'],[]],
-  rejectProposal:[['proposalId','expectedVersion','idempotencyKey'],[]],
-};
-function validArgs(name,body){
-  if(!exact(body,...argsByOperation[name]))return false;
-  for(const key of ['proposalId','expectedVersion','previewToken','idempotencyKey','cursor','version'])if(Object.hasOwn(body,key) && !nonempty(body[key]))return false;
-  if(Object.hasOwn(body,'target') && !validTarget(body.target))return false;
-  if(Object.hasOwn(body,'intent') && !validIntent(body.intent))return false;
-  if(Object.hasOwn(body,'claimedOrigin') && typeof body.claimedOrigin!=='string')return false;
-  if(Object.hasOwn(body,'state') && !['pending','approved','rejected'].includes(body.state))return false;
-  if(Object.hasOwn(body,'limit') && (!Number.isInteger(body.limit)||body.limit<1||body.limit>limits.maxPageSize))return false;
-  return true;
-}
+import {validGovernanceArgs,isHistory} from '../../core/src/governance-wire.ts';
+const validArgs=(name,body)=>validGovernanceArgs(name,body,limits);
 async function boundedBody(request){
   const reader=request.body?.getReader();if(!reader)throw 400;
   const parts=[];let size=0;
@@ -166,7 +150,9 @@ async function readPage(db,tenant,config,name,body){
         const current=await view.prepare(`SELECT updated_at,${(await scopedTable(view,body.target.table)).some(c=>c.name==='hub_at')?'hub_at':'NULL AS hub_at'} FROM ${qident(body.target.table)} WHERE id=?`).bind(body.target.rowId).first();
         if(!current || !(await inverseEvidence(view,body.target,current,[row.id])).complete)event={...event,reversible:false,unavailableReason:'Complete history is unavailable.'};
       }
-      values.push(event ?? {id:row.id,operationId:null,target:body.target,column:row.col,before:null,after:null,occurredAt:row.created_at,actor:null,claimedOrigin:row.origin,reversible:false,unavailableReason:'Typed history is unavailable.'});
+      event=event ?? {id:row.id,operationId:null,target:body.target,column:row.col,before:null,after:null,occurredAt:row.created_at,actor:null,claimedOrigin:row.origin,reversible:false,unavailableReason:'Typed history is unavailable.'};
+      if(!isHistory(event))return unavailable();
+      values.push(event);
     }
   }else{
     // Filter by authorized base tables before paging; inaccessible proposals

@@ -314,3 +314,62 @@ test('huge current cells never produce a preview token too large for its own mut
   const r=await f.call('governance/preview',patch({label:'short'}));
   expect(r.status).toBe(200);expect(r.body.value.previewToken).toBeNull();expect(r.body.value.conflicts[0].code).toBe('unavailable');
 });
+test('complete governance capability is credential-bound, configured and independent of replica eligibility',async()=>{
+  const f=await fixture();
+  const session=async token=>{
+    const r=await worker.fetch(new Request('https://hub.test/v1/session',{headers:{Authorization:'Bearer '+token}}),f.env,{waitUntil(){}});
+    return r.json();
+  };
+  const user=await session('user'),agent=await session(f.agent);
+  expect(user.capabilities.governance).toMatchObject({protocol:'selected-inverse-proposals-v1',principal:{kind:'user'},authority:{propose:true,approve:true}});
+  expect(agent.capabilities.governance).toMatchObject({principal:{kind:'agent'},authority:{propose:true,approve:false}});
+  expect(agent.capabilities.replica_sync).toBe(false);
+  expect(user.capabilities.conditional_patch).toBe('revision-v1');expect(user.capabilities.subscription_features).toBe('scalar-lifecycle-v1');
+  expect((await session('operator')).capabilities.governance).toBeUndefined();
+  delete f.env.GOVERNANCE_PREVIEW_KEY;
+  expect((await session('user')).capabilities.governance).toBeUndefined();
+});
+test('independently revoked proposal authority does not prevent a verified reviewer from previewing and approving',async()=>{
+  const f=await fixture(),{proposal}=await propose(f);
+  f.env.AUTH_DB.db.query('UPDATE _governance_authorities SET can_propose=0 WHERE token_hash=?').run(await hashToken('user'));
+  const a=await approval(f,proposal);
+  expect((await f.call('governance/proposals/approve',a)).body.kind).toBe('success');
+  expect((await f.call('governance/proposals/create',{previewToken:'unusable',idempotencyKey:'no-propose'})).status).toBe(403);
+});
+test('all nine operations conform through the canonical HTTP adapter and injected core handlers',async()=>{
+  const f=await fixture();
+  const {createHttpHub}=await import('../../core/src/http.ts');
+  const {createGovernanceAPI}=await import('../../core/src/governance-service.ts');
+  const {createCoreHandlers}=await import('../../core/src/operations.ts');
+  const {validateDeviceSession}=await import('../../core/src/enrollment.ts');
+  async function api(token){
+    const session=await hub.fetch(new Request('https://hub.test/v1/session',{headers:{Authorization:'Bearer '+token}}),f.env,{waitUntil(){}});
+    const data=await session.json();expect(validateDeviceSession(data).governance).toEqual(data.capabilities.governance);
+    const transport=createHttpHub('https://hub.test',token,async(url,init)=>{
+      const pending=[],r=await worker.fetch(new Request(url,init),f.env,{waitUntil:p=>pending.push(p)});await Promise.all(pending);return r;
+    });
+    const boundary=createGovernanceAPI(data.capabilities.governance,transport.governancePost);expect(boundary).not.toBeNull();
+    return createCoreHandlers({},()=>{throw Error('no ambient writer');},'fixture',boundary);
+  }
+  const agent=await api(f.agent),user=await api('user');
+  expect(await agent.historyEvents({target})).toEqual({kind:'success',value:{events:[],nextCursor:null}});
+  const p=await agent.previewChanges(patch({label:'second'}));expect(p.kind).toBe('success');
+  const create=await agent.createProposal({previewToken:p.value.previewToken,idempotencyKey:'adapter-create'});expect(create.kind).toBe('success');
+  const proposal=create.value;
+  expect((await user.getProposal({proposalId:proposal.id})).value).toEqual(proposal);
+  expect((await agent.listProposals({target,state:'pending'})).value.proposals).toEqual([proposal]);
+  const p2=await agent.previewChanges(patch({qty:2}));
+  const edited=await agent.editProposal({proposalId:proposal.id,expectedVersion:proposal.version,previewToken:p2.value.previewToken,idempotencyKey:'adapter-edit'});expect(edited.kind).toBe('success');
+  expect((await user.rejectProposal({proposalId:proposal.id,expectedVersion:edited.value.version,idempotencyKey:'adapter-reject'})).kind).toBe('success');
+  const p3=await agent.previewChanges(patch({label:'approved'}));
+  const c=await agent.createProposal({previewToken:p3.value.previewToken,idempotencyKey:'adapter-final-create'});
+  const review=await user.previewProposal({proposalId:c.value.id,expectedVersion:c.value.version});expect(review.kind).toBe('success');
+  const receipt=await user.approveProposal({proposalId:c.value.id,expectedVersion:c.value.version,previewToken:review.value.previewToken,idempotencyKey:'adapter-approve'});
+  expect(receipt.kind).toBe('success');expect(f.row().label).toBe('approved');
+  const history=await user.historyEvents({target});expect(history.kind).toBe('success');expect(history.value.events[0].actor).toEqual(receipt.value.approvedBy);
+});
+test('malformed legacy history makes a read unavailable instead of returning an invalid canonical event',async()=>{
+  const f=await fixture();await f.update({label:'second'});
+  f.env.DB.db.exec("INSERT INTO history(id,tbl,row_id,col,old,new,origin,created_at,updated_at) VALUES ('bad','items','r',NULL,'a','b','claimed','2025','2025')");
+  expect((await f.call('governance/history/events',{target})).body).toEqual({kind:'unavailable'});
+});

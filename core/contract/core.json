@@ -1544,6 +1544,9 @@
         },
         "replica": {
           "$ref": "#/$defs/ReplicaEligibility"
+        },
+        "governance": {
+          "$ref": "#/$defs/GovernanceCapability"
         }
       },
       "required": [
@@ -1871,6 +1874,9 @@
           "enum": [
             "scalar-lifecycle-v1"
           ]
+        },
+        "governance": {
+          "$ref": "#/$defs/GovernanceCapability"
         }
       },
       "required": [
@@ -2425,7 +2431,7 @@
         "previewToken",
         "expiresAt"
       ],
-      "description": "Governance data contract only. No preview operation is advertised until authenticated inert validation is implemented."
+      "description": "Authenticated inert service preview. Its opaque token binds exact validated evidence and does not grant authority."
     },
     "HistoryEvent": {
       "type": "object",
@@ -3108,6 +3114,74 @@
         "expectedVersion",
         "idempotencyKey"
       ]
+    },
+    "GovernanceLimits": {
+      "type": "object",
+      "properties": {
+        "maxSelectedEvents": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxChangedColumns": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxRequestBytes": {
+          "$ref": "#/$defs/Count"
+        },
+        "maxPageSize": {
+          "$ref": "#/$defs/Count"
+        },
+        "previewTtlSeconds": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "maxSelectedEvents",
+        "maxChangedColumns",
+        "maxRequestBytes",
+        "maxPageSize",
+        "previewTtlSeconds"
+      ]
+    },
+    "GovernanceAuthority": {
+      "type": "object",
+      "properties": {
+        "propose": {
+          "type": "boolean"
+        },
+        "approve": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "propose",
+        "approve"
+      ]
+    },
+    "GovernanceCapability": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "selected-inverse-proposals-v1"
+          ]
+        },
+        "principal": {
+          "$ref": "#/$defs/Actor"
+        },
+        "authority": {
+          "$ref": "#/$defs/GovernanceAuthority"
+        },
+        "limits": {
+          "$ref": "#/$defs/GovernanceLimits"
+        }
+      },
+      "required": [
+        "protocol",
+        "principal",
+        "authority",
+        "limits"
+      ]
     }
   },
   "operations": {
@@ -3362,6 +3436,87 @@
         "$ref": "#/$defs/SourceLinkResult"
       },
       "description": "Resolve supported external source URLs through live whole-record imported_from provenance. Missing mappings remain external; ambiguous identities fail. Hosts re-resolve the destination before guarded navigation."
+    },
+    "historyEvents": {
+      "args": {
+        "$ref": "#/$defs/HistoryEventsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/HistoryEventsResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "previewChanges": {
+      "args": {
+        "$ref": "#/$defs/PreviewRequest"
+      },
+      "result": {
+        "$ref": "#/$defs/PreviewResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "createProposal": {
+      "args": {
+        "$ref": "#/$defs/CreateProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalMutationResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "listProposals": {
+      "args": {
+        "$ref": "#/$defs/ListProposalsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalsResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "getProposal": {
+      "args": {
+        "$ref": "#/$defs/GetProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "editProposal": {
+      "args": {
+        "$ref": "#/$defs/EditProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalMutationResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "previewProposal": {
+      "args": {
+        "$ref": "#/$defs/PreviewProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/PreviewResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "approveProposal": {
+      "args": {
+        "$ref": "#/$defs/ApproveProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ApprovalResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "rejectProposal": {
+      "args": {
+        "$ref": "#/$defs/RejectProposalArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ProposalMutationResult"
+      },
+      "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
     }
   }
 }

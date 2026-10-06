@@ -1,3 +1,5 @@
+import {governanceOperations} from './governance-wire.ts';
+import type {JSONValue} from './contract.generated.ts';
 import type { ServiceHub } from "./services.ts";
 
 export type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
@@ -23,7 +25,7 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
   if (typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new Error("invalid hub token");
   if (typeof fetcher !== "function") throw new Error("hub fetch implementation required");
   const base = url.href.replace(/\/+$/, "");
-  async function request(method: "POST" | "GET", route: string, body?: string) {
+  async function send(method: "POST" | "GET", route: string, body?: string) {
     let response: Response;
     try {
       response = await fetcher(base + route, {
@@ -38,6 +40,10 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
       // Transport/abort exceptions may echo credentials or private URLs.
       throw new Error("hub request failed");
     }
+    return response;
+  }
+  async function request(method: "POST" | "GET", route: string, body?: string) {
+    const response=await send(method,route,body);
     if (response.status < 200 || response.status >= 300) throw new Error(`hub HTTP ${response.status}`);
     const contentType = response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase();
     if (contentType !== "application/json" && !(contentType?.startsWith("application/") && contentType.endsWith("+json"))) {
@@ -51,6 +57,16 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
   }
   return {
     endpoint: base,
+    async governancePost(route,body) {
+      if(!Object.values(governanceOperations).some(op=>op.route===route))throw new Error('invalid governance route');
+      const response=await send('POST',route,JSON.stringify(body));
+      const contentType=response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase();
+      if(contentType!=='application/json')throw new Error('invalid governance response');
+      let data:JSONValue;try{data=await response.json() as JSONValue;}catch{throw new Error('invalid governance response');}
+      const retry=response.headers.get('Retry-After');
+      const seconds=retry!==null && /^[0-9]+$/.test(retry)?Number(retry):undefined;
+      return {status:response.status,data,...(seconds!==undefined && Number.isSafeInteger(seconds)?{retryAfterSeconds:seconds}:{})};
+    },
     async get(route) {
       // Only client-generated service URIs. No arbitrary queries or values can
       // carry credentials, override an origin, or escape the endpoint path.

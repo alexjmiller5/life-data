@@ -21,7 +21,7 @@ const nonempty=(value:unknown):value is string=>typeof value==='string' && value
 const targetIs=(value:unknown):value is Target=>object(value) && nonempty(value.table) && nonempty(value.rowId);
 const sameTarget=(a:Target,b:Target)=>a.table===b.table && a.rowId===b.rowId;
 
-function cell(value:unknown):value is CellValue {
+export function isCellValue(value:unknown):value is CellValue {
   if(!object(value))return false;
   if(value.type==='null')return Object.keys(value).length===1;
   if(Object.keys(value).sort().join(',')!=='type,value')return false;
@@ -65,7 +65,7 @@ export function planSelectedInverse(selection:InverseSelection,evidence:InverseE
     ids.add(event.id);
     if(selected.has(event.id) && !columns.has(event.column)){
       const current=Object.hasOwn(evidence.current,event.column)?evidence.current[event.column]:null;
-      if(managed.has(event.column) || !cell(current)){
+      if(managed.has(event.column) || !isCellValue(current)){
         fail('history_unavailable',event.column,[event.id],'This historical field cannot be reversed.');return result();
       }
       columns.set(event.column,{first:index,current,events:[]});
@@ -87,7 +87,7 @@ export function planSelectedInverse(selection:InverseSelection,evidence:InverseE
     let prior=state.current,valid=true;
     for(let i=state.events.length-1;i>=0;i--){
       const event=state.events[i];
-      if(event.reversible!==true || !cell(event.before) || !cell(event.after) || !equal(prior,event.after)){
+      if(event.reversible!==true || !isCellValue(event.before) || !isCellValue(event.after) || !equal(prior,event.after)){
         fail('history_unavailable',column,[event.id],'Typed continuous history does not match the current field.');valid=false;break;
       }
       prior=event.before;

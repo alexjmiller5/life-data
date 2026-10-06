@@ -7,25 +7,12 @@ import {qident,sha256hex,validEditTimestamp} from './validate.js';
 import {assertGenericState} from './governance-isolation.js';
 
 export const limits=Object.freeze({maxSelectedEvents:100,maxChangedColumns:64,maxRequestBytes:65536,maxPageSize:100,previewTtlSeconds:300});
-export const object=x=>x!==null && typeof x==='object' && !Array.isArray(x);
-export const nonempty=x=>typeof x==='string' && x.trim().length>0;
-export const exact=(x,required,optional=[])=>object(x) && required.every(k=>Object.hasOwn(x,k)) && Object.keys(x).every(k=>required.includes(k)||optional.includes(k));
-export const validTarget=x=>exact(x,['table','rowId']) && typeof x.table==='string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(x.table) && nonempty(x.rowId);
+export {object,nonempty,exact,isTarget as validTarget} from '../../core/src/governance-wire.ts';
+export {isCellValue as cell} from '../../core/src/governance.ts';
+import {object,nonempty,exact,isTarget as validTarget,isIntent} from '../../core/src/governance-wire.ts';
+import {isCellValue as cell} from '../../core/src/governance.ts';
 export const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
-export function cell(x){
-  if(!object(x))return false;
-  if(x.type==='null')return exact(x,['type']);
-  if(!exact(x,['type','value']))return false;
-  if(x.type==='text')return typeof x.value==='string';
-  if(x.type==='real')return typeof x.value==='number' && Number.isFinite(x.value);
-  if(x.type!=='integer' || typeof x.value!=='string' || x.value.length>20 || !/^(0|-?[1-9][0-9]*)$/.test(x.value))return false;
-  return BigInt(x.value)>=-9223372036854775808n && BigInt(x.value)<=9223372036854775807n;
-}
-export function validIntent(intent){
-  if(exact(intent,['kind','eventIds']) && intent.kind==='selected_inverse')return Array.isArray(intent.eventIds) && intent.eventIds.length>0 && intent.eventIds.length<=limits.maxSelectedEvents && intent.eventIds.every(nonempty) && new Set(intent.eventIds).size===intent.eventIds.length;
-  if(!exact(intent,['kind','changes']) || intent.kind!=='patch' || !Array.isArray(intent.changes) || !intent.changes.length || intent.changes.length>limits.maxChangedColumns)return false;
-  return intent.changes.every(c=>exact(c,['column','after']) && typeof c.column==='string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(c.column) && cell(c.after)) && new Set(intent.changes.map(c=>c.column)).size===intent.changes.length;
-}
+export const validIntent=intent=>isIntent(intent,limits);
 const from64=text=>Uint8Array.from(atob(text.replaceAll('-','+').replaceAll('_','/')),c=>c.charCodeAt(0));
 const to64=bytes=>btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
 export function configuration(env){

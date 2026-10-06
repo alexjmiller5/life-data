@@ -1,9 +1,10 @@
 # Governance API contract draft
 
-This is the canonical proposed service boundary for client review. These
-data shapes have canonical generated TypeScript and Swift DTOs. The configured Worker implements the HTTP operations; they are not yet
-available as advertised capabilities or core dispatch methods. Clients can build presentation and capability-disabled adapters;
-they must not derive inverse patches or substitute the existing direct writer.
+This is the canonical service boundary with generated TypeScript and Swift
+DTOs. Configured Workers implement and advertise the complete protocol for
+eligible credentials; the canonical core adapter validates transport results.
+Hosts keep their injected API null until that capability and raw transport exist.
+Clients never derive inverse patches or substitute the direct writer.
 
 Selected behavior: reverse selected historical changes while preserving
 unrelated later edits. Agents propose; an authenticated user approves online.
@@ -128,10 +129,9 @@ never changes authorization or overwrites authenticated attribution.
 
 ## Operation slice
 
-These names are reserved for the proposed core/service seam. The proposed exact
-transport and capability boundary is in `governance-transport-contract.md`.
-Clients keep this seam unavailable until canonical capability and adapter
-integration is complete; they do not infer availability from this document.
+These operations use the exact transport and capability boundary in
+`governance-transport-contract.md`. See `governance-service.md` for supported
+tables, deployment configuration and the explicit host adapter injection seam.
 
 | Operation | Request | Response |
 | --- | --- | --- |
@@ -214,9 +214,9 @@ resolution field; old error shapes without it cannot enable an adapter.
 Clients import canonical generated shapes during integration. The generic
 notation above is emitted as concrete `ProposalMutationResult`, `ApprovalResult`,
 `HistoryEventsResult`, `PreviewResult`, `ProposalsResult`, and `ProposalResult`.
-Operation argument definitions are generated without adding unimplemented
-operations to `CoreOperations`. Use an injected API that is null when unavailable,
-with no invented capability names or HTTP paths.
+The nine exact operation pairs are generated in `CoreOperations`. Use the
+canonical injected adapter and advertised capability; unconfigured handlers
+remain unavailable and never fall back to a local mutation.
 
 ## Inverse and conflict semantics
 

@@ -1,15 +1,14 @@
-# Governance transport contract draft
+# Governance transport contract
 
-This fixes the proposed transport boundary for the operations and generated data
-types in `governance-api-contract.md`. Configured Worker handlers implement these routes. Capability advertisement
-and canonical client adapter integration remain pending. The released runtime
-contract is unchanged. Clients keep their
-injected governance API null until the service advertises the complete protocol
-and the canonical adapter is available; reading this document does not enable it.
+This fixes the transport boundary for the operations and generated data types in
+`governance-api-contract.md`. Configured Worker handlers advertise the complete
+protocol for eligible credentials. Clients keep their injected governance API
+null until that capability and the canonical raw transport adapter are available.
+Source implementation does not establish deployment or client activation.
 
 ## Capability and authority
 
-The proposed optional `/v1/session` field is `capabilities.governance`:
+The optional `/v1/session` field is `capabilities.governance`:
 
 ```ts
 type GovernanceCapability = {
@@ -26,8 +25,8 @@ type GovernanceCapability = {
 };
 ```
 
-This proposed capability type is not yet generated. `Actor` and all operation
-argument/result types already have canonical generation. Limits are positive
+This capability, `Actor`, and all nine operation argument/result pairs have
+canonical TypeScript and Swift generation. Limits are positive
 safe integers, supplied by the service; clients never use guessed defaults to
 enable a request. Expiry in an issued preview remains authoritative. Unknown
 protocols, absent capability, invalid limits, or an unsupported adapter leave
@@ -63,7 +62,7 @@ endpoint and credential seam. The body is exactly the canonical argument type;
 there is no transport wrapper, client actor field or cookie-based fallback.
 Responses use the corresponding generated concrete result type.
 
-| Operation | Proposed path | Canonical request | Canonical result |
+| Operation | Path | Canonical request | Canonical result |
 | --- | --- | --- | --- |
 | `historyEvents` | `/v1/governance/history/events` | `HistoryEventsArgs` | `HistoryEventsResult` |
 | `previewChanges` | `/v1/governance/preview` | `PreviewRequest` | `PreviewResult` |

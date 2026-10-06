@@ -3,6 +3,8 @@ import type {
   ReplicaEligibility, ReplicaIneligibilityCode, SessionInfo, SessionReply, SessionRevocationResult,
 } from './contract.generated.ts';
 
+import {isGovernanceCapability,object} from './governance-wire.ts';
+
 /** Hosts own clocks, cancellation, cryptography, HTTP and credential storage. */
 export const ENROLLMENT_POLICY: Readonly<EnrollmentPolicy> = Object.freeze({
   pollIntervalSeconds: 5, timeoutSeconds: 300, maxResponseBytes: 65_536,
@@ -61,7 +63,8 @@ export function validateDeviceSession(data: unknown): SessionInfo {
   if (data.name === 'admin' || data.scopes.includes('admin')) {
     throw new Error('admin tokens cannot be used as device credentials');
   }
-  return { name: data.name, scopes: [...data.scopes], replica: replicaEligibility(data, data.scopes) };
+  const governance=object(data.capabilities)&&isGovernanceCapability(data.capabilities.governance)?data.capabilities.governance:undefined;
+  return { name: data.name, scopes: [...data.scopes], replica: replicaEligibility(data, data.scopes), ...(governance?{governance:JSON.parse(JSON.stringify(governance))}: {}) };
 }
 
 function validateReply(reply: SessionReply): void {

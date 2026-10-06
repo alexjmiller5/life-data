@@ -16,6 +16,7 @@ import { governanceOperation, governanceFailure } from './governance-protocol.js
 import { ensureEvidenceStorage } from './governance-evidence.js';
 import {assertGenericBody,assertGenericDDL,assertGenericState} from './governance-isolation.js';
 import {handleGovernance} from './governance.js';
+import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
 import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
@@ -504,9 +505,14 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-async function handleSession(request, tenant) {
+async function handleSession(request, tenant, env) {
   if (request.method === "GET") {
-    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities: sessionCapabilities(tenant.scopes) });
+    const capabilities=sessionCapabilities(tenant.scopes);
+    if(governanceConfiguration(env) && tenant.governance && (tenant.governance.propose||tenant.governance.approve)){
+      capabilities.governance={protocol:'selected-inverse-proposals-v1',principal:tenant.governance.actor,
+        authority:{propose:tenant.governance.propose,approve:tenant.governance.approve},limits:governanceLimits};
+    }
+    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities });
     response.headers.set("Cache-Control", "no-store");
     return response;
   }
@@ -802,7 +808,7 @@ async function handle(request, env, ctx, url) {
   const governance=governanceOperation(request);
   if (governance) {
     if (!tenant) return governanceFailure(governance,401,'permission_denied');
-    if (!tenant.governance || (governance.name==='approveProposal' ? !tenant.governance.approve : !tenant.governance.propose))
+    if (!tenant.governance || (governance.name==='approveProposal' ? !tenant.governance.approve : governance.read ? !tenant.governance.propose&&!tenant.governance.approve : !tenant.governance.propose))
       return governanceFailure(governance,governance.read?200:403,'permission_denied');
     return handleGovernance(request,tenant,env,governance);
   }
@@ -810,7 +816,7 @@ async function handle(request, env, ctx, url) {
     const session = url.pathname.startsWith("/v1/session");
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
-  if (url.pathname === "/v1/session") return handleSession(request, tenant);
+  if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
   if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
     return json(scopedReplicaUnsupported, 403);

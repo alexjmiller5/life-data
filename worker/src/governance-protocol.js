@@ -1,15 +1,6 @@
 // The exact protocol boundary is shared by routing, authentication and usage.
-const operations = {
-  '/v1/governance/history/events': {name:'historyEvents',read:true},
-  '/v1/governance/preview': {name:'previewChanges',read:true,preview:true},
-  '/v1/governance/proposals/create': {name:'createProposal'},
-  '/v1/governance/proposals/list': {name:'listProposals',read:true},
-  '/v1/governance/proposals/get': {name:'getProposal',read:true},
-  '/v1/governance/proposals/edit': {name:'editProposal'},
-  '/v1/governance/proposals/preview': {name:'previewProposal',read:true,preview:true},
-  '/v1/governance/proposals/approve': {name:'approveProposal'},
-  '/v1/governance/proposals/reject': {name:'rejectProposal'},
-};
+import {governanceOperations} from '../../core/src/governance-wire.ts';
+const operations=Object.fromEntries(Object.entries(governanceOperations).map(([name,op])=>[op.route,{name,...op}]));
 
 export function governanceOperation(request) {
   return request.method==='POST' ? operations[new URL(request.url).pathname] ?? null : null;

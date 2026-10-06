@@ -61,8 +61,9 @@ CLI.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
   codecs, including named discriminated object unions; `--check` verifies
-  reproducibility without writing. Governance DTOs describe data only: no
-  service capability follows from a generated type. Edit the contract,
+  reproducibility without writing. Governance operations require an explicitly injected canonical adapter and
+  a validated current credential capability. Generated types alone never activate
+  a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
 - `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
