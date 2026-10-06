@@ -92,6 +92,7 @@ export function validateRow(
     } else if (t === "bool" && ![0, 1, true, false].includes(v as number | boolean)) { fail("type", `${label} must be 0 or 1.`); continue; }
     else if (t === "date" && !(typeof v === "string" && DATE_RE.test(v))) { fail("type", `${label} must be YYYY-MM-DD.`); continue; }
     else if (t === "datetime" && !(typeof v === "string" && DATETIME_RE.test(v))) { fail("type", `${label} must be ISO-8601 UTC with milliseconds.`); continue; }
+    else if (t === "date_or_datetime" && !(typeof v === "string" && (DATE_RE.test(v) || DATETIME_RE.test(v)))) { fail("type", `${label} must be YYYY-MM-DD or ISO-8601 UTC with milliseconds.`); continue; }
     else if (t === "json") {
       try { typeof v === "string" ? JSON.parse(v) : JSON.stringify(v); } catch { fail("type", `${label} must be JSON.`); continue; }
     } else if (t === "url" && !(typeof v === "string" && /^https?:\/\//.test(v))) { fail("type", `${label} must be an http(s) URL.`); continue; }

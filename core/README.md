@@ -116,7 +116,7 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   rank by BM25 with table/id tie-breakers and exclude trash; row views retain
   their explicit sorting and trash selection.
 - Search indexes physically present, cataloged textual columns, including raw
-  Markdown, select, URL, email, phone, ref, date and datetime values. It does
+  Markdown, select, URL, email, phone, ref, date, datetime and date_or_datetime values. It does
   not search uncataloged fields, JSON, numbers, blobs, or remote skipped data.
   Retained rows from skipped tables are still local results and may be stale:
   hosts must keep sync coverage warnings visible. No result is a claim of

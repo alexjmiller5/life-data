@@ -1231,3 +1231,25 @@ def test_an_estate_without_the_display_column_gains_it_through_logged_ddl(db):
     assert "display" in cols
     ddls = [r["ddl"] for r in execute_sql(db, "SELECT ddl FROM _schema_log")]
     assert any("ADD COLUMN" in d and "display" in d for d in ddls)
+
+
+def test_mixed_calendar_property_stores_both_precisions(db):
+    create_table(db, "items", ["due:date_or_datetime"])
+    insert_rows(
+        db,
+        "items",
+        [
+            {"id": "all-day", "due": "2032-02-29"},
+            {"id": "timed", "due": "2032-02-29T05:00:00.000Z"},
+        ],
+    )
+    with connect(db) as conn:
+        assert properties(conn, "items")[0]["type"] == "date_or_datetime"
+    assert execute_sql(db, "SELECT due FROM items ORDER BY id") == [
+        {"due": "2032-02-29"},
+        {"due": "2032-02-29T05:00:00.000Z"},
+    ]
+    assert (
+        next(r for r in execute_sql(db, "PRAGMA table_info(items)") if r["name"] == "due")["type"]
+        == "TEXT"
+    )

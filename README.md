@@ -376,7 +376,14 @@ groups combine with AND; each `{match: "all" | "any", filters}` group uses
 AND or OR internally. Groups cannot nest. Queries permit at most 16 groups,
 64 filters per group, 128 filters total and 16 ordered sort clauses.
 
-`{column, op: "lte", relative: "today"}` compares a date or datetime with
+`date_or_datetime` is a TEXT catalog property accepting either the existing
+`date` format (`YYYY-MM-DD`) or the existing `datetime` format (UTC ISO-8601
+with milliseconds). Values keep their precision; it never converts an all-day
+date to midnight. Normalize offset-bearing source instants before writing and
+retain any original source object separately. Existing `date` and `datetime`
+properties keep their narrower validation. Nullability follows the property.
+
+`{column, op: "lte", relative: "today"}` compares a date, datetime or date_or_datetime with
 the current local day. Relative filters also support `eq`, `ne`, `lt`, `gt`
 and `gte`, and cannot include `value`. The saved definition retains `timeZone`
 and optional `dayStartMinutes` (integer 0 through 1439, omitted means midnight).

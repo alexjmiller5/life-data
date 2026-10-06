@@ -98,5 +98,16 @@
   {"name": "markdown accepts a multi-line body", "properties": [{"tbl": "t", "col": "body", "type": "markdown"}],
    "before": null, "after": {"id": "a", "body": "# Title\n\n- one\n- two\n"}, "expect": []},
   {"name": "required markdown rejects an empty body", "properties": [{"tbl": "t", "col": "body", "type": "markdown", "required": 1}],
-   "before": null, "after": {"id": "a", "body": ""}, "expect": [{"col": "body", "rule": "required"}]}
+   "before": null, "after": {"id": "a", "body": ""}, "expect": [{"col": "body", "rule": "required"}]},
+  {"name": "mixed calendar date", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": "2032-02-29"}, "expect": []},
+  {"name": "mixed calendar instant", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": "2032-02-29T05:00:00.000Z"}, "expect": []},
+  {"name": "mixed calendar null", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": null}, "expect": []},
+  {"name": "mixed calendar short date", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": "2032-2-29"}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "mixed calendar offset", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": "2032-02-29T00:00:00.000-05:00"}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "mixed calendar missing milliseconds", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": "2032-02-29T05:00:00Z"}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "mixed calendar naive", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": "2032-02-29T05:00:00.000"}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "mixed calendar number", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": 123}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "mixed calendar object", "properties": [{"tbl": "t", "col": "d", "type": "date_or_datetime"}], "before": null, "after": {"id": "a", "d": {}}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "legacy date stays narrow", "properties": [{"tbl": "t", "col": "d", "type": "date"}], "before": null, "after": {"id": "a", "d": "2032-02-29T05:00:00.000Z"}, "expect": [{"col": "d", "rule": "type"}]},
+  {"name": "legacy datetime stays narrow", "properties": [{"tbl": "t", "col": "d", "type": "datetime"}], "before": null, "after": {"id": "a", "d": "2032-02-29"}, "expect": [{"col": "d", "rule": "type"}]}
 ]
