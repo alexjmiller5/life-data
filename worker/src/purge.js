@@ -3,6 +3,7 @@
 // row. Mirrors purge/apply_purges/_uncovered in src/life_data/__init__.py.
 import { qident } from "./validate.js";
 import { redactReceipts } from './governance-store.js';
+import {ScopeDenied} from './scopes.js';
 
 export const PURGES = "purges";
 
@@ -45,10 +46,25 @@ export const markersFor = (index, table, ids) =>
 export async function applyPurges(db, markers) {
   const live = markers.filter((m) => !m.deleted_at);
   if (!live.length) return;
+  if(live.some(m=>typeof m.tbl==='string' && /_governance_/i.test(m.tbl)))throw new ScopeDenied();
   const [hasHistory, hasProvenance] = [await exists(db, "history"), await exists(db, "provenance")];
   const hasReceipts=await exists(db,'_governance_receipts');
+  const hasProposals=await exists(db,'_governance_proposals');
+  const hasInvalidations=await exists(db,'_governance_invalidations');
   const stmts = [];
   for (const { tbl, row_id, col, purged_at } of live) {
+    if(hasInvalidations)stmts.push(db.prepare(`INSERT INTO _governance_invalidations(tbl,row_id,version) VALUES (?,?,?)
+      ON CONFLICT(tbl,row_id) DO UPDATE SET version=excluded.version`).bind(tbl,row_id,crypto.randomUUID()));
+    if(hasProposals){
+      // Keep only a content-free target/state pointer. Every historical version
+      // of an affected proposal disappears, including later edited columns.
+      const affected=`SELECT p.id FROM _governance_proposals p JOIN _governance_versions v ON v.proposal_id=p.id
+        WHERE p.tbl=? AND p.row_id=? AND (? IS NULL OR EXISTS(SELECT 1 FROM json_each(v.columns_json) WHERE value=?))`;
+      if(hasReceipts)stmts.push(db.prepare(`UPDATE _governance_receipts SET result='{"kind":"purged"}',status=200,columns_json='[]'
+        WHERE coalesce(json_extract(result,'$.value.proposalId'),json_extract(result,'$.value.id')) IN (${affected})`).bind(tbl,row_id,col,col));
+      stmts.push(db.prepare(`UPDATE _governance_proposals SET state='purged' WHERE id IN (${affected})`).bind(tbl,row_id,col,col));
+      stmts.push(db.prepare("DELETE FROM _governance_versions WHERE proposal_id IN (SELECT id FROM _governance_proposals WHERE state='purged')"));
+    }
     if(hasReceipts)stmts.push(...redactReceipts(db,{table:tbl,rowId:row_id},col));
     if (col == null) {
       if (await exists(db, tbl)) {

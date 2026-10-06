@@ -3,6 +3,8 @@
 // refs and options before calling it, and the provenance hashes.
 import { allowed, asList, ident, qident, same, validEditTimestamp, validateRow } from "../../core/src/validate.ts";
 
+import {assertPublicSql} from './governance-isolation.js';
+
 export { allowed, ident, qident, validEditTimestamp, validateRow };
 
 // provenance is engine-created but validated like a user table: clients write edges into it.
@@ -22,6 +24,7 @@ export async function propertiesFor(db, table) {
   const { results } = await db
     .prepare("SELECT * FROM catalog_properties WHERE deleted_at IS NULL AND tbl = ? ORDER BY sort, col")
     .bind(table).all();
+  for(const p of results ?? [])for(const field of ['options_sql','ref_table','default_value'])assertPublicSql(p[field]);
   return (results ?? []).map((p) => ({
     ...p,
     options: p.options ? JSON.parse(p.options) : null,

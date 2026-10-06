@@ -61,7 +61,7 @@ export async function preparePatch(db, body, policy = null, options = {}) {
   // into a success receipt. This assertion also rolls back its history/outbox.
   const committed=db.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM ${qident(table)} WHERE id=? AND updated_at=?)
     THEN 1 ELSE abs(-9223372036854775808) END AS life_write_conflict`).bind(body.id,updatedAt);
-  return {db,view,table,rules,statements:[mutation,committed],updatedAt,log,expected,props,transitions};
+  return {db,view,table,rules,stamping,statements:[mutation,committed],updatedAt,log,expected,props,transitions};
 }
 
 // Trusted service statements may join the existing transaction. In particular,

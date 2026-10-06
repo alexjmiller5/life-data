@@ -1,9 +1,8 @@
 # Governance API contract draft
 
 This is the canonical proposed service boundary for client review. These
-data shapes have canonical generated TypeScript and Swift DTOs. The operations
-are not available as advertised capabilities, core dispatch methods, or HTTP
-routes yet. Clients can build presentation and capability-disabled adapters;
+data shapes have canonical generated TypeScript and Swift DTOs. The configured Worker implements the HTTP operations; they are not yet
+available as advertised capabilities or core dispatch methods. Clients can build presentation and capability-disabled adapters;
 they must not derive inverse patches or substitute the existing direct writer.
 
 Selected behavior: reverse selected historical changes while preserving
@@ -131,8 +130,8 @@ never changes authorization or overwrites authenticated attribution.
 
 These names are reserved for the proposed core/service seam. The proposed exact
 transport and capability boundary is in `governance-transport-contract.md`.
-It remains unavailable until the service implementation is tested; clients do
-not infer availability or invent routes from either draft.
+Clients keep this seam unavailable until canonical capability and adapter
+integration is complete; they do not infer availability from this document.
 
 | Operation | Request | Response |
 | --- | --- | --- |

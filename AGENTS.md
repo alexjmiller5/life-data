@@ -80,11 +80,25 @@ CLI.
   Mutation errors carry required original-operation `resolution`; an unresolved
   retry rejection cannot clear a pending journal. `not_committed` requires a
   durable negative receipt excluding late execution, not just an HTTP error.
-- `worker/src/governance-store.js` owns private terminal receipt statements.
-  Insert them in the same data-writer batch as the mutation; the unique key
-  excludes delayed originals after negative settlement. Receipt lookup requires
-  current disclosure authorization; purge preserves key exclusion but erases
-  payloads. These storage primitives do not advertise governance operations.
+- `worker/src/governance.js` implements the nine configured governance HTTP
+  handlers over the existing checked writer. Private immutable versions,
+  canonical typed evidence and terminal receipts live in the data store;
+  authenticated approval authority remains in the separate auth store.
+  Preview performs a rollback-only validation probe and never initializes,
+  meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/governance-store.js` inserts terminal receipts in the same batch
+  as mutation. Unique key exclusion also makes negative settlement durable.
+  Replays reauthorize current disclosure before returning the original result,
+  ahead of current row/catalog validation. Purge removes affected proposal
+  versions and receipt payloads, retains exclusion keys, and revokes outstanding
+  stateless previews with a private target invalidation nonce.
+- `worker/src/governance-isolation.js` reserves `_governance_*` state from generic
+  schema/row/purge/catalog-SQL routes, including broad credentials. Private SQL
+  shapes and history invalidation triggers require exact service-owned DDL.
+  Schema replay accepts DDL, never arbitrary data SQL or PRAGMA statements.
+  Configured handlers require `GOVERNANCE_DEPLOYMENT_ID` and a separately
+  purposed `GOVERNANCE_PREVIEW_KEY`; see `docs/governance-service.md`.
+  Generated DTOs alone do not activate an adapter or advertise this protocol.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one

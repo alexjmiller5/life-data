@@ -2,6 +2,7 @@
 // Keep preflight honest with read-set assertions inside the same batch.
 import { historyPlan, historyStatements } from './history.js';
 import { literal, qident, validatePush } from './validate.js';
+import {assertPublicSql} from './governance-isolation.js';
 import { supportedRuleSql } from '../../core/src/rule-sql.ts';
 
 const quoteColumn = (v) => '"' + v.replaceAll('"', '""') + '"';
@@ -58,6 +59,7 @@ export function readGuards(db, reads) {
 export async function enforcedRules(db, table) {
   if (!await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_rules'").first()) return [];
   const { results } = await db.prepare("SELECT * FROM catalog_rules WHERE deleted_at IS NULL AND tbl=? AND kind='invariant' AND enforce=1 ORDER BY id").bind(table).all();
+  for(const rule of results ?? [])assertPublicSql(rule.sql);
   return results ?? [];
 }
 

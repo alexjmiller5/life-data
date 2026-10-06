@@ -2,7 +2,7 @@
 // proofs, not a second row revision store. Unverified history invalidates them.
 import { literal, qident } from './validate.js';
 
-const ddl=[
+export const EVIDENCE_DDL=[
   `CREATE TABLE IF NOT EXISTS _governance_history (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT UNIQUE NOT NULL,
@@ -33,7 +33,7 @@ export function trustedEvidenceTrigger(trigger) {
 }
 
 export async function ensureEvidenceStorage(db) {
-  for(const sql of ddl) await db.prepare(sql).run();
+  for(const sql of EVIDENCE_DDL) await db.prepare(sql).run();
   if (await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history'").first()) {
     for(const {sql} of EVIDENCE_TRIGGERS) await db.prepare(sql.replace('CREATE TRIGGER ','CREATE TRIGGER IF NOT EXISTS ')).run();
   }
@@ -74,7 +74,7 @@ export async function typedCells(view,target,columns) {
   return row ? Object.fromEntries(columns.map(c=>[c,row[c]===null?null:JSON.parse(row[c])])) : {};
 }
 
-function verifiedEvent(metadata,history) {
+export function verifiedEvent(metadata,history) {
   if (!history || history.deleted_at!==null) return null;
   const canonical=JSON.parse(metadata.canonical_json);
   if(Object.entries(canonical).some(([k,v])=>history[k]!==v)) return null;

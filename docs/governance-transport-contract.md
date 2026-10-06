@@ -1,8 +1,9 @@
 # Governance transport contract draft
 
 This fixes the proposed transport boundary for the operations and generated data
-types in `governance-api-contract.md`. No route or capability below is implemented
-or advertised. The released runtime contract is unchanged. Clients keep their
+types in `governance-api-contract.md`. Configured Worker handlers implement these routes. Capability advertisement
+and canonical client adapter integration remain pending. The released runtime
+contract is unchanged. Clients keep their
 injected governance API null until the service advertises the complete protocol
 and the canonical adapter is available; reading this document does not enable it.
 

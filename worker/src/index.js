@@ -14,6 +14,9 @@ import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./va
 import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority } from "./auth.js";
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
 import { ensureEvidenceStorage } from './governance-evidence.js';
+import {assertGenericBody,assertGenericDDL,assertGenericState} from './governance-isolation.js';
+import {handleGovernance} from './governance.js';
+import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
@@ -201,6 +204,7 @@ const logDerive = (p) =>
 async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
   await ensureEvidenceStorage(db);
+  await ensureProposalStorage(db);
 }
 
 // Does the HUB's own schema have hub_at? Never ask the pushed column list:
@@ -270,6 +274,7 @@ const ROUTES = {
     const known = new Set((results ?? []).map((r) => r.ddl));
     let applied = 0;
     for (const entry of body.entries ?? []) {
+      assertGenericDDL(entry.ddl);
       if (known.has(entry.ddl)) continue;
       try {
         await applySubscriptionSchema(db,entry.ddl);
@@ -799,9 +804,7 @@ async function handle(request, env, ctx, url) {
     if (!tenant) return governanceFailure(governance,401,'permission_denied');
     if (!tenant.governance || (governance.name==='approveProposal' ? !tenant.governance.approve : !tenant.governance.propose))
       return governanceFailure(governance,governance.read?200:403,'permission_denied');
-    // No partial protocol advertisement: storage/planner/handlers must all be
-    // ready before the governance service can answer supported operations.
-    return governanceFailure(governance,503);
+    return handleGovernance(request,tenant,env,governance);
   }
   if (!tenant) {
     const session = url.pathname.startsWith("/v1/session");
@@ -901,7 +904,10 @@ async function handle(request, env, ctx, url) {
       return json({ keys: await runBackup(env, new Date()) });
     }
     await ensureReady(tenant.db);
-    const out = await ROUTES[url.pathname](await request.json(), tenant.db, env, ctx);
+    const body=await request.json();
+    assertGenericBody(body);
+    await assertGenericState(tenant.db);
+    const out = await ROUTES[url.pathname](body, tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {
     if (e instanceof ScopeDenied) return json({error:"insufficient scope"},403);
