@@ -80,32 +80,83 @@ read semantics. Every response has `Cache-Control: no-store`. Existing configure
 CORS origin restrictions remain; authorization is never inferred from an origin.
 Unknown methods and paths do not alias a known operation.
 
-Successful operations, unavailable reads and content-free purged mutation
-receipts return HTTP 200 with their specified result discriminator. An absent,
-purged or denied read has the same `{kind: "unavailable"}` body and status.
-Authentication failure is HTTP 401: reads return unavailable; mutations return
-`permission_denied` with no conflicts. Authenticated mutation denials use HTTP
-403 with that same empty-conflict result.
+## Complete response matrix and key disposition
 
-Definitive version, revision, expired-preview and idempotency conflicts use HTTP
-409 and the corresponding generated error code. Validation failures use HTTP
-422 with `validation_failed`. Malformed or oversized mutation requests use
-HTTP 400 or 413 with `validation_failed` and no payload-bearing conflicts;
-malformed reads use the same status with an unavailable result. No unsupported
-error discriminators are added by the client.
+The following pairs are exhaustive for these nine routes. `success` must have
+the exact operation-specific value shape; errors must have their required
+`resolution` and conflict array. No status alone supplies a missing discriminator,
+code or resolution. All unlisted combinations and malformed payloads become
+`transport_error: indeterminate` after dispatch, including a valid body under
+the wrong status. The adapter never repairs or guesses a response shape.
 
-Governance reads the data store and stays subject to the existing usage cap.
-At-cap responses use HTTP 429 and `Retry-After`: reads return unavailable and
-mutations return the `unavailable` error with no conflicts. There is no governance
-prefix exemption. The APNs auth-store-only exemptions are a separate contract.
+Read operations are `historyEvents`, `previewChanges`, `listProposals`,
+`getProposal` and `previewProposal`:
 
-Only a recognized protocol response can establish a definitive operation result.
-An unexpected status/body, proxy response, timeout, or lost response after
-dispatch is `transport_error: indeterminate`; retain the exact mutation request
-and key. The adapter reports `offline` only when no dispatch occurred. The
-service never emits either transport discriminator. HTTP 5xx cannot prove that a
-mutation rolled back. A retry uses the original endpoint/session binding and
-request; it never redirects the old operation into a replacement workspace.
+| HTTP | Allowed result | Meaning |
+| --- | --- | --- |
+| 200 | `success` or `unavailable` | Completed read; absent, purged or resource-denied reads are identically unavailable |
+| 400 | `unavailable` | Malformed read arguments |
+| 401 | `unavailable` | Authentication failed |
+| 413 | `unavailable` | Request too large |
+| 429 | `unavailable` | Usage cap; includes `Retry-After` |
+| 503 | `unavailable` | Protocol/storage temporarily unavailable |
+
+A valid preview with planning conflicts is HTTP 200 `success` containing the
+canonical `Preview` with no usable token, not an HTTP mutation error. Read 404,
+403, 409 or 422 responses are not alternate unavailable encodings.
+
+Mutation operations are `createProposal`, `editProposal`, `approveProposal`
+and `rejectProposal`:
+
+| HTTP | Allowed result/code | Allowed resolution | Conflict disclosure |
+| --- | --- | --- | --- |
+| 200 | `success` or `purged` | Not present | Not present |
+| 400 | `error` / `validation_failed` | `unresolved` | Empty |
+| 401 | `error` / `permission_denied` | `unresolved` | Empty |
+| 403 | `error` / `permission_denied` | `unresolved` | Empty |
+| 404 | `error` / `unavailable` | `unresolved` or `not_committed` | Empty |
+| 409 | `error` / `proposal_changed`, `revision_changed`, `expired_preview` | `unresolved` or `not_committed` | Authorized conflicts only |
+| 409 | `error` / `idempotency_conflict` | `unresolved` | Empty |
+| 413 | `error` / `validation_failed` | `unresolved` | Empty |
+| 422 | `error` / `validation_failed`, `history_unavailable` | `unresolved` or `not_committed` | Authorized conflicts only |
+| 429 | `error` / `unavailable` | `unresolved` | Empty; includes `Retry-After` |
+| 503 | `error` / `unavailable` | `unresolved` | Empty |
+
+Ordinary absent/unsupported/inaccessible mutation resources use 404 unavailable;
+401/403 describe request-level eligibility without disclosing resource existence.
+Cold/incomplete governance storage or temporary unavailability uses 503. A typed
+503 remains unresolved; other 5xx responses are indeterminate. Governance reads
+the data store and stays capped. There is no governance prefix exemption; the
+APNs auth-store-only exceptions belong to their separate contract.
+
+A recognized error is a response to this attempt, not proof of the original
+operation's outcome. For example, approval commits, its reply is lost, then an
+exact retry hits the usage cap or loses authorization before receipt lookup.
+The resulting 429/401/403 is `resolution: "unresolved"`; preserve the original
+parked request/key, including across reload. Resource denial, history unavailability,
+revision failure, an offline retry and an idempotency conflict cannot implicitly
+erase earlier uncertainty either.
+
+Only validated success, purged replay, or `resolution: "not_committed"` settles
+the key. The latter is permitted only after the authorized data writer atomically
+records an immutable negative receipt for the exact key/request, excluding any
+late or concurrent execution. Checking that no success receipt exists is not
+enough. If an original attempt wins that race, return its authorized result;
+if the negative record wins, the original may never apply. Denial or inability
+to perform this resolution yields `unresolved`, even for a code whose matrix
+row also permits `not_committed`. A negative result cannot be promoted from a
+current failure by the adapter. Settlement/disclosure honors current permission
+and purge rules, and never reruns a terminal key as a fresh mutation.
+
+The service never emits a transport discriminator. The adapter returns `offline`
+only if this attempt was not dispatched; it says nothing about prior attempts.
+Unexpected responses, timeouts or lost replies after dispatch are indeterminate.
+Retain the exact request and key for every unresolved/transport result. Never
+create a replacement approval or silently move the old request to a different
+endpoint, session, principal or workspace. Preview invalidation and journal
+settlement are separate decisions. The existing UI rule clearing on every
+non-transport result must be updated against this generated resolution contract
+before any adapter is enabled; the injected API remains null meanwhile.
 
 ## Preview and mutation implementation boundaries
 
@@ -145,4 +196,6 @@ not a replacement mock implementation. They include cold/denied preview side
 effects, exact-table/dependency restrictions, agent approval denial, retained
 typed history, competing proposal mutations, changed rows/catalog/dependencies,
 committed retry after a newer edit, ambiguous response reconciliation, key reuse,
-purged receipt redaction, and absence of the capability before readiness.
+purged receipt redaction, lost committed replies followed by typed cap/auth/resource
+denials, negative settlement racing a delayed original, every allowed matrix pair
+and status/body/resolution mismatch, and absence of the capability before readiness.

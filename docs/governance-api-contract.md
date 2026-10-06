@@ -106,10 +106,12 @@ type MutationErrorCode =
   | "proposal_changed" | "revision_changed" | "history_unavailable"
   | "validation_failed" | "permission_denied" | "unavailable"
   | "expired_preview" | "idempotency_conflict";
+type MutationResolution = "unresolved" | "not_committed";
 type MutationResult<T> =
   | { kind: "success"; value: T }
   | { kind: "purged" }
-  | { kind: "error"; code: MutationErrorCode; conflicts: Conflict[] }
+  | { kind: "error"; code: MutationErrorCode;
+      resolution: MutationResolution; conflicts: Conflict[] }
   // Adapter outcomes, never JSON fabricated by the service:
   | { kind: "transport_error"; code: "offline" | "indeterminate" };
 type ApprovalResult = MutationResult<ApprovalReceipt>;
@@ -167,10 +169,11 @@ unavailable for reads. Editing keeps the same target; changing targets requires
 a new proposal.
 
 `purged` is exactly `{kind: "purged"}` with no identifiers, values, actor, or
-receipt payload. A denied response contains an empty conflict list. A definitive
-service error invalidates the current approval preview; the client refreshes or
-shows the denial and never automatically changes the requested version/patch.
-An `idempotency_conflict` must not be bypassed by silently minting a new key.
+receipt payload. A denied response contains an empty conflict list. A service
+error invalidates the current approval preview, but does not by itself settle
+the original operation. The client shows the denial and never automatically
+changes the requested version/patch. An `idempotency_conflict` must not be
+bypassed by silently minting a new key.
 
 The adapter returns `offline` only when it knows the request was not dispatched;
 an uncertain dispatch, timeout, or lost response is `indeterminate`. Both keep
@@ -179,7 +182,35 @@ preview. An indeterminate operation remains unresolved until the same request
 is reconciled; a user may not start a replacement approval with a new key as if
 the first failed. These transport outcomes are not evidence of server rollback.
 Retrying the original key can recover its committed receipt even when the preview
-token has since expired; an uncommitted expired preview requires fresh review.
+token has since expired. An uncommitted expired preview requires fresh review,
+after an authoritative original-operation settlement permits replacing the key.
+
+Every error carries required `resolution`. `unresolved` means the response does
+not establish whether the exact original operation committed or can still commit.
+This includes auth/cap/resource rejection before receipt lookup, regardless of
+the HTTP status and even when that retry itself performed no write. Retain the
+exact parked request/key and its original deployment/session/principal scope;
+do not clear the journal, create a replacement approval, or reinterpret denied
+receipt access as rollback. An offline retry does not resolve an earlier
+uncertain dispatch either. Do not infer resolution from an error code.
+
+`not_committed` is an authoritative durable negative receipt. Before returning
+it, the service must authorize original-operation resolution, bind the exact key
+and request identity, check for a prior committed/purged/negative result, and
+atomically persist a terminal record preventing every late or concurrent attempt
+with that key from applying. Absence of a receipt, failed current preconditions,
+an empty query, rollback of this attempt, or elapsed time is insufficient. If a
+prior success won the race, return its authorized receipt instead. Storage or
+authorization failure to resolve the key returns `unresolved`. A recognized
+negative retry never re-evaluates the request into a new mutation. It follows
+the same permission, redaction and purge rules as other receipts.
+
+The journal clears only on a validated `success`, a content-free `purged` receipt,
+or an error with `resolution: "not_committed"`. All `unresolved` and transport
+results retain it, including across restart and context changes. Refreshing a
+preview does not replace a parked approval. The transport contract defines the
+complete allowed status/code/resolution pairs. Clients require the generated
+resolution field; old error shapes without it cannot enable an adapter.
 
 Clients import canonical generated shapes during integration. The generic
 notation above is emitted as concrete `ProposalMutationResult`, `ApprovalResult`,
@@ -262,6 +293,13 @@ this is an explicit exception to returning the original full receipt. No receipt
 or proposal access may resurrect purged values or expose previously authorized
 fields after permission is revoked.
 
+Terminal negative receipts use the same atomic key exclusion as successful
+receipts. They retain only the scoped rejection needed to resolve the original
+request, never arbitrary row snapshots. Purge redacts their payloads and preserves
+the content-free marker needed to prevent late execution of an already settled
+key. A later denial of receipt access keeps the client journal unresolved even
+when a terminal receipt exists privately on the service.
+
 ## Integration sequence and acceptance
 
 1. Add trusted actor/approval authority and typed, ordered history evidence to
@@ -277,4 +315,6 @@ preview/version, later same-column edits and value cycles rejected, removed or
 changed history rejected, exact-version edit/reject/approve races, row/dependency
 races, revoked/agent approval denied, retry after a newer edit, mismatched keys,
 purge/redaction, no preview effects on cold stores, and all-or-nothing multi-field
-validation/history/receipt. Synthetic models alone do not demonstrate these.
+validation/history/receipt. Retry gates also cover a lost committed reply followed
+by cap/auth/resource denial, and negative settlement racing a delayed original
+attempt. Synthetic models alone do not demonstrate these.

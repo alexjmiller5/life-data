@@ -165,6 +165,10 @@ client-asserted evidence. The service must acquire and guard evidence again in
 its atomic approval transaction. Governance DTOs in the canonical contract do
 not advertise a working governance service; `docs/governance-api-contract.md`
 defines the remaining boundary.
+Mutation errors require `resolution: unresolved | not_committed`. A typed denial
+of a retry does not resolve the original request; only a durable authoritative
+negative receipt can supply `not_committed`. Clients keep the exact journaled
+request for unresolved and transport outcomes.
 A native host sharing a Python replica must hold `<database>.sync.lock` around
 sync. The core additionally refuses overlap on one driver instance.
 

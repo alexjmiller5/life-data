@@ -77,6 +77,9 @@ CLI.
   same-column changes and produces no partial patch on conflict. No RPC,
   authorization, evidence loader, preview token, or proposal writer is supplied
   by this pure primitive; generated governance DTOs are not service capabilities.
+  Mutation errors carry required original-operation `resolution`; an unresolved
+  retry rejection cannot clear a pending journal. `not_committed` requires a
+  durable negative receipt excluding late execution, not just an HTTP error.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits; index draining and searching share one

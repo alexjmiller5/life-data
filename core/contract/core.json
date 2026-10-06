@@ -2644,6 +2644,14 @@
         "idempotency_conflict"
       ]
     },
+    "MutationResolution": {
+      "type": "string",
+      "enum": [
+        "unresolved",
+        "not_committed"
+      ],
+      "description": "Original-operation settlement, not the outcome of one HTTP attempt. not_committed requires a durable server record preventing this exact key/request from ever applying; other rejections remain unresolved."
+    },
     "MutationError": {
       "type": "object",
       "properties": {
@@ -2656,6 +2664,9 @@
         "code": {
           "$ref": "#/$defs/MutationErrorCode"
         },
+        "resolution": {
+          "$ref": "#/$defs/MutationResolution"
+        },
         "conflicts": {
           "type": "array",
           "items": {
@@ -2666,6 +2677,7 @@
       "required": [
         "kind",
         "code",
+        "resolution",
         "conflicts"
       ]
     },
