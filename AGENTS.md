@@ -94,6 +94,11 @@ CLI.
   authenticated approval authority remains in the separate auth store.
   Preview performs a rollback-only validation probe and never initializes,
   meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/write.js` exposes `prepareChecked` for trusted service composition.
+  It prepares table approval/history setup, mutations and cleanup without running
+  a batch. All shared read guards must execute before every plan setup, and all
+  participating plans must commit in one batch. `commitChecked` remains the
+  ordinary single-table interface. Preparation alone grants no consumer writer.
 - `worker/src/governance-store.js` inserts terminal receipts in the same batch
   as mutation. Unique key exclusion also makes negative settlement durable.
   Replays reauthorize current disclosure before returning the original result,

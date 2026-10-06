@@ -131,7 +131,7 @@ export async function enforcedRules(db, table) {
 
 // Triggers exist only inside this batch transaction. No temp schema or user
 // context tables; OLD/NEW have SQLite's actual types, defaults and values.
-export async function commitChecked(db, reads, table, rules, statements, now, history = null, expected = [], props = [], transitions = [], probe = false) {
+export async function prepareChecked(db, table, rules, statements, now, history = null, expected = [], props = [], transitions = [], probe = false) {
   const key = '_life_write_' + crypto.randomUUID().replaceAll('-', '');
   const schema = (await db.prepare(`PRAGMA table_info(${qident(table)})`).all()).results;
   const cols = schema.map(c => c.name);
@@ -142,7 +142,7 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
     p.optionColumn = columns[0];
   }
   const context = (prefix) => cols.map(c => `${prefix}.${qident(c)} AS ${qident(c)}`).join(',');
-  const begin = readGuards(db, reads);
+  const begin = [];
   const end = [];
   const approval = key + '_approved',numbers=key+'_numbers';
   // Large unchanged stored text must not be expanded into an oversized JSON
@@ -214,10 +214,19 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
     end.push(db.prepare(`CREATE TABLE ${qident(key + '_probe')} (ok INTEGER CONSTRAINT life_probe_complete CHECK(ok=1))`));
     end.push(db.prepare(`INSERT INTO ${qident(key + '_probe')} VALUES (0)`));
   }
+  return {begin:[...begin,...log.begin],statements,end:[...log.end,...end]};
+}
+
+// A trusted service can compose prepared table plans into ONE batch. Preparing
+// a plan never executes its statements; every participating read guard belongs
+// before all plan setup and mutations. Ordinary single-table callers retain the
+// same execution path and expose receipts only after the whole batch commits.
+export async function commitChecked(db, reads, table, rules, statements, now, history = null, expected = [], props = [], transitions = [], probe = false) {
+  const guards=readGuards(db,reads);
+  const plan=await prepareChecked(db,table,rules,statements,now,history,expected,props,transitions,probe);
   try {
-    const result = await db.batch([...begin, ...log.begin, ...statements, ...log.end, ...end]);
-    // Expose only mutation receipts, and only after the entire batch commits.
-    return result.slice(begin.length + log.begin.length, begin.length + log.begin.length + statements.length);
+    const result = await db.batch([...guards,...plan.begin,...plan.statements,...plan.end]);
+    return result.slice(guards.length+plan.begin.length,guards.length+plan.begin.length+plan.statements.length);
   }
   catch (e) {
     if (probe && String(e).includes('life_probe_complete')) return;
