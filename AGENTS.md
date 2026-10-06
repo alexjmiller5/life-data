@@ -589,6 +589,10 @@ governance authority. `scopedOrigin` is an internal, bounded provenance dependen
 validator, never a general provenance grant. The canonical contract and limits
 are in `docs/superpowers/specs/2026-10-06-create-only-origin.md`; portable consumer
 types and strict checks export from `life-core/creation`.
+Python consumers import `life_data.creation` from the pinned library package;
+it needs no JavaScript engine. Shared wire fixtures and actual Worker response
+tests keep its receipt/readiness checks aligned with the TypeScript boundary.
+Neither entry point owns credentials, HTTP, scheduling or automatic retries.
 
 `authenticate` in `worker/src/index.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and

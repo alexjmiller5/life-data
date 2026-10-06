@@ -179,3 +179,13 @@ configured creation grant plus explicitly expected column-read grants, rejects
 governance authority and broader grants, and matches the policy revision.
 Receipt validation rejects mismatched targets, revisions, malformed origin IDs
 and incompatible result variants. A null result is not proof of non-commit.
+
+Python hosts use `life_data.creation.validate_creation_session(reply, expected,
+expected_scopes)` and `validate_creation_receipt(request, reply)` from the pinned
+Life Data package. They accept the same JSON envelopes as the TypeScript helpers;
+the latter returns the accepted receipt or `None`, never a non-commit claim.
+This standard-library boundary needs no JavaScript runtime, native credential
+lookup or replica. `tests/fixtures/creation-boundary.json` is the shared
+cross-language conformance corpus; Worker tests also exercise Python against
+actual session/created/existing HTTP responses. Hosts still own connection
+identity, secure credentials, bounded transport and same-intent retry policy.

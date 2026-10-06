@@ -4,6 +4,7 @@ import meteredWorker from '../src/main.js';
 import {ensureUsage,period} from '../src/usage.js';
 import { D1Shim } from './d1shim.js';
 import { creationPolicies, creationId } from '../src/creation.js';
+import {resolve} from 'node:path';
 
 const T='2026-01-01T00:00:00.000Z';
 const config={
@@ -118,6 +119,27 @@ test('HTTP creation capability and exact current grant create one target and ori
   expect(env.DB.db.query('SELECT title,updated_at FROM items').get()).toEqual({title:'initializer',updated_at:T});
   expect(env.DB.db.query('SELECT from_kind,from_ref,to_kind,to_ref,field,rel,asserted_by FROM provenance').get()).toEqual({from_kind:'fixture-source',from_ref:'source-1',to_kind:'items',to_ref:input.target.id,field:null,rel:'imported_from',asserted_by:config.namespace});
   expect(JSON.stringify(receipt)).not.toContain('private source title');
+});
+
+test('Python consumer accepts real Worker session, created and existing receipts',async()=>{
+  const {input,request,token,call,policy}=await setup();
+  const session=await (await request(token,'/v1/session',undefined,'GET')).json();
+  const created=await (await call()).json(),existing=await (await call()).json();
+  const child=Bun.spawn(['python3','-c',`
+import json, sys
+from life_data.creation import validate_creation_receipt, validate_creation_session
+v=json.load(sys.stdin)
+assert validate_creation_session({'status':200,'data':v['session']},v['policy'],v['scopes'])
+for receipt in [v['created'],v['existing']]:
+    assert validate_creation_receipt(v['request'],{'status':200,'data':receipt}) == receipt
+assert validate_creation_receipt(v['request'],{'status':429,'data':v['created']}) is None
+print('canonical Python HTTP conformance passed')
+`],{env:{...process.env,PYTHONPATH:resolve(import.meta.dir,'../../src')},stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+  child.stdin.write(JSON.stringify({request:input,session,created,existing,policy:input.policy,scopes:[`rows:create:fixture:${policy.revision}`]}));
+  child.stdin.end();
+  const errors=await new Response(child.stderr).text();
+  expect({code:await child.exited,errors}).toEqual({code:0,errors:''});
+  expect(await new Response(child.stdout).text()).toContain('canonical Python HTTP conformance passed');
 });
 for(const deleted of [null,T])test('existing target, including tombstone, leaves all data untouched: '+deleted,async()=>{
   const {env,input,call}=await setup();
@@ -253,4 +275,14 @@ test('column NOCASE cannot acknowledge an aliased target behind a BINARY primary
  const {env,input,call}=await setup();env.DB.db.exec('DROP TABLE items; CREATE TABLE items(id TEXT COLLATE NOCASE,title TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT,PRIMARY KEY(id COLLATE BINARY))');
  env.DB.db.query('INSERT INTO items(id,title,updated_at) VALUES(?,?,?)').run(input.target.id.toUpperCase(),'other byte identity',T);
  const before=snapshot(env.DB);const response=await call();expect(response.status).toBe(503);expect(snapshot(env.DB)).toEqual(before);
+});
+
+for(const suffix of ['\n','\r','\u2028','\u2029'])test('configured creation identifiers must end exactly: '+JSON.stringify(suffix),async()=>{
+ for(const value of [
+  {['fixture'+suffix]:config},
+  {fixture:{...config,namespace:config.namespace+suffix}},
+  {fixture:{...config,table:config.table+suffix}},
+  {fixture:{...config,columns:['title'+suffix]}},
+  {fixture:{...config,origin:{...config.origin,kind:config.origin.kind+suffix}}},
+ ])expect(await creationPolicies({ROW_CREATION_POLICIES:JSON.stringify(value)})).toEqual([]);
 });
