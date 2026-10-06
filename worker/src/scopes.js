@@ -11,6 +11,7 @@ export function hasSchemaAccess(scopes) {
 export function sessionCapabilities(scopes) {
   return {
     row_api: 'v1',
+    conditional_patch: 'revision-v1',
     schema: hasSchemaAccess(scopes) ? 'full-ddl-v1' : 'none',
     replica_sync: scopes.some(scope => ['admin', 'full'].includes(scope)),
     subscriptions: 'durable-pull-v1',

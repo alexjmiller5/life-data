@@ -451,7 +451,9 @@ access. Core enrollment requires advertised schema `full-ddl-v1` and
 `replica_sync: true`; only entirely absent capabilities use the legacy full-token
 default. Consumer enrollment still rejects operator/admin credentials. Capabilities
 never broaden route scopes. The generated contract includes the wire types.
-Subscriptions are advertised as null until durable pull routes are implemented.
+Subscriptions advertise `durable-pull-v1`; conditional row edits advertise
+`conditional_patch: revision-v1`. Missing optional capabilities never authorize
+falling back to an unconditional write.
 
 Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
 body.table before data access. Narrow consumers use bounded direct rows APIs;

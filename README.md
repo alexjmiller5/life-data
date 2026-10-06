@@ -301,6 +301,24 @@ strings retain SQLite INTEGER/REAL coercion. References and dynamic options are
 checked at each mutation, including changes earlier in the batch. Enforced catalog invariants and history are transactional on both hubs;
 advisory rules remain advisory.
 
+Use `POST /v1/rows/patch` for conditional edits to one existing row. Send
+`{table, id, values, expected_revision: {updated_at, hub_at}}`, using the
+revision from a prior row read (`hub_at: null` for a table without that clock).
+The response is `{id, revision: {updated_at, hub_at}}` from the committed
+transaction. The server advances the edit clock, including under client clock
+skew, and validates sparse values, references, invariants and history together.
+Identity, creation/edit/arrival clocks and tombstones cannot be patched here.
+Empty or malformed patches return 400; a stale revision, missing row or
+tombstone returns 409 `revision_conflict`; invalid values return 422
+`validation_failed`. A failed write changes neither the row nor its history
+or durable change events. After a timeout or conflict, reread and recompute
+the intended edit; never fall back to an unconditional push.
+
+The session capability `conditional_patch: "revision-v1"` advertises this
+operation. Broad `tables:write` and exact `tables:write:<table>` grants are
+supported; narrow callers retain all table eligibility checks. A write-only
+credential receives the revision receipt, not the row's other values.
+
 An optional `history` array carries original replica events for submitted rows,
 using the history-table shape and original IDs. Matching IDs are idempotent;
 conflicting reuse rejects the row. Original events that explain a cell transition

@@ -7,6 +7,7 @@
 // knows how the caller was authenticated.
 
 import { pushChecked, queryBudget } from "./write.js";
+import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
@@ -135,7 +136,7 @@ function allowed(pathname, method, scopes) {
   if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
     return scopes.includes("full") || scopes.includes("streams:append");
   }
-  if (pathname === "/v1/rows/push" || pathname === "/v1/rows/insert" || pathname === "/v1/derive") {
+  if (pathname === "/v1/rows/push" || pathname === "/v1/rows/insert" || pathname === "/v1/rows/patch" || pathname === "/v1/derive") {
     return scopes.includes("full") || scopes.includes("tables:write");
   }
   const readOnly =
@@ -381,6 +382,17 @@ const ROUTES = {
       ? (await db.prepare(`SELECT max(hub_at) AS t FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`)
         .bind(JSON.stringify(accepted.map(row => row.id))).first()).t ?? "" : "";
     return { upserted: accepted.length, rejected, hub_at: hubAt };
+  },
+
+  "/v1/rows/patch": async (body, db, env, ctx, policy) => {
+    const receipt=await patchChecked(db,body,policy);
+    if (!(receipt instanceof Response) && !policy && ctx && env) {
+      ctx.waitUntil(logDerive((async()=>{
+        const row=await db.prepare(`SELECT * FROM ${qident(body.table)} WHERE id=? AND deleted_at IS NULL`).bind(body.id).first();
+        return deriveStale(queryBudget(db,200),env,body.table,row?[row]:[]);
+      })()));
+    }
+    return receipt;
   },
 
   "/v1/rows/insert": async (body, db, env, ctx, policy) => {
@@ -784,7 +796,7 @@ async function handle(request, env, ctx, url) {
     return json(scopedReplicaUnsupported, 403);
   }
   const rowOperation = request.method === "POST"
-    ? ({"/v1/rows/pull":"read","/v1/rows/push":"write","/v1/rows/insert":"write"})[url.pathname] : null;
+    ? ({"/v1/rows/pull":"read","/v1/rows/push":"write","/v1/rows/insert":"write","/v1/rows/patch":"write"})[url.pathname] : null;
   const narrowRows = rowOperation && !broadTableAccess(tenant.scopes,rowOperation);
   const optionsRequest = url.pathname === '/v1/catalog/options' && request.method === 'GET';
   if (!narrowRows && !optionsRequest && !allowed(url.pathname, request.method, tenant.scopes)) {
@@ -800,6 +812,10 @@ async function handle(request, env, ctx, url) {
       }
       if (rowOperation === "read") {
         const out = await scopedRows(body,tenant.db);
+        return out instanceof Response ? out : json(out);
+      }
+      if (url.pathname === '/v1/rows/patch') {
+        const out=await patchChecked(tenant.db,body,scopedTable);
         return out instanceof Response ? out : json(out);
       }
       if (!Array.isArray(body.columns) || !body.columns.includes('id') || !Array.isArray(body.rows)) {

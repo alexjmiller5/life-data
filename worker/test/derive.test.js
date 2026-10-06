@@ -294,6 +294,21 @@ test("push logs the derivation failures it can no longer return", async () => {
   expect(JSON.parse(out).derive_failed[0]).toMatchObject({ id: "78", error: expect.stringContaining("no derivation configured") });
 });
 
+test('conditional edits schedule ordinary background derivations only after acceptance', async () => {
+  const db=await fresh(), tasks=[];
+  const body={table:'movies',id:'78',values:{status:'Finished'},expected_revision:{updated_at:'2026-09-04T00:00:00.000Z',hub_at:null}};
+  const out=await captureLog(async()=>{
+    const receipt=await ROUTES['/v1/rows/patch'](body,db,{DERIVATIONS:'{}'},{waitUntil:p=>tasks.push(p)});
+    expect(receipt.id).toBe('78');
+    await Promise.all(tasks);
+  });
+  expect(tasks).toHaveLength(1);
+  expect(JSON.parse(out).derive_failed[0]).toMatchObject({id:'78',error:expect.stringContaining('no derivation configured')});
+  tasks.length=0;
+  expect((await ROUTES['/v1/rows/patch'](body,db,{}, {waitUntil:p=>tasks.push(p)})).status).toBe(409);
+  expect(tasks).toHaveLength(0);
+});
+
 test('an edit during the external call cannot receive a derivation for stale inputs', async () => {
   const db = await fresh();
   const fetchImpl = async () => {

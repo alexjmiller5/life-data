@@ -1819,6 +1819,12 @@
           "enum": [
             "opaque-key-v1"
           ]
+        },
+        "conditional_patch": {
+          "type": "string",
+          "enum": [
+            "revision-v1"
+          ]
         }
       },
       "required": [
