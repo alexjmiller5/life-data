@@ -374,11 +374,17 @@ AND or OR internally. Groups cannot nest. Queries permit at most 16 groups,
 
 `{column, op: "lte", relative: "today"}` compares a date or datetime with
 the current local day. Relative filters also support `eq`, `ne`, `lt`, `gt`
-and `gte`, and cannot include `value`. The saved definition retains `timeZone`;
-the host resolves it and supplies runtime `calendar: {today, start, end}`,
-where `today` is a calendar date and the bounds are exact UTC millisecond
-timestamps. The end is exclusive, including on daylight-saving days. Refresh
-the context at local midnight and on resume. Never persist this runtime clock.
+and `gte`, and cannot include `value`. The saved definition retains `timeZone`
+and optional `dayStartMinutes` (integer 0 through 1439, omitted means midnight).
+The host resolves that policy and supplies runtime `calendar: {today, start, end}`.
+`today` labels the civil date on which the current policy interval began;
+the bounds are consecutive configured local boundaries expressed as exact UTC
+millisecond timestamps, with an exclusive end. For a boundary in a daylight-saving
+gap use the next valid local instant; for a repeated boundary use its first
+occurrence. Resolve each boundary in the named timezone, never by subtracting a
+fixed UTC offset. Date-only comparisons use `today`; timed comparisons use the
+interval without changing source values. Refresh at the policy boundary and on
+resume. Never persist this runtime clock.
 Absent or invalid calendar context rejects execution instead of broadening it.
 
 Sort `mode: "options"` uses catalog option order. Multi-selects use the

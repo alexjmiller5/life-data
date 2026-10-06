@@ -89,9 +89,13 @@ CLI.
   No coverage, count or snapshot guarantee follows from browsing; usage caps
   still apply and core never retries. The bridge contract owns both operations.
 - `core/src/view.ts` compiles bounded AND/OR groups, runtime Today operands and
-  option-rank sorting. Version 2 saved definitions retain timezone and groups;
-  hosts supply the local day bounds on each query, never persist the calendar,
-  and refresh on midnight/resume. Multi-select order uses the first selected
+  option-rank sorting. Version 2 saved definitions retain timezone, groups and
+  optional `dayStartMinutes` (integer 0..1439, absent means midnight). Hosts
+  supply consecutive local policy boundaries on each query, never persist the
+  calendar, and refresh at the boundary/resume. Resolve a DST gap to the next
+  valid local instant and a repeated boundary to its first occurrence. The
+  date label belongs to the interval's start; source timestamps stay intact.
+  Multi-select order uses the first selected
   option; unknown/empty values trail known ones. Version 1 remains supported.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest

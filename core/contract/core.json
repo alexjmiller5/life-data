@@ -1049,6 +1049,10 @@
         "timeZone": {
           "type": "string"
         },
+        "dayStartMinutes": {
+          "type": "integer",
+          "description": "Version 2 host calendar policy: integer minutes after local midnight, 0 through 1439. Omitted means 0. Applied with timeZone to runtime CalendarContext, never persisted as resolved timestamps."
+        },
         "actions": {
           "type": "array",
           "items": {
