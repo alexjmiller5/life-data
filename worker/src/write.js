@@ -147,11 +147,9 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   const approval = key + '_approved',numbers=key+'_numbers';
   // Large unchanged stored text must not be expanded into an oversized JSON
   // approval value by a sparse write. Native cells also preserve exact REALs.
-  const nativeValues=[...new Set(expected.flatMap(row=>{
-    const large=byteLength(JSON.stringify(row))>JSON_BYTES;
-    return Object.entries(row).filter(([c,v])=>!['id','updated_at','hub_at'].includes(c)
-      && (typeof v==='number' && !Number.isSafeInteger(v) || large && typeof v==='string')).map(([,v])=>v);
-  }))];
+  const nativeValues=[...new Set(expected.flatMap(row=>Object.entries(row)
+    .filter(([c,v])=>!['id','updated_at','hub_at'].includes(c) && typeof v==='number' && !Number.isSafeInteger(v))
+    .map(([,v])=>v)))];
   const nativeIndex=new Map(nativeValues.map((n,i)=>[n,i]));
   if (expected.length) {
     const approved=expected.map(({hub_at,...row},i)=>({
@@ -159,6 +157,15 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
       row:Object.fromEntries(Object.entries(row).map(([c,v])=>[c,!['id','updated_at'].includes(c) && nativeIndex.has(v)?{native:nativeIndex.get(v)}:v])),
       touched:transitions[i]?.touched ?? Object.keys(row),
     }));
+    for(const envelope of approved){
+      // Size exactly what jsonChunks stores, including native-number markers,
+      // touched fields and the enclosing array. Raw row size omits that cost.
+      if(byteLength(JSON.stringify([envelope]))<=JSON_BYTES)continue;
+      for(const [c,v] of Object.entries(envelope.row))if(!['id','updated_at'].includes(c) && typeof v==='string'){
+        if(!nativeIndex.has(v)){nativeIndex.set(v,nativeValues.length);nativeValues.push(v);}
+        envelope.row[c]={native:nativeIndex.get(v)};
+      }
+    }
     const chunks=jsonChunks(approved);
     if(!chunks)throw new Error('life_write_budget');
     begin.push(db.prepare(`CREATE TABLE ${qident(approval)} AS SELECT value FROM json_each(?)`).bind(chunks[0]));

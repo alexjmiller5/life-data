@@ -68,6 +68,21 @@ test('HTTP sparse tombstone preserves a stored cell whose JSON encoding exceeds 
   } finally {await db.close();}
 });
 
+for(const [envelopeBytes,noteLength] of [[262143,261990],[262144,261991],[262145,261992],[262183,262030]])
+test(`HTTP sparse tombstone accepts a ${envelopeBytes}-byte approval envelope`,async()=>{
+  const db=new LimitedD1(),note='x'.repeat(noteLength);
+  try {
+    // Includes the row wrapper, touched fields and surrounding array brackets.
+    expect(bytes([{row:{id:'r',note,updated_at:stamp,deleted_at:stamp},touched:['id','updated_at','deleted_at']}])).toBe(envelopeBytes);
+    const push=await fixture(db,note),response=await push(tombstone());
+    expect(await response.json()).toMatchObject({upserted:1,rejected:[]});
+    expect(response.status).toBe(200);
+    expect(await db.prepare('SELECT note,updated_at,deleted_at FROM items').first()).toEqual({note,updated_at:stamp,deleted_at:stamp});
+    expect((await db.prepare('SELECT id FROM history').all()).results).toEqual([{id:'original'}]);
+    expect((await db.prepare("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).results).toEqual([]);
+  } finally {await db.close();}
+});
+
 test('large native approval cells still enforce touched dynamic options',async()=>{
   const db=new LimitedD1();
   try {
