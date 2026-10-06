@@ -7,6 +7,7 @@
 // knows how the caller was authenticated.
 
 import { pushChecked, queryBudget } from "./write.js";
+import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
 import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
@@ -98,7 +99,7 @@ async function resolveTenant(request, env, ctx) {
       .bind(hash)
       .run()
   );
-  const governance=row.enrollment_profile ? null : await readGovernanceAuthority(env.AUTH_DB,hash);
+  const governance=row.enrollment_profile || hasCreationScope(row.scopes.split(",")) ? null : await readGovernanceAuthority(env.AUTH_DB,hash);
   const enrollmentProfile=row.enrollment_profile ? {id:row.enrollment_profile,revision:row.enrollment_revision} : null;
   return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance, enrollmentProfile };
 }
@@ -163,14 +164,20 @@ function allowed(pathname, method, scopes) {
 }
 
 const TOKEN_ROUTES = {
-  "/v1/tokens/create": async (body, tenant) => {
+  "/v1/tokens/create": async (body, tenant, env) => {
+    const scopes=typeof body.scopes==='string'?body.scopes.split(','):['full'];
+    const creation=hasCreationScope(scopes);
+    if(creation){
+      const valid=new Set((await creationPolicies(env)).map(creationGrant));
+      if(scopes.some(s=>s.startsWith('rows:create:')&&!valid.has(s)))return json({error:'invalid creation policy'},400);
+    }
     const value =
       "lt_" + [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
     await ensureAuthReady(tenant.authDb);
     const hash=await hashToken(value);
     await tenant.authDb.batch([
       tenant.authDb.prepare("INSERT INTO _tokens (hash, name, scopes) VALUES (?, ?, ?)").bind(hash,body.name,body.scopes || 'full'),
-      authorityStatement(tenant.authDb,hash,'agent'),
+      ...(creation?[]:[authorityStatement(tenant.authDb,hash,'agent')]),
     ]);
     return { name: body.name, scopes: body.scopes || "full", token: value }; // value shown ONCE
   },
@@ -509,6 +516,8 @@ const json = (obj, status = 200) =>
 async function handleSession(request, tenant, env) {
   if (request.method === "GET") {
     const capabilities=sessionCapabilities(tenant.scopes);
+    const rowCreation=await creationCapability(env,tenant.scopes);
+    if(rowCreation)capabilities.rowCreation=rowCreation;
     if(governanceConfiguration(env) && tenant.governance && (tenant.governance.propose||tenant.governance.approve)){
       capabilities.governance={protocol:'selected-inverse-proposals-v1',principal:tenant.governance.actor,
         deploymentId:env.GOVERNANCE_DEPLOYMENT_ID,sessionId:tenant.governance.actor.principalId,
@@ -820,6 +829,7 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
+  if (url.pathname === "/v1/rows/create") return handleCreation(request,tenant,env);
   if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
     return json(scopedReplicaUnsupported, 403);
@@ -864,7 +874,8 @@ async function handle(request, env, ctx, url) {
     if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
       const route = TOKEN_ROUTES[url.pathname];
       if (!route) return json({ error: "not found" }, 404);
-      return json(await route(await request.json(), tenant));
+      const out=await route(await request.json(), tenant, env);
+      return out instanceof Response?out:json(out);
     }
     if (url.pathname === "/v1/archive/query" && request.method === "POST") {
       // proxy to R2 SQL with the hub's own service credential, so clients

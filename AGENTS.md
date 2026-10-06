@@ -94,6 +94,11 @@ CLI.
   authenticated approval authority remains in the separate auth store.
   Preview performs a rollback-only validation probe and never initializes,
   meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/write.js` exposes `prepareChecked` for trusted service composition.
+  It prepares table approval/history setup, mutations and cleanup without running
+  a batch. All shared read guards must execute before every plan setup, and all
+  participating plans must commit in one batch. `commitChecked` remains the
+  ordinary single-table interface. Preparation alone grants no consumer writer.
 - `worker/src/governance-store.js` inserts terminal receipts in the same batch
   as mutation. Unique key exclusion also makes negative settlement durable.
   Replays reauthorize current disclosure before returning the original result,
@@ -571,6 +576,19 @@ so a concurrent marker also prevents commit. Narrow writes preserve all markers
 and skip broad post-commit purge recovery. Validation errors are generic; internal references
 are still checked server-side. The exact timestamp trigger is trusted by its SQL,
 not its name. Broad callers retain their existing behavior.
+
+`worker/src/creation.js` owns policy-bound `POST /v1/rows/create`. Service-owned
+`ROW_CREATION_POLICIES` selects immutable app namespace, source identity shape,
+target initializer columns and origin semantics; no consumer-specific values
+belong in source. Only `rows:create:<policy-id>:<revision>` authorizes this
+route, including for operator callers. Session capability `atomic-origin-v1`
+is advertised only for current grants. New target and origin use two existing
+checked writer plans in one transaction. Existing or tombstoned targets remain
+unchanged; missing adopted targets fail closed. Creation grants confer no
+governance authority. `scopedOrigin` is an internal, bounded provenance dependency
+validator, never a general provenance grant. The canonical contract and limits
+are in `docs/superpowers/specs/2026-10-06-create-only-origin.md`; portable consumer
+types and strict checks export from `life-core/creation`.
 
 `authenticate` in `worker/src/index.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
