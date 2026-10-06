@@ -681,6 +681,12 @@ mutation, including derivations and hard deletion. Timestamp/noop/stale/rejected
 writes create no event. Paused subscriptions keep recording; retired ones stop.
 Capacity and per-event size failures roll back the source mutation. Canonical
 shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
+Selected columns support TEXT, INTEGER and REAL, preserving numeric JSON values.
+Per-source `lifecycle: true` records live insertion/deletion/restoration even with
+empty changes; restoration is `restore`. Default subscriptions retain value-only
+events and `update` on restore. Stored trigger sources carry version 2; missing
+version regenerates the original SQL exactly. Never reinterpret persisted trigger
+definitions. `subscription_features: scalar-lifecycle-v1` advertises the extension.
 Activation rejects custom source/outbox triggers; only complete canonical timestamp
 statements (quoted or unquoted CLI identifiers) and exact generated recording
 triggers are supported. Timestamp revisions use the same

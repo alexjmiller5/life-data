@@ -1825,6 +1825,12 @@
           "enum": [
             "revision-v1"
           ]
+        },
+        "subscription_features": {
+          "type": "string",
+          "enum": [
+            "scalar-lifecycle-v1"
+          ]
         }
       },
       "required": [

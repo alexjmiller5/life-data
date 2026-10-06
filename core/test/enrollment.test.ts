@@ -128,7 +128,7 @@ test('real Worker approval/session/logout match core and late approval remains p
     });
     expect(approved.status).toBe(200);
     const reply = await requestSession('GET');
-    expect(reply.data).toEqual({ name: `device:${hash}`, scopes: ['full'], capabilities: { row_api: 'v1', schema: 'full-ddl-v1', replica_sync: true, subscriptions: 'durable-pull-v1', conditional_patch: 'revision-v1', files: 'opaque-key-v1' } });
+    expect(reply.data).toEqual({ name: `device:${hash}`, scopes: ['full'], capabilities: { row_api: 'v1', schema: 'full-ddl-v1', replica_sync: true, subscriptions: 'durable-pull-v1', conditional_patch: 'revision-v1', subscription_features: 'scalar-lifecycle-v1', files: 'opaque-key-v1' } });
     expect(core.enrollmentPollResult(reply, hash)).toMatchObject({ state: 'approved', session: { replica: { allowed: true, reason: null } } });
     const admin = await requestSession('GET', 'operator-fixture');
     expect(() => core.validateDeviceSession(admin.data)).toThrow(/admin tokens/);

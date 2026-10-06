@@ -125,7 +125,7 @@ test("approval registers a full device token and session validates it", async ()
   expect(await session.json()).toEqual({
     name: `device:${fingerprint}`,
     scopes: ["full"],
-    capabilities: { row_api: 'v1', conditional_patch: 'revision-v1', schema: 'full-ddl-v1', replica_sync: true, subscriptions: 'durable-pull-v1', files: 'opaque-key-v1' },
+    capabilities: { row_api: 'v1', conditional_patch: 'revision-v1', subscription_features: 'scalar-lifecycle-v1', schema: 'full-ddl-v1', replica_sync: true, subscriptions: 'durable-pull-v1', files: 'opaque-key-v1' },
   });
 });
 

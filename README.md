@@ -364,6 +364,28 @@ and references use bulk reads/upserts and transaction-scoped triggers.
 D1 statement/text budgets fail closed with per-row rejections; retry those rows
 in smaller batches. No partial history remains after a failed transaction.
 
+### Durable change subscriptions
+
+`POST /v1/subscriptions` accepts `{label, start: "now", sources}`. Each
+source names a table and a list of scalar TEXT, INTEGER or REAL columns.
+Numeric changes preserve JSON numbers, including checkbox values `0` and `1`.
+Add `lifecycle: true` to a source to record live row insertion, deletion and
+restoration even when all watched values are null. Such events may have an
+empty `changes` array; restoration uses operation `restore`. Without this
+option, only watched value changes emit events and restoration retains the
+legacy `update` operation. Timestamp-only edits and physical cleanup of an
+already deleted row emit no event.
+
+The optional session capability `subscription_features: "scalar-lifecycle-v1"`
+advertises these semantics alongside the `durable-pull-v1` delivery protocol.
+Poll `GET /v1/subscriptions/<id>/events?wait=30`, then acknowledge its durable
+delivery with `POST /v1/subscriptions/<id>/ack` and `{delivery_id}` only after
+retaining recoverable work. Consumers require `subscriptions:consume:<id>`
+plus read grants for every source. A delivery repeats until acknowledged;
+polling does not move the cursor. Capacity failures roll back the source
+mutation. Source definitions are immutable; retire a subscription to replace
+them. Existing subscriptions retain their exact stored trigger semantics.
+
 ### Files
 
 `PUT /v1/files/<key>` stores a binary body with its `Content-Type`.
