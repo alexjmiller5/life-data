@@ -149,10 +149,14 @@ incremental; an interrupted or rejected recovery retries. This can take longer
 than an ordinary sync on a large replica. It does not delete history or rebuild
 rows from guesses. A detected local clock rollback also forces a full push.
 
-`updated_at` remains the conflict revision and the local change-discovery field.
-When importing historical records, keep the historical date in `created_at` or
-a domain field and let `updated_at` use the current write time. Arbitrarily
-backdated revisions can fall behind the checkpoint; equal revisions of the
+`updated_at` remains the conflict revision. Python CLI writes also record local
+dirty identities in the same transaction, so an import carrying an old
+`updated_at` reaches the hub without rewriting its source timestamp. Sync keeps
+those identities until the frozen changes are acknowledged; an interrupted or
+rejected round and edits made during network requests remain pending. Pulled
+rows do not enter this local queue. Timestamp scanning remains a compatibility
+fallback for other writers, which must maintain current revisions. A historical
+revision still cannot overwrite a newer hub row, and equal revisions of the
 same row do not overwrite one another.
 
 `config.json` in the data directory provides optional installation defaults:

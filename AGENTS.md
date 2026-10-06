@@ -26,6 +26,9 @@ CLI.
 - `src/life_data/catalog.py` - the catalog engine: typed properties, rules,
   derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
   connection.
+- `src/life_data/changes.py` - Python's local dirty-identity receipts. Temporary
+  triggers exist only on supported local writer connections; no tracking trigger
+  or receipt schema is logged or shipped to the hub or shared core.
 - `worker/src/main.js` - the deployed entry: `worker/src/index.js` wrapped
   by `worker/src/usage.js` (usage meter, hard cap, notification feed).
 - `worker/src/index.js` - the hub service; `worker/src/auth.js` owns the
@@ -363,11 +366,13 @@ lock; native credential access and network work never run under that lock.
 
 **The two cursors measure different clocks.** `last_push` is the local clock
 captured under BEGIN IMMEDIATE with push candidates and original history. The
-candidate boundary is inclusive (`updated_at >= last_push`); remote row timestamps
+candidate boundary is inclusive (`updated_at >= last_push`), supplemented by
+the local `_sync_dirty` identities; remote row timestamps
 never choose this checkpoint. Release the SQLite writer reservation before any
 network work. Older checkpoint versions receive one full reconciliation, recorded
 only after success; a detected clock rollback forces a full push. Explicitly
-backdated imports and equal revisions of one row retain the documented LWW limits. `last_pull` is **`hub_at`, the
+backdated imports are discovered through transactional dirty receipts. Equal
+revisions and conflicts with newer hub revisions retain LWW semantics. `last_pull` is **`hub_at`, the
 arrival time the HUB stamps on its own clock** - a nullable TEXT column on
 every synced table, added by `create_table` and backfilled into existing
 tables by `ensure_hub_at`. That migration is logged DDL, so it replays to the
@@ -390,8 +395,20 @@ the whole table. The database clock is evaluated in the committing batch, includ
 imported history arrivals; do not bind a pretransaction timestamp. Under a
 nondecreasing hub clock, committed arrival order follows this clock: a replica that
 pushes an edit stamped older than another replica's cursor still gets a fresh
-`hub_at` and reaches everyone. `updated_at` decides row conflicts and local push discovery; `hub_at` decides
+`hub_at` and reaches everyone. `updated_at` decides row conflicts; `hub_at` decides
 remote arrival discovery.
+
+Python local writes install connection-local INSERT/UPDATE triggers on syncable
+tables, including uncataloged tables and catalog metadata. `_sync_dirty` retains
+one identity per table/row with an increasing sequence, never row payloads.
+Snapshots capture a sequence boundary under BEGIN IMMEDIATE. The successful
+final checkpoint transaction clears only receipts at or before that boundary;
+failure/rejection retains them and later writes survive an older acknowledgment.
+Pulls and LocalHub writes do not install these triggers. Local and replayed
+table renames carry dirty identities to the new table. Checkpoint version 3
+performs one full reconciliation to recover imports missed before tracking.
+TypeScript `_core_pending` remains that client's separate receipt mechanism;
+direct external writers retain the timestamp compatibility contract.
 
 **The hub owns a `hub_at` index per user table** (`<table>_hub_at`, unlogged
 like the engine indexes, ensured once per isolate on cursor/pull and again

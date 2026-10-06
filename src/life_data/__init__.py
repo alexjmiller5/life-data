@@ -39,7 +39,7 @@ PLUMBING_STMTS = [
 ]
 PLUMBING = ";\n".join(PLUMBING_STMTS) + ";"
 
-from life_data import catalog
+from life_data import catalog, changes
 
 # --- local database ----------------------------------------------------------
 
@@ -242,6 +242,7 @@ def rename_table(path: Path, old: str, new: str) -> None:
             conn.execute(stmt)
             conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (stmt,))
         catalog.rename_refs(conn, old, new)
+        changes.rename(conn, old, new)
 
     catalog.write(path, run, ddl=True)
 
@@ -512,6 +513,7 @@ def purge(path: Path, table: str, row_id: str, cols: list[str] | None = None) ->
     written = 0
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        changes.track(conn)
         now = conn.execute(f"SELECT {NOW}").fetchone()[0]
         for col in cols or [None]:
             mid = json.dumps([table, row_id, col])
@@ -1109,11 +1111,13 @@ def _columns(path: Path, table: str) -> list[str]:
 
 def _apply_local_ddl(path: Path, entry: dict) -> None:
     with connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(entry["ddl"])
         except sqlite3.Error as exc:
             if not _already_applied(exc, entry["ddl"]):
                 raise
+        changes.replay_rename(conn, entry["ddl"])
         conn.execute(
             "INSERT INTO _schema_log (applied_at, ddl) VALUES (?, ?)",
             (entry["applied_at"], entry["ddl"]),
@@ -1184,7 +1188,7 @@ def _sync_locked(path: Path, hub) -> dict:
     # Old checkpoints could miss equal revisions, inherit a remote future
     # timestamp, or consume a precommit hub arrival. Repair both directions
     # once, even when that poisoned timestamp is no longer in the future.
-    repair = _get_state(path, "checkpoint_version") != "2"
+    repair = _get_state(path, "checkpoint_version") != "3"
     last_pull = _get_state(path, "last_pull")
     last_push = _get_state(path, "last_push")
     announce_repair = repair and bool(last_pull or last_push)
@@ -1220,6 +1224,10 @@ def _sync_locked(path: Path, hub) -> dict:
     # ahead. Release the writer reservation before any network work.
     with connect(path) as snapshot:
         snapshot.execute("BEGIN IMMEDIATE")
+        changes.ensure(snapshot)
+        dirty_cursor = snapshot.execute("SELECT coalesce(max(seq),0) FROM _sync_dirty").fetchone()[
+            0
+        ]
         # DDL is a writer too. A table created since schema replay must be
         # included (or fail the round for schema retry), never checkpointed past.
         tables = _user_tables(path, snapshot)
@@ -1244,19 +1252,12 @@ def _sync_locked(path: Path, hub) -> dict:
             candidates[table] = [
                 dict(r)
                 for r in snapshot.execute(
-                    f"SELECT * FROM {qi(table)} WHERE updated_at >= ?", (last_push,)
+                    f"SELECT * FROM {qi(table)} WHERE updated_at >= ? OR id IN "
+                    "(SELECT row_id FROM _sync_dirty WHERE tbl=?)",
+                    (last_push, table),
                 )
             ]
-        pending_history = (
-            [
-                dict(r)
-                for r in snapshot.execute(
-                    "SELECT * FROM history WHERE updated_at >= ?", (last_push,)
-                )
-            ]
-            if "history" in tables
-            else []
-        )
+        pending_history = candidates.get("history", [])
     withheld = set()
     # Purge markers travel first, so this replica deletes what they cover
     # before it can push a stale copy back.
@@ -1307,10 +1308,14 @@ def _sync_locked(path: Path, hub) -> dict:
 
     state = {"last_pull": pull_cursor}
     if not rejected:
-        state.update(last_push=push_cursor, checkpoint_version="2")
+        state.update(last_push=push_cursor, checkpoint_version="3")
         if isinstance(hub, HttpHub):
             state["hub_url"] = hub.base
     with connect(path) as conn:
+        if not rejected:
+            # Only acknowledge the frozen generation. Writes made while the
+            # network was in flight have larger sequences, even with old stamps.
+            conn.execute("DELETE FROM _sync_dirty WHERE seq<=?", (dirty_cursor,))
         conn.executemany(
             "INSERT INTO _sync_state (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

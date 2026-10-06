@@ -45,6 +45,222 @@ def ids(hub):
     return {r["id"] for r in hub.rows_pull("items", ["id"], "")}
 
 
+def test_raw_nonsyncable_table_does_not_block_supported_writes(estate):
+    path, _ = estate
+    life.execute_sql(path, 'CREATE TABLE "raw-table" (value TEXT)')
+    life.insert_rows(path, "items", [{"id": "after-raw"}])
+    life.execute_sql(path, 'DROP TABLE "raw-table"')
+    assert life.execute_sql(path, "SELECT id FROM items") == [{"id": "after-raw"}]
+
+
+def test_virtual_table_does_not_block_supported_writes(estate):
+    path, _ = estate
+    life.execute_sql(path, "CREATE VIRTUAL TABLE lookup USING fts5(id, updated_at)")
+    life.insert_rows(path, "items", [{"id": "after-virtual"}])
+    life.execute_sql(path, "DROP TABLE lookup")
+    assert life.execute_sql(path, "SELECT id FROM items") == [{"id": "after-virtual"}]
+
+
+def test_purge_during_temporary_clock_rollback_still_reaches_hub(estate, clock):
+    path, hub = estate
+    life.insert_rows(path, "items", [{"id": "purged"}])
+    clock[0] = T2
+    life.sync(path, hub)
+    clock[0] = T1
+    life.purge(path, "items", "purged")
+    clock[0] = "2026-01-01T00:00:03.000Z"
+    assert not life.sync(path, hub)["rejected"]
+    assert "purged" not in ids(hub)
+    assert hub.rows_pull("purges", ["tbl", "row_id"], "") == [{"tbl": "items", "row_id": "purged"}]
+
+
+@pytest.mark.parametrize("writer", ["insert", "sql"])
+def test_backdated_new_rows_are_local_changes(estate, clock, writer):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    if writer == "insert":
+        life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    else:
+        life.execute_sql(path, f"INSERT INTO items (id,updated_at) VALUES ('old','{T0}')")
+    assert not life.sync(life.init(path), hub)["rejected"]
+    assert "old" in ids(hub)
+    assert hub.rows_pull("items", ["updated_at"], "")[0]["updated_at"] == T0
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "reject"])
+def test_backdated_changes_retry_after_failure(estate, clock, monkeypatch, failure):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    original = hub.rows_push
+
+    def failing(table, cols, rows, **kwargs):
+        if table == "items":
+            if failure == "interrupt":
+                raise OSError("synthetic interruption")
+            return {"upserted": 0, "rejected": [{"id": "old", "rule": "retry"}]}
+        return original(table, cols, rows, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(hub, "rows_push", failing)
+        if failure == "interrupt":
+            with pytest.raises(OSError, match="synthetic"):
+                life.sync(path, hub)
+        else:
+            assert life.sync(path, hub)["rejected"]
+    assert not life.sync(life.init(path), hub)["rejected"]
+    assert "old" in ids(hub)
+
+
+def test_backdated_edit_during_push_survives_old_receipt(estate, clock, monkeypatch):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    life.insert_rows(path, "items", [{"id": "old", "name": "first", "updated_at": T0}])
+    original = hub.rows_push
+
+    def pushing(table, cols, rows, **kwargs):
+        if table == "items":
+            life.execute_sql(
+                path, f"UPDATE items SET name='second', updated_at='{T1}' WHERE id='old'"
+            )
+        return original(table, cols, rows, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(hub, "rows_push", pushing)
+        assert not life.sync(path, hub)["rejected"]
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("items", ["id", "name", "updated_at"], "") == [
+        {"id": "old", "name": "second", "updated_at": T1}
+    ]
+
+
+def test_backdated_changes_follow_table_rename(estate, clock):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    life.rename_table(path, "items", "renamed")
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("renamed", ["id"], "") == [{"id": "old"}]
+
+
+def test_backdated_changes_follow_remote_table_rename(estate, clock):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    hub.schema_push([{"applied_at": T2, "ddl": 'ALTER TABLE "items" RENAME TO "renamed"'}])
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("renamed", ["id"], "") == [{"id": "old"}]
+
+
+def test_rename_reusing_dropped_table_merges_dirty_receipts(estate, clock):
+    path, hub = estate
+    for table in ("first", "second"):
+        life.execute_sql(
+            path,
+            f"CREATE TABLE {table} (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)",
+        )
+    clock[0] = T2
+    life.sync(path, hub)
+    for table in ("first", "second"):
+        life.insert_rows(path, table, [{"id": "same", "updated_at": T0}])
+    before = life.execute_sql(path, "SELECT max(seq) AS seq FROM _sync_dirty")[0]["seq"]
+    life.execute_sql(path, "DROP TABLE second")
+    life.rename_table(path, "first", "second")
+    assert (
+        life.execute_sql(path, "SELECT seq FROM _sync_dirty WHERE tbl='second' AND row_id='same'")[
+            0
+        ]["seq"]
+        > before
+    )
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("second", ["id", "updated_at"], "") == [{"id": "same", "updated_at": T0}]
+
+
+def test_backdated_conflict_keeps_newer_hub_value(estate, clock):
+    path, hub = estate
+    row = {"id": "same", "name": "newer", "updated_at": T1}
+    hub.rows_push("items", list(row), [row])
+    clock[0] = T2
+    life.sync(path, hub)
+    life.execute_sql(path, f"UPDATE items SET name='older', updated_at='{T0}' WHERE id='same'")
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("items", ["name", "updated_at"], "") == [
+        {"name": "newer", "updated_at": T1}
+    ]
+
+
+def test_ignore_upsert_and_delete_preserve_dirty_generation(estate, clock, monkeypatch):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    life.execute_sql(
+        path, f"INSERT OR IGNORE INTO items (id,name,updated_at) VALUES ('old','first','{T0}')"
+    )
+    original = hub.rows_push
+
+    def pushing(table, cols, rows, **kwargs):
+        if table == "items":
+            life.execute_sql(
+                path,
+                f"UPDATE OR IGNORE items SET deleted_at='{T1}', updated_at='{T1}' WHERE id='old'",
+            )
+        return original(table, cols, rows, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(hub, "rows_push", pushing)
+        life.sync(path, hub)
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("items", ["deleted_at"], "") == [{"deleted_at": T1}]
+
+
+def test_backdated_changes_on_uncataloged_table(estate, clock):
+    path, hub = estate
+    life.execute_sql(path, "CREATE TABLE raw (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)")
+    clock[0] = T2
+    life.sync(path, hub)
+    life.execute_sql(path, f"INSERT INTO raw VALUES ('old','{T0}',NULL)")
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.rows_pull("raw", ["id"], "") == [{"id": "old"}]
+
+
+def test_rollback_and_remote_pulls_do_not_queue_local_changes(estate, clock):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    life.catalog.set_property(path, "items", "name", required=1)
+    life.sync(path, hub)
+    with pytest.raises(life.catalog.ValidationError):
+        life.insert_rows(path, "items", [{"id": "bad", "updated_at": T0}])
+    assert life.execute_sql(path, "SELECT * FROM _sync_dirty") == []
+    row = {"id": "remote", "name": "value", "updated_at": T0}
+    hub.rows_push("items", list(row), [row])
+    clock[0] = "2026-01-01T00:00:03.000Z"
+    assert not life.sync(path, hub)["rejected"]
+    assert life.execute_sql(path, "SELECT * FROM _sync_dirty") == []
+    assert life.sync(path, hub)["pushed"] == 0
+    assert not life.execute_sql(
+        path, "SELECT * FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_dirty_%'"
+    )
+    assert not life.execute_sql(path, "SELECT * FROM _schema_log WHERE ddl LIKE '%_sync_dirty%'")
+
+
+def test_checkpoint_upgrade_recovers_preexisting_backdated_import(estate, clock):
+    path, hub = estate
+    clock[0] = T2
+    life.sync(path, hub)
+    # Simulate an older writer and a persisted v2 checkpoint.
+    with life.connect(path) as conn:
+        conn.execute(f"INSERT INTO items (id,updated_at) VALUES ('old','{T0}')")
+        conn.execute("UPDATE _sync_state SET value='2' WHERE key='checkpoint_version'")
+    assert not life.sync(path, hub)["rejected"]
+    assert "old" in ids(hub)
+
+
 @pytest.mark.parametrize("deleted", [None, T0])
 def test_equal_checkpoint_insert_is_not_lost(estate, clock, deleted):
     path, hub = estate
@@ -360,7 +576,7 @@ def test_observed_clock_rollback_recovers_even_if_clock_catches_up_before_retry(
     path, hub = estate
     clock[0] = T2
     life.sync(path, hub)
-    assert state(path)["checkpoint_version"] == "2"
+    assert state(path)["checkpoint_version"] == "3"
     clock[0] = T1  # A normal supported insert while the wall clock is behind.
     life.insert_rows(path, "items", [{"id": "rollback", "name": "value"}])
     original = hub.rows_push
@@ -383,11 +599,11 @@ def test_observed_clock_rollback_recovers_even_if_clock_catches_up_before_retry(
             assert bool(out["rejected"]) == bool(failure)
     if failure:
         assert state(path)["last_push"] == T2
-        assert state(path).get("checkpoint_version") != "2"
+        assert state(path).get("checkpoint_version") != "3"
         clock[0] = T2
         assert not life.sync(path, hub)["rejected"]
     assert "rollback" in ids(hub)
-    assert state(path)["checkpoint_version"] == "2"
+    assert state(path)["checkpoint_version"] == "3"
 
 
 class Counting(life.LocalHub):
