@@ -204,6 +204,15 @@ origins can read API responses; the `/login` pages never answer CORS.
 
 Point clients at it with `hub_url`, and you own the whole loop.
 
+Services that only initialize deterministic rows can use the optional
+[create-only origin contract](docs/superpowers/specs/2026-10-06-create-only-origin.md).
+The operator configures `ROW_CREATION_POLICIES` in Worker secret storage and mints
+a dedicated credential with the exact policy revision grant through the token
+API. Policy configuration and consumer credentials are separate from native
+reader enrollment. With no configured policy/grant, the session advertises no
+creation capability. Clients hold only the endpoint, their own credential and
+the expected public policy receipt, never the server policy or provider facts.
+
 ### Backups
 
 The hub's daily cron dumps the database to R2 as gzipped SQL, writing into

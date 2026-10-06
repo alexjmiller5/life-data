@@ -120,6 +120,15 @@ precondition(capability.deploymentId == "deployment" && capability.sessionId == 
 let decoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capability)) as! NSDictionary
 let expected = try JSONSerialization.jsonObject(with: input) as! NSDictionary
 precondition(decoded == expected)
+let integer = try JSONDecoder().decode(CoreCreationOccurrenceKey.self, from: Data("2030".utf8))
+guard case .integer(2030) = integer else { fatalError("integer occurrence changed kind") }
+let encodedInteger = try JSONEncoder().encode(integer)
+precondition(String(data: encodedInteger, encoding: .utf8) == "2030")
+let string = try JSONDecoder().decode(CoreCreationOccurrenceKey.self, from: Data(#"\"2030\""#.utf8))
+guard case .string("2030") = string else { fatalError("string occurrence changed kind") }
+precondition((try? JSONDecoder().decode(CoreCreationOccurrenceKey.self, from: Data("1.5".utf8))) == nil)
+precondition((try? JSONDecoder().decode(CoreCreationOccurrenceKey.self, from: Data("9007199254740992".utf8))) == nil)
+precondition((try? JSONEncoder().encode(CoreCreationOccurrenceKey.integer(9_007_199_254_740_992))) == nil)
 `);
     const build=Bun.spawn(['swiftc',source,main,'-o',executable],{stdout:'pipe',stderr:'pipe'});
     const errors=await new Response(build.stderr).text();
@@ -127,3 +136,12 @@ precondition(decoded == expected)
     expect(await Bun.spawn([executable],{stdout:'pipe',stderr:'pipe'}).exited).toBe(0);
   }finally{await rm(temp,{recursive:true,force:true});}
 },30000);
+
+test('integer occurrence unions preserve numeric identity and enforce safe integer bounds',()=>{
+  const {swift,typescript}=generateContract(contract);
+  expect(typescript).toContain('export type CreationOccurrenceKey = string | number;');
+  expect(swift).toContain('public enum CoreCreationOccurrenceKey:');
+  expect(swift).toContain('case integer(Int)');
+  expect(swift).toContain('if let value = try? container.decode(Int.self) { try CoreContract.checkInteger(value); self = .integer(value); return }');
+  expect(swift).toContain('case .integer(let value): try CoreContract.checkInteger(value); try container.encode(value)');
+});

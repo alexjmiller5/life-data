@@ -1,6 +1,7 @@
 # Create-only rows with an atomic origin
 
-Status: proposed canonical service contract. Not implemented or advertised.
+Status: implemented source contract. A deployment advertises it only for an
+exact configured policy grant; source availability alone is not consumer readiness.
 
 ## Required behavior
 
@@ -122,7 +123,7 @@ relation, `asserted_by=namespace`, and no source attributes in detail. It is a
 fresh origin: a colliding existing or tombstoned edge rejects the operation;
 it is never rewritten or silently adopted.
 
-Refactor the existing checked writer into preparation plus execution so the
+The existing checked writer separates preparation from execution so the
 target and origin validation/trigger plans can share exactly one D1 batch.
 All captured schema, policy, row, catalog and source reads are checked before
 mutations. Both rows' property/ref/options and invariant triggers remain active
@@ -159,11 +160,22 @@ must remain transactional. Existing rows produce no new row/history/origin event
    review. No credential/config activation until a separately verified consumer
    handoff with source, deployed capability and exact grant receipts.
 
-Remaining engineering boundary: the existing narrow table validator correctly
-rejects dynamic provenance options and its cross-table evidence rule. The new
-route must not relax that validator. Before implementation, specify a bounded
-internal origin dependency contract that admits the actual catalog lookup and
-rule shapes with guarded read sets, rejects side-effecting/unrecognized SQL and
-still enforces the whole provenance rule. Until that is implemented and tested,
-the policy stays unavailable. This is an engineering prerequisite, not an Alex
-product choice. No new service capability is added by the writer-plan extraction.
+The internal `scopedOrigin` boundary admits only the two complete catalog option
+queries pinned in `scopes.js`: active derivation names and ordinary table names.
+It additionally recognizes one fully anchored invariant shape: an active base
+row with a literal field value must have a matching active provenance edge with
+a literal relation. The base table and columns must independently pass narrow
+read eligibility. The invariant still runs against the complete transaction;
+preexisting and concurrent missing evidence both reject the new creation.
+Unknown SQL, views, missing columns, physical foreign keys, arbitrary triggers
+and unsafe defaults remain unavailable. Ordinary table grants still cannot
+write provenance. All service-owned origin string columns require SQLite TEXT
+affinity, and validated values must equal the constructed values exactly.
+
+`life-core/creation` exports the generated request/receipt types and pure
+`validateCreationSession` / `validateCreationReceipt` checks. Hosts own HTTP,
+credential storage and retry state. The session check requires the one exact
+configured creation grant plus explicitly expected column-read grants, rejects
+governance authority and broader grants, and matches the policy revision.
+Receipt validation rejects mismatched targets, revisions, malformed origin IDs
+and incompatible result variants. A null result is not proof of non-commit.

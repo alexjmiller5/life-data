@@ -577,6 +577,19 @@ and skip broad post-commit purge recovery. Validation errors are generic; intern
 are still checked server-side. The exact timestamp trigger is trusted by its SQL,
 not its name. Broad callers retain their existing behavior.
 
+`worker/src/creation.js` owns policy-bound `POST /v1/rows/create`. Service-owned
+`ROW_CREATION_POLICIES` selects immutable app namespace, source identity shape,
+target initializer columns and origin semantics; no consumer-specific values
+belong in source. Only `rows:create:<policy-id>:<revision>` authorizes this
+route, including for operator callers. Session capability `atomic-origin-v1`
+is advertised only for current grants. New target and origin use two existing
+checked writer plans in one transaction. Existing or tombstoned targets remain
+unchanged; missing adopted targets fail closed. Creation grants confer no
+governance authority. `scopedOrigin` is an internal, bounded provenance dependency
+validator, never a general provenance grant. The canonical contract and limits
+are in `docs/superpowers/specs/2026-10-06-create-only-origin.md`; portable consumer
+types and strict checks export from `life-core/creation`.
+
 `authenticate` in `worker/src/index.js` is the auth seam. It accepts the
 operator `HUB_TOKEN` or a scoped token hashed in the separate `AUTH_DB`, and
 returns a tenant handle used by the routes. The data D1 cannot alter the auth

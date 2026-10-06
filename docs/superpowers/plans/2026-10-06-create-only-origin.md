@@ -27,8 +27,10 @@ consumer credential or personal schema is part of the source implementation.
 
 Observed RED: prepareChecked export absent. Focused GREEN after extraction:
 62 tests / 246 assertions across checked-group, insert and patch; all Worker
-regressions: 658 tests / 3242 assertions. The real HTTP creation acceptance draft
-is retained privately under .superpowers/red/creation-http.test.js; its initial
-RED was the absent creation service. It is not a passing product test or an
-implemented HTTP contract. Resolve the bounded origin dependency design before
-moving those cases into the runnable service suite.
+regressions at extraction: 658 tests / 3242 assertions. The real HTTP acceptance
+tests initially failed on the absent service and now run in
+`worker/test/creation.test.js`. Internal origin eligibility is separately tested
+in `worker/test/origin-scope.test.js`. Review regressions cover SQLite identifier
+aliases, origin affinity and malformed receipt framing. Eleven focused mutants
+cover authorization, deterministic identity, adopted absence, captured reads,
+atomic origin, purge/source protection and strict client receipt/readiness gates.

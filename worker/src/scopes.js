@@ -88,8 +88,29 @@ function scopedInvariant(rule, table, columns) {
   return !!match && match[1] === table && names.has(match[2]);
 }
 
-export async function scopedTable(view, table, write=false, rowIds=null) {
-  if (!ordinaryName(table)) deny();
+// Internal origin construction has no caller-supplied SQL or edge fields.
+// Admit only these complete metadata SELECT shapes; ordinary narrow writes
+// still reject all SQL options and cannot address provenance.
+const originOptions = new Map([
+  ['from_kind', "SELECT DISTINCT derived_by FROM catalog_properties WHERE derived_by IS NOT NULL AND deleted_at IS NULL"],
+  ['to_kind', "SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 1) != '_' AND name NOT LIKE 'catalog!_%' ESCAPE '!' AND name NOT LIKE 'sqlite%' AND name != 'provenance'"],
+]);
+const originEvidenceRule = new RegExp(`^SELECT p\\.id FROM ${ruleColumn} p WHERE p\\.deleted_at IS NULL AND p\\.${ruleColumn}=${ruleLiteral} AND NOT EXISTS \\(SELECT 1 FROM provenance v WHERE v\\.deleted_at IS NULL AND v\\.to_kind=(${ruleLiteral}) AND v\\.to_ref=p\\.id AND v\\.rel=${ruleLiteral}\\)(?![\\s\\S])`);
+async function originInvariant(view, rule) {
+  if (rule.scope !== 'table' || rule.tbl !== 'provenance' || rule.enforce !== 1) return false;
+  const match=typeof rule.sql === 'string' && originEvidenceRule.exec(rule.sql);
+  if (!match || match[3].slice(1,-1).replaceAll("''", "'") !== match[1]) return false;
+  const columns=await scopedTable(view,match[1]);
+  return ['id','deleted_at',match[2]].every(name=>columns.some(c=>c.name===name));
+}
+export function scopedOrigin(view,rowIds) {
+  return inspectTable(view,'provenance',true,rowIds,true);
+}
+export function scopedTable(view,table,write=false,rowIds=null) {
+  return inspectTable(view,table,write,rowIds,false);
+}
+async function inspectTable(view, table, write, rowIds, origin) {
+  if (!ordinaryName(table) && !(origin && table === 'provenance')) deny();
   if (write && (!Array.isArray(rowIds) || rowIds.some(id=>typeof id !== 'string' || !id.trim()))) deny();
   const schema=await view.prepare("SELECT name,type,sql FROM sqlite_master WHERE name=?").bind(table).first();
   if (!schema || schema.type !== 'table' || !/^CREATE\s+TABLE\b/i.test(schema.sql)) deny();
@@ -125,11 +146,11 @@ export async function scopedTable(view, table, write=false, rowIds=null) {
   if (foreignKeys.length) deny();
   if (!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_properties'").first()) deny();
   const {results:props}=await view.prepare('SELECT * FROM catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY id').bind(table).all();
-  if (!props.length || props.some(p=>p.options_sql || p.derived_by || String(p.default_value ?? '').startsWith('sql:'))) deny();
+  if (!props.length || props.some(p=>(p.options_sql && !(origin && originOptions.get(p.col) === p.options_sql)) || p.derived_by || String(p.default_value ?? '').startsWith('sql:'))) deny();
   for (const prop of props) if (prop.ref_table) await scopedTable(view,prop.ref_table);
   if (await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_rules'").first()) {
     const {results:rules}=await view.prepare("SELECT * FROM catalog_rules WHERE deleted_at IS NULL AND kind='invariant' AND enforce != 0 AND (tbl=? OR scope='estate') ORDER BY id").bind(table).all();
-    if (rules.some(rule => !scopedInvariant(rule,table,columns))) deny();
+    for (const rule of rules) if (!scopedInvariant(rule,table,columns) && !(origin && await originInvariant(view,rule))) deny();
   }
   return columns;
 }

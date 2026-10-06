@@ -1889,6 +1889,9 @@
         },
         "governance": {
           "$ref": "#/$defs/GovernanceCapability"
+        },
+        "rowCreation": {
+          "$ref": "#/$defs/RowCreationCapability"
         }
       },
       "required": [
@@ -3234,6 +3237,163 @@
       "required": [
         "id",
         "scopes"
+      ]
+    },
+    "CreationPolicyRef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ]
+    },
+    "RowCreationCapability": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "atomic-origin-v1"
+          ]
+        },
+        "policies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CreationPolicyRef"
+          }
+        }
+      },
+      "required": [
+        "protocol",
+        "policies"
+      ]
+    },
+    "RowCreationTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "generated",
+            "adopted"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "RowCreationRequest": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/CreationPolicyRef"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "occurrenceKey": {
+          "$ref": "#/$defs/CreationOccurrenceKey"
+        },
+        "target": {
+          "$ref": "#/$defs/RowCreationTarget"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/FilterValue"
+          }
+        }
+      },
+      "required": [
+        "policy",
+        "sourceId",
+        "occurrenceKey",
+        "target",
+        "updatedAt",
+        "values"
+      ]
+    },
+    "RowCreatedReceipt": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "created"
+          ]
+        },
+        "policy": {
+          "$ref": "#/$defs/CreationPolicyRef"
+        },
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "originId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "policy",
+        "id",
+        "revision",
+        "originId"
+      ]
+    },
+    "RowExistingReceipt": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "existing"
+          ]
+        },
+        "policy": {
+          "$ref": "#/$defs/CreationPolicyRef"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "policy",
+        "id"
+      ]
+    },
+    "RowCreationReceipt": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RowCreatedReceipt"
+        },
+        {
+          "$ref": "#/$defs/RowExistingReceipt"
+        }
+      ]
+    },
+    "CreationOccurrenceKey": {
+      "type": [
+        "string",
+        "integer"
       ]
     }
   },
