@@ -10,12 +10,12 @@ const normalized=sql=>String(sql).replace(/\s+/g,' ').trim();
 export function continuityTriggers(table,columns){
   if(!ordinary(table) || !['id','updated_at'].every(c=>columns.includes(c)))return [];
   const prefix='_governance_rows_'+Array.from(table,c=>c.charCodeAt(0).toString(16).padStart(2,'0')).join('');
-  const changed=columns.filter(c=>!['updated_at','hub_at'].includes(c))
-    .map(c=>storageChanged('OLD.'+qident(c),'NEW.'+qident(c))).join(' OR ');
   const lifecycle=['id','deleted_at'].filter(c=>columns.includes(c)).map(c=>storageChanged('OLD.'+qident(c),'NEW.'+qident(c))).join(' OR ');
   return ['INSERT','UPDATE','DELETE'].map(event=>{
     const name=prefix+'_'+event.toLowerCase(),rows=event==='UPDATE'?['OLD','NEW']:[event==='DELETE'?'OLD':'NEW'];
-    const when=event==='UPDATE'?`WHEN (${changed}) AND ((${lifecycle}) OR NOT EXISTS (SELECT 1 FROM _governance_writes WHERE tbl=${literal(table)}))`:'';
+    // Do not depend on user columns: SQLite must permit their removal. Every
+    // untracked UPDATE is a continuity gap, even if it appears to be a no-op.
+    const when=event==='UPDATE'?`WHEN (${lifecycle}) OR NOT EXISTS (SELECT 1 FROM _governance_writes WHERE tbl=${literal(table)})`:'';
     return {name,tbl_name:table,sql:`CREATE TRIGGER ${qident(name)} AFTER ${event} ON ${qident(table)} ${when} BEGIN
       ${rows.map(row=>`UPDATE _governance_heads SET event_id=NULL WHERE tbl=${literal(table)} AND row_id=${row}.id;
       INSERT INTO _governance_invalidations(tbl,row_id,version) SELECT ${literal(table)},${row}.id,lower(hex(randomblob(16))) WHERE ${row}.id IS NOT NULL
