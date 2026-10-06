@@ -4,7 +4,7 @@ import { compileSearch } from './search.ts';
 import type { View, Filter, CalendarContext } from './contract.generated.ts';
 export type { Filter, View } from './contract.generated.ts';
 
-const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at"]);
+const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at", "hub_at"]);
 
 function checkObject(value: unknown, keys: string[], label: string): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)
@@ -78,7 +78,7 @@ function compile(view: View, properties: Property[], requireCalendar: boolean): 
     checkObject(filter, ["column", "op", "value", "relative"], "filter");
     const conditions: string[]=[];
     const col = column(filter.column);
-    const type = props.get(filter.column)?.type;
+    const type = SYSTEM_COLUMNS.has(filter.column) && filter.column!=="id" ? "datetime" : props.get(filter.column)?.type;
     const multi = type === "multi_select" || type === "multi_ref";
     // CASE guards both JSON functions, including against legacy malformed cells.
     const array = `CASE WHEN json_valid(${col}) THEN CASE WHEN json_type(${col}) = 'array' THEN ${col} END END`;

@@ -94,3 +94,14 @@ test.each([
 ])('invalid relative/group/sort input is rejected without broadening the query %#',view=>{
   expect(()=>fixture().ids(view)).toThrow();
 });
+
+test.each(['created_at','updated_at','deleted_at','hub_at'])('Today works on the uncataloged system timestamp %s',column=>{
+ const db=new Database(':memory:');dbs.push(db);
+ db.exec('CREATE TABLE records(id TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)');
+ for(const [id,stamp] of [['before',spring.start],['after',spring.end]]) {
+  db.query('INSERT INTO records VALUES (?,?,?,?,?)').run(id,stamp,stamp,column==='deleted_at'?stamp:null,stamp);
+ }
+ const view:View={table:'records',trash:column==='deleted_at',calendar:spring,filters:[{column,op:'lte',relative:'today'}],sort:[{column:'id',direction:'asc'}]};
+ const q=compileView(view,[]);
+ expect(db.query(q.sql).all(...q.params).map((r:any)=>r.id)).toEqual(['before']);
+});
