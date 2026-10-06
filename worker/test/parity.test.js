@@ -28,7 +28,7 @@ for (const { sql } of ruleSql.filter(c => !c.allowed && c.sql.startsWith('SELECT
 }
 
 test('F1: a real local numeric edit retains only its original event on acceptance and replay', async () => {
-  const fixture = Bun.spawnSync(['uv','run','--quiet','--project',`${import.meta.dir}/../..`,'python','-B',`${import.meta.dir}/fixtures/numeric-history.py`], {
+  const fixture = Bun.spawnSync(['uv','run','--quiet','--project',`${import.meta.dir}/../..`,'python','-B',`${import.meta.dir}/fixtures/numeric_history.py`], {
     env:{...process.env,PYTHONPATH:`${import.meta.dir}/../../src`},
   });
   expect(fixture.stderr.toString()).toBe('');
