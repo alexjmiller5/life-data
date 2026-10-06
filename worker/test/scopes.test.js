@@ -478,3 +478,38 @@ for(const [definition,stored,submitted] of [['TEXT COLLATE NOCASE','b','B'],['TE
   expect(response.status).toBe(403);
   expect(db.db.query('SELECT url FROM articles').get().url).toBe('https://example.test/original');
 });
+
+const projected = ['tables:read:articles:id','tables:read:articles:url','tables:read:articles:deleted_at'];
+test('column reader gets only declared projection with bounded ID pagination',async()=>{
+  const db=rowDb(),{call}=await setup(projected,db);
+  db.db.exec(`INSERT INTO articles(id,url,updated_at,deleted_at) VALUES ('b','second','${revision}','${revision}')`);
+  const first=await call('/v1/rows/pull','POST',{table:'articles',columns:['id','url','deleted_at'],limit:1});
+  expect(first.status).toBe(200);
+  expect(await first.json()).toEqual({rows:[{id:'a',url:'https://example.test/a',deleted_at:null}],next_cursor:'a'});
+  const second=await call('/v1/rows/pull','POST',{table:'articles',columns:['id','deleted_at'],after:'a',limit:1});
+  expect(second.status).toBe(200);
+  expect(await second.json()).toEqual({rows:[{id:'b',deleted_at:revision}],next_cursor:'b'});
+  const filtered=await call('/v1/rows/pull','POST',{table:'articles',columns:['url'],where:{id:'a'}});
+  expect(await filtered.json()).toEqual({rows:[{url:'https://example.test/a'}],next_cursor:null});
+});
+
+test('column grants reject hidden projection, predicates and cursor timestamps before data lookup',async()=>{
+  const {call}=await setup(projected);
+  for(const body of [
+    {table:'articles'}, {table:'articles',columns:[]},
+    {table:'articles',columns:['id','created_at']},
+    {table:'articles',columns:['id'],where:{created_at:'x'}},
+    {table:'articles',columns:['id'],since:revision},
+    {table:'secrets',columns:['id']},
+    {table:'Articles',columns:['id']},
+  ]) expect((await call('/v1/rows/pull','POST',body)).status).toBe(403);
+  for(const [path,method] of [['/v1/catalog','GET'],['/v1/catalog/options?table=articles&column=url','GET'],['/v1/rows/push','POST'],['/v1/rows/insert','POST'],['/v1/rows/patch','POST']])
+    expect((await call(path,method,method==='POST'?insert():undefined)).status).toBe(403);
+});
+
+test('projected keyset requires ID access and never accepts malformed grant suffixes',async()=>{
+  for(const scopes of [['tables:read:articles:url'],['tables:read:articles:*'],['tables:read:articles:id:extra'],['tables:read:Articles:id']]){
+    const {call}=await setup(scopes);
+    expect((await call('/v1/rows/pull','POST',{table:'articles',columns:['url']})).status).toBe(403);
+  }
+});

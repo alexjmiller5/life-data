@@ -532,6 +532,16 @@ Subscriptions advertise `durable-pull-v1`; conditional row edits advertise
 `conditional_patch: revision-v1`. Missing optional capabilities never authorize
 falling back to an unconditional write.
 
+Profile enrollment and projected reads are specified in `docs/scoped-enrollment.md`.
+Optional service-owned `ENROLLMENT_PROFILES` contains only exact read-column
+grants; requested unknown profiles never fall back to full. Auth storage binds
+the approved profile revision and scopes to the fingerprint atomically. Profile
+tokens get no governance authority. Core owns the optional profile expectation
+and receipt DTOs and the pure `life-core/enrollment` entry; hosts own JSC,
+cryptography, HTTP, clocks and secure storage. Existing full enrollment remains
+available without a profile. Projected reads authorize returned columns and
+predicates before data access, require ID access and reject timestamp cursors.
+
 Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
 body.table before data access. Narrow consumers use bounded direct rows APIs;
 global schema/catalog/cursor/stats/history/provenance/internal/view/SQL routes stay

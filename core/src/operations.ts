@@ -47,8 +47,8 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
   return {
     ...(governance ?? unavailableGovernance()),
     enrollmentApproval,
-    validateDeviceSession: ({ data }) => validateDeviceSession(data),
-    enrollmentPollResult: ({ reply, expectedFingerprint }) => enrollmentPollResult(reply, expectedFingerprint),
+    validateDeviceSession: ({ data, expectedProfile }) => validateDeviceSession(data, expectedProfile),
+    enrollmentPollResult: ({ reply, expectedFingerprint, expectedProfile }) => enrollmentPollResult(reply, expectedFingerprint, expectedProfile),
     sessionRevocationResult,
     async catalog() {
       const catalog = await readCatalog(db);
