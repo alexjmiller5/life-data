@@ -47,7 +47,7 @@ test('one contract deterministically generates TS and prefixed Swift, including 
   expect(first.swift).toContain('public init(action: CoreUndoAction?)');
   expect(first.swift).toContain('try container.encode(action, forKey: .action)');
   expect(first.typescript).toContain('enrollmentPollResult: { args: EnrollmentPollArgs; result: EnrollmentPollResult }');
-  expect(first.swift).toContain('public init(reply: CoreSessionReply, expectedFingerprint: String)');
+  expect(first.swift).toContain('public init(reply: CoreSessionReply, expectedFingerprint: String, expectedProfile: CoreEnrollmentProfileExpectation? = nil)');
   expect(first.swift).toContain('public init(status: CoreCount, data: CoreJSONValue, retryAfterSeconds: CoreCount? = nil)');
   expect(first.swift).toContain('try container.encode(session, forKey: .session)');
   expect(first.hash).toMatch(/^[a-f0-9]{64}$/);

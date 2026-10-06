@@ -7,7 +7,9 @@ export const TOKENS_TABLE = `CREATE TABLE IF NOT EXISTS _tokens (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   revoked_at TEXT,
   last_used_at TEXT,
-  label TEXT
+  label TEXT,
+  enrollment_profile TEXT,
+  enrollment_revision TEXT
 )`;
 
 const AUTHORITY_TABLE = `CREATE TABLE IF NOT EXISTS _governance_authorities (
@@ -24,24 +26,28 @@ export async function ensureAuthReady(db) {
   await db.prepare(TOKENS_TABLE).run();
   await db.prepare(AUTHORITY_TABLE).run();
   const { results } = await db.prepare("PRAGMA table_info(_tokens)").all();
-  if (!(results ?? []).some((column) => column.name === "label")) {
-    try {
-      await db.prepare("ALTER TABLE _tokens ADD COLUMN label TEXT").run();
-    } catch (error) {
-      if (!String(error).toLowerCase().includes("duplicate column"))
-        throw error;
+  for (const name of ['label','enrollment_profile','enrollment_revision']) {
+    if (!(results ?? []).some((column) => column.name === name)) {
+      try {
+        await db.prepare(`ALTER TABLE _tokens ADD COLUMN ${name} TEXT`).run();
+      } catch (error) {
+        if (!String(error).toLowerCase().includes("duplicate column")) throw error;
+      }
     }
   }
 }
 
 // Only verified browser enrollment calls this with user kind. Token-admin
 // requests always use agent kind; request fields never select these grants.
-export function authorityStatement(db,tokenHash,kind) {
+// afterRegistration requires this statement to immediately follow its token
+// registration in the same batch. A rejected registration must grant nothing.
+export function authorityStatement(db,tokenHash,kind,afterRegistration=false) {
   if (!['user','agent','service'].includes(kind)) throw new Error('invalid principal kind');
   return db.prepare(`INSERT INTO _governance_authorities
     (token_hash,principal_id,kind,can_propose,can_approve)
-    SELECT hash,?,?,1,? FROM _tokens WHERE hash=? AND revoked_at IS NULL
-    ON CONFLICT(token_hash) DO NOTHING`).bind(crypto.randomUUID(),kind,Number(kind==='user'),tokenHash);
+    SELECT hash,?,?,1,? FROM _tokens WHERE hash=? AND revoked_at IS NULL AND enrollment_profile IS NULL
+      AND (?=0 OR changes()>0)
+    ON CONFLICT(token_hash) DO NOTHING`).bind(crypto.randomUUID(),kind,Number(kind==='user'),tokenHash,Number(afterRegistration));
 }
 
 export async function readGovernanceAuthority(db,tokenHash) {

@@ -1,6 +1,7 @@
 import type {
   EnrollmentApproval, EnrollmentApprovalArgs, EnrollmentPolicy, EnrollmentPollResult,
   ReplicaEligibility, ReplicaIneligibilityCode, SessionInfo, SessionReply, SessionRevocationResult,
+  EnrollmentProfileExpectation, EnrollmentProfileReceipt,
 } from './contract.generated.ts';
 
 import {isGovernanceCapability,object} from './governance-wire.ts';
@@ -14,12 +15,24 @@ const record = (v: unknown): v is Record<string, unknown> => v !== null && typeo
   && [Object.prototype, null].includes(Object.getPrototypeOf(v));
 const fingerprint = (v: unknown): v is string => typeof v === 'string'
   && v.length === 64 && /^[0-9a-f]+$/.test(v);
+const profileId = (v: unknown): v is string => typeof v === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(v);
+
+function validateProfileExpectation(p: EnrollmentProfileExpectation): void {
+  if (!record(p) || !profileId(p.id) || !Array.isArray(p.scopes) || !p.scopes.length
+    || p.scopes.length > 64 || new Set(p.scopes).size !== p.scopes.length) throw new Error('invalid enrollment profile expectation');
+  for (const scope of p.scopes) {
+    const parts=typeof scope === 'string' ? /^tables:read:([A-Za-z][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)$/.exec(scope) : null;
+    if (!parts || /^(?:sqlite_|catalog_)/i.test(parts[1]!) || /^(?:history|provenance|purges)$/i.test(parts[1]!)
+      || !p.scopes.includes(`tables:read:${parts[1]}:id`)) throw new Error('invalid enrollment profile expectation');
+  }
+}
 
 /** Append this relative path only to the host's validated/canonical endpoint.
  * The only key here is a SHA-256 fingerprint, never the candidate bearer token. */
 export function enrollmentApproval(args: EnrollmentApprovalArgs): EnrollmentApproval {
   if (!record(args) || !fingerprint(args.fingerprint) || typeof args.name !== 'string'
-    || !args.name.trim().length || args.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(args.name)) {
+    || !args.name.trim().length || args.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(args.name)
+    || (Object.hasOwn(args,'profile') && !profileId(args.profile))) {
     throw new Error('invalid enrollment approval request');
   }
   // Match URLSearchParams' USVString conversion without requiring that browser
@@ -27,7 +40,7 @@ export function enrollmentApproval(args: EnrollmentApprovalArgs): EnrollmentAppr
   const label = Array.from(args.name.trim(), c => c.length === 1 && c.charCodeAt(0) >= 0xd800
     && c.charCodeAt(0) <= 0xdfff ? '\ufffd' : c).join('');
   return {
-    path: `/login?key=${args.fingerprint}&name=${encodeURIComponent(label)}`,
+    path: `/login?key=${args.fingerprint}&name=${encodeURIComponent(label)}${args.profile === undefined ? '' : `&profile=${args.profile}`}`,
     approvalCode: args.fingerprint.slice(0, 8), deviceName: `device:${args.fingerprint}`,
     policy: { ...ENROLLMENT_POLICY },
   };
@@ -55,7 +68,8 @@ function replicaEligibility(data: Record<string, unknown>, scopes: string[]): Re
 
 /** Identity validation is separate from replica eligibility. Manual dedicated
  * nonadmin names are valid here; only approval polling binds a fingerprint. */
-export function validateDeviceSession(data: unknown): SessionInfo {
+export function validateDeviceSession(data: unknown, expectedProfile?: EnrollmentProfileExpectation): SessionInfo {
+  if (expectedProfile !== undefined) validateProfileExpectation(expectedProfile);
   if (!record(data) || typeof data.name !== 'string' || !data.name.trim()
     || !Array.isArray(data.scopes) || !data.scopes.every(s => typeof s === 'string' && s.length > 0)) {
     throw new Error('invalid device session');
@@ -63,8 +77,22 @@ export function validateDeviceSession(data: unknown): SessionInfo {
   if (data.name === 'admin' || data.scopes.includes('admin')) {
     throw new Error('admin tokens cannot be used as device credentials');
   }
+  let enrollmentProfile: EnrollmentProfileReceipt | undefined;
+  if (Object.hasOwn(data,'enrollmentProfile')) {
+    const p=data.enrollmentProfile;
+    if (!record(p) || !profileId(p.id) || !fingerprint(p.revision)) throw new Error('invalid enrollment profile receipt');
+    enrollmentProfile={id:p.id,revision:p.revision};
+  }
+  if (expectedProfile) {
+    const caps=data.capabilities;
+    if (enrollmentProfile?.id !== expectedProfile.id || data.scopes.length !== expectedProfile.scopes.length
+      || new Set(data.scopes).size !== data.scopes.length || !data.scopes.every(s=>expectedProfile.scopes.includes(s))
+      || !record(caps) || caps.row_api !== 'v1' || caps.schema !== 'none' || caps.replica_sync !== false
+      || Object.hasOwn(caps,'governance')) throw new Error('device approval profile does not match');
+  }
   const governance=object(data.capabilities)&&isGovernanceCapability(data.capabilities.governance)?data.capabilities.governance:undefined;
-  return { name: data.name, scopes: [...data.scopes], replica: replicaEligibility(data, data.scopes), ...(governance?{governance:JSON.parse(JSON.stringify(governance))}: {}) };
+  return { name: data.name, scopes: [...data.scopes], replica: replicaEligibility(data, data.scopes),
+    ...(enrollmentProfile?{enrollmentProfile}:{}), ...(governance?{governance:JSON.parse(JSON.stringify(governance))}: {}) };
 }
 
 function validateReply(reply: SessionReply): void {
@@ -78,11 +106,12 @@ function validateReply(reply: SessionReply): void {
 
 /** One response only. Hosts retain a monotonic deadline and never accept a late
  * reply from a cancelled, expired or replaced enrollment attempt. */
-export function enrollmentPollResult(reply: SessionReply, expectedFingerprint: string): EnrollmentPollResult {
+export function enrollmentPollResult(reply: SessionReply, expectedFingerprint: string, expectedProfile?: EnrollmentProfileExpectation): EnrollmentPollResult {
   if (!fingerprint(expectedFingerprint)) throw new Error('invalid enrollment fingerprint');
+  if (expectedProfile !== undefined) validateProfileExpectation(expectedProfile);
   validateReply(reply);
   if (reply.status === 200) {
-    const session = validateDeviceSession(reply.data);
+    const session = validateDeviceSession(reply.data, expectedProfile);
     if (session.name !== `device:${expectedFingerprint}`) throw new Error('device approval identity does not match');
     return { state: 'approved', session, retryAfterSeconds: null };
   }

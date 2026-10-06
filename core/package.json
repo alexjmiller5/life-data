@@ -6,7 +6,8 @@
   "description": "The shared core every life-data client runs: catalog validation, sync, the write path and the view model, with platform adapters injected.",
   "exports": {
     ".": "./src/index.ts",
-    "./schema/saved-views.json": "./schema/saved-views.json"
+    "./schema/saved-views.json": "./schema/saved-views.json",
+    "./enrollment": "./src/enrollment.ts"
   },
   "files": ["src", "schema", "contract", "generated"],
   "scripts": {

@@ -1435,6 +1435,9 @@
         },
         "name": {
           "type": "string"
+        },
+        "profile": {
+          "type": "string"
         }
       },
       "required": [
@@ -1547,6 +1550,9 @@
         },
         "governance": {
           "$ref": "#/$defs/GovernanceCapability"
+        },
+        "enrollmentProfile": {
+          "$ref": "#/$defs/EnrollmentProfileReceipt"
         }
       },
       "required": [
@@ -1560,6 +1566,9 @@
       "properties": {
         "data": {
           "$ref": "#/$defs/JSONValue"
+        },
+        "expectedProfile": {
+          "$ref": "#/$defs/EnrollmentProfileExpectation"
         }
       },
       "required": [
@@ -1593,6 +1602,9 @@
         },
         "expectedFingerprint": {
           "type": "string"
+        },
+        "expectedProfile": {
+          "$ref": "#/$defs/EnrollmentProfileExpectation"
         }
       },
       "required": [
@@ -3189,6 +3201,39 @@
         "limits",
         "deploymentId",
         "sessionId"
+      ]
+    },
+    "EnrollmentProfileReceipt": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ]
+    },
+    "EnrollmentProfileExpectation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "scopes"
       ]
     }
   },

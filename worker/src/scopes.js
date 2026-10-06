@@ -36,6 +36,18 @@ export function authorizeTable(scopes, operation, table) {
   return ordinaryName(table) && scopes.includes(`tables:${operation}:${table}`);
 }
 
+// Projected readers must authorize both returned data and selection predicates.
+// Keyset pagination exposes IDs; timestamp cursors are deliberately unavailable.
+export function authorizeRowRead(scopes, body) {
+  if (!body || !ordinaryName(body.table)) return false;
+  if (authorizeTable(scopes,'read',body.table)) return true;
+  const granted = column => identifier(column) && scopes.includes(`tables:read:${body.table}:${column}`);
+  return granted('id') && Array.isArray(body.columns) && body.columns.length > 0
+    && body.columns.every(granted) && (body.since === undefined || body.since === '')
+    && (body.where === undefined || (body.where !== null && typeof body.where === 'object'
+      && !Array.isArray(body.where) && Object.keys(body.where).every(granted)));
+}
+
 // Exact server-owned DDL only. A familiar trigger name does not establish trust.
 export function timestampTrigger(trigger) {
   const table=trigger.tbl_name;

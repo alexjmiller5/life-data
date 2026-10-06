@@ -157,3 +157,64 @@ test.each([
   const capabilities={row_api:'v1',schema:'full-ddl-v1',replica_sync:true,files:'opaque-key-v1',subscriptions:'durable-pull-v1',...change};
   expect(core.validateDeviceSession({...session,capabilities}).replica.allowed).toBe(false);
 });
+
+const expectedProfile={id:'contact-reader-v1',scopes:['tables:read:contacts:id','tables:read:contacts:name']};
+const profiledSession={name:`device:${fingerprint}`,scopes:[...expectedProfile.scopes],enrollmentProfile:{id:expectedProfile.id,revision:'b'.repeat(64)},capabilities:{row_api:'v1',files:'opaque-key-v1',subscriptions:'durable-pull-v1',schema:'none',replica_sync:false}};
+test('profile approval and validator preserve exact binding through canonical handlers',async()=>{
+ const h=handlers() as any;
+ expect((await h.enrollmentApproval({fingerprint,name:'Phone',profile:expectedProfile.id})).path).toBe(`/login?key=${fingerprint}&name=Phone&profile=contact-reader-v1`);
+ const validated=await h.validateDeviceSession({data:profiledSession,expectedProfile});
+ expect(validated.enrollmentProfile).toEqual(profiledSession.enrollmentProfile);
+ const result=await h.enrollmentPollResult({reply:{status:200,data:profiledSession},expectedFingerprint:fingerprint,expectedProfile});
+ expect(result.session).toEqual(validated);expect(result.state).toBe('approved');
+ expect(validated.replica.allowed).toBe(false);
+});
+
+test('profile request never degrades to legacy approval',()=>{
+ for(const profile of ['',null,'Contact','a&name=x','a'.repeat(65),{},[]])
+  expect(()=>core.enrollmentApproval({fingerprint,name:'Phone',profile} as any)).toThrow();
+});
+
+test('expected profile rejects broad, extra, missing, duplicate grants and invalid receipt/capabilities',async()=>{
+ const h=handlers() as any;
+ for(const change of [
+  {scopes:['full']},{scopes:['admin']},{scopes:[...expectedProfile.scopes,'tables:read:contacts:private']},
+  {scopes:expectedProfile.scopes.slice(1)},{scopes:[...expectedProfile.scopes,expectedProfile.scopes[0]]},
+  {enrollmentProfile:undefined},{enrollmentProfile:null},{enrollmentProfile:{id:'other',revision:'b'.repeat(64)}},
+  {enrollmentProfile:{id:expectedProfile.id,revision:''}},{capabilities:undefined},
+  {capabilities:{...profiledSession.capabilities,governance:{}}},
+ ]){
+  expect(()=>h.validateDeviceSession({data:{...profiledSession,...change},expectedProfile})).toThrow();
+  expect(()=>h.enrollmentPollResult({reply:{status:200,data:{...profiledSession,...change}},expectedFingerprint:fingerprint,expectedProfile})).toThrow();
+ }
+});
+
+test('profile expectations are validated even while approval is pending',async()=>{
+ const h=handlers() as any;
+ for(const profile of [null,{}, {...expectedProfile,scopes:['full']},{...expectedProfile,scopes:['tables:read:contacts:name']}])
+  expect(()=>h.enrollmentPollResult({reply:{status:401,data:null},expectedFingerprint:fingerprint,expectedProfile:profile})).toThrow();
+});
+
+test('minimal enrollment entry bundles without replica handlers and accepts a real profile session',async()=>{
+ const temp=await mkdtemp(join(tmpdir(),'core-enrollment-profile-'));
+ try {
+  const entry=join(temp,'entry.ts');
+  await writeFile(entry,`import * as Enrollment from ${JSON.stringify(new URL('../src/enrollment.ts',import.meta.url).pathname)};globalThis.Enrollment=Enrollment;`);
+  const built=await Bun.build({entrypoints:[entry],target:'browser',format:'iife'});
+  expect(built.success).toBe(true);
+  const realm=vm.createContext({URL:undefined,fetch:undefined,crypto:undefined,Date:undefined,setTimeout:undefined});
+  vm.runInContext(await built.outputs[0]!.text(),realm);
+  const token='synthetic-profile-token',hash=new Bun.CryptoHasher('sha256').update(token).digest('hex');
+  const env={HUB_TOKEN:'root',DB:new D1Shim(),AUTH_DB:new D1Shim(),LOGIN_ACCESS_AUD:'aud',ENROLLMENT_PROFILES:JSON.stringify({[expectedProfile.id]:{label:'Contact Reader',scopes:expectedProfile.scopes}})};
+  const ctx={access:{aud:'aud',getIdentity:async()=>({email:'owner@example.test'})},waitUntil(){}};
+  const approval=core.enrollmentApproval({fingerprint:hash,name:'Phone',profile:expectedProfile.id});
+  const html=await (await worker.fetch(new Request('https://hub.test'+approval.path),env,ctx)).text();
+  const revision=html.match(/name="profileRevision" value="([0-9a-f]{64})"/)![1]!;
+  const form=new URLSearchParams({key:hash,name:'Phone',profile:expectedProfile.id,profileRevision:revision});
+  expect((await worker.fetch(new Request('https://hub.test/login',{method:'POST',headers:{Origin:'https://hub.test','Content-Type':'application/x-www-form-urlencoded'},body:form.toString()}),env,ctx)).status).toBe(200);
+  const data=await (await worker.fetch(new Request('https://hub.test/v1/session',{headers:{Authorization:'Bearer '+token}}),env,ctx)).json();
+  const result=JSON.parse(vm.runInContext(`JSON.stringify(Enrollment.enrollmentPollResult(${JSON.stringify({status:200,data})},${JSON.stringify(hash)},${JSON.stringify(expectedProfile)}))`,realm));
+  expect(result.state).toBe('approved');expect(result.session.enrollmentProfile).toEqual({id:expectedProfile.id,revision});
+  expect(vm.runInContext('typeof Enrollment.createCoreHandlers',realm)).toBe('undefined');
+ } finally {await rm(temp,{recursive:true,force:true});}
+});

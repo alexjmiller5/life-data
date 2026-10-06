@@ -21,7 +21,7 @@ import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
-import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -86,7 +86,7 @@ async function resolveTenant(request, env, ctx) {
   } else await ensureAuthReady(env.AUTH_DB);
   const hash = await hashToken(token);
   const row = await env.AUTH_DB.prepare(
-    "SELECT name, scopes FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
+    "SELECT * FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
   )
     .bind(hash)
     .first();
@@ -98,8 +98,9 @@ async function resolveTenant(request, env, ctx) {
       .bind(hash)
       .run()
   );
-  const governance=await readGovernanceAuthority(env.AUTH_DB,hash);
-  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance };
+  const governance=row.enrollment_profile ? null : await readGovernanceAuthority(env.AUTH_DB,hash);
+  const enrollmentProfile=row.enrollment_profile ? {id:row.enrollment_profile,revision:row.enrollment_revision} : null;
+  return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance, enrollmentProfile };
 }
 
 // Decode exactly once and reject ambiguous separators/escape sequences. The same
@@ -513,7 +514,8 @@ async function handleSession(request, tenant, env) {
         deploymentId:env.GOVERNANCE_DEPLOYMENT_ID,sessionId:tenant.governance.actor.principalId,
         authority:{propose:tenant.governance.propose,approve:tenant.governance.approve},limits:governanceLimits};
     }
-    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities });
+    const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities,
+      ...(tenant.enrollmentProfile ? {enrollmentProfile:tenant.enrollmentProfile} : {}) });
     response.headers.set("Cache-Control", "no-store");
     return response;
   }
@@ -834,7 +836,7 @@ async function handle(request, env, ctx, url) {
     if (optionsRequest) return json(await scopedOptions(url.searchParams,tenant.db,tenant.scopes));
     if (narrowRows) {
       const body = await request.json();
-      if (!body || !authorizeTable(tenant.scopes,rowOperation,body.table) || Object.hasOwn(body,"history")) {
+      if (!body || !(rowOperation === 'read' ? authorizeRowRead(tenant.scopes,body) : authorizeTable(tenant.scopes,rowOperation,body.table)) || Object.hasOwn(body,"history")) {
         return json({error:"insufficient scope"},403);
       }
       if (rowOperation === "read") {
