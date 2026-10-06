@@ -127,8 +127,10 @@ never changes authorization or overwrites authenticated attribution.
 
 ## Operation slice
 
-These names are reserved for the proposed core/service seam. Transport binding
-will be added once the service implementation is tested; no guessed routes.
+These names are reserved for the proposed core/service seam. The proposed exact
+transport and capability boundary is in `governance-transport-contract.md`.
+It remains unavailable until the service implementation is tested; clients do
+not infer availability or invent routes from either draft.
 
 | Operation | Request | Response |
 | --- | --- | --- |
