@@ -22,7 +22,7 @@ export const isActor=(x:unknown):x is Actor=>exact(x,['principalId','kind']) && 
 export const texts=(x:unknown):x is string[]=>Array.isArray(x) && x.every(nonempty) && new Set(x).size===x.length;
 const positive=(x:unknown)=>typeof x==='number' && Number.isSafeInteger(x) && x>0;
 export function isGovernanceCapability(x:unknown):x is GovernanceCapability {
-  return exact(x,['protocol','principal','authority','limits']) && x.protocol==='selected-inverse-proposals-v1' && isActor(x.principal)
+  return exact(x,['protocol','principal','authority','limits','deploymentId','sessionId']) && x.protocol==='selected-inverse-proposals-v1' && isActor(x.principal) && nonempty(x.deploymentId) && nonempty(x.sessionId)
     && exact(x.authority,['propose','approve']) && typeof x.authority.propose==='boolean' && typeof x.authority.approve==='boolean'
     && (!x.authority.approve || x.principal.kind==='user')
     && exact(x.limits,['maxSelectedEvents','maxChangedColumns','maxRequestBytes','maxPageSize','previewTtlSeconds']) && Object.values(x.limits).every(positive);

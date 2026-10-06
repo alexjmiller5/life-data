@@ -510,6 +510,7 @@ async function handleSession(request, tenant, env) {
     const capabilities=sessionCapabilities(tenant.scopes);
     if(governanceConfiguration(env) && tenant.governance && (tenant.governance.propose||tenant.governance.approve)){
       capabilities.governance={protocol:'selected-inverse-proposals-v1',principal:tenant.governance.actor,
+        deploymentId:env.GOVERNANCE_DEPLOYMENT_ID,sessionId:tenant.governance.actor.principalId,
         authority:{propose:tenant.governance.propose,approve:tenant.governance.approve},limits:governanceLimits};
     }
     const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities });

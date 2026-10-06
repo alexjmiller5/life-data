@@ -3174,13 +3174,21 @@
         },
         "limits": {
           "$ref": "#/$defs/GovernanceLimits"
+        },
+        "deploymentId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
         }
       },
       "required": [
         "protocol",
         "principal",
         "authority",
-        "limits"
+        "limits",
+        "deploymentId",
+        "sessionId"
       ]
     }
   },

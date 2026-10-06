@@ -113,9 +113,10 @@ test.skipIf(!Bun.which('swiftc'))('generated governance capability compiles and 
     const source=resolve(temp,'Core.swift'),main=resolve(temp,'main.swift'),executable=resolve(temp,'contract-check');
     await writeFile(source,generateContract(contract).swift);
     await writeFile(main,`import Foundation
-let input = #"{"protocol":"selected-inverse-proposals-v1","principal":{"principalId":"synthetic","kind":"user"},"authority":{"propose":true,"approve":true},"limits":{"maxSelectedEvents":100,"maxChangedColumns":64,"maxRequestBytes":65536,"maxPageSize":100,"previewTtlSeconds":300}}"#.data(using: .utf8)!
+let input = #"{"deploymentId":"deployment","sessionId":"session","protocol":"selected-inverse-proposals-v1","principal":{"principalId":"synthetic","kind":"user"},"authority":{"propose":true,"approve":true},"limits":{"maxSelectedEvents":100,"maxChangedColumns":64,"maxRequestBytes":65536,"maxPageSize":100,"previewTtlSeconds":300}}"#.data(using: .utf8)!
 let capability = try JSONDecoder().decode(CoreGovernanceCapability.self, from: input)
 precondition(capability.protocol == "selected-inverse-proposals-v1")
+precondition(capability.deploymentId == "deployment" && capability.sessionId == "session")
 let decoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capability)) as! NSDictionary
 let expected = try JSONSerialization.jsonObject(with: input) as! NSDictionary
 precondition(decoded == expected)
