@@ -63,14 +63,16 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
   try {
     object(value);
     if (value.version !== 1 && value.version !== 2) throw new Error('Unsupported saved-view definition version.');
-    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','actions','layout']:[])]);
+    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','dayStartMinutes','actions','layout']:[])]);
     if (!catalog.tables.some(t => t.id === table)) throw new Error('Saved-view target is absent from the catalog.');
-    const { version, widths, timeZone, actions: _actions, layout: _layout, ...query } = value;
+    const { version, widths, timeZone, dayStartMinutes, actions: _actions, layout: _layout, ...query } = value;
     view = { table, ...query } as View;
     validateView(view, catalog.properties);
     const filters=[...(view.filters ?? []),...(view.groups ?? []).flatMap(g=>g.filters)];
     if (version===1 && (filters.some(f=>f.relative!==undefined) || view.sort?.some(s=>s.mode!==undefined))) throw new Error('View extensions require version 2.');
     if (timeZone!==undefined && (typeof timeZone!=='string' || timeZone.length>100 || !/^[A-Za-z_]+(?:\/[A-Za-z0-9_+.-]+)*$/.test(timeZone))) throw new Error('Invalid saved-view timezone.');
+    if (dayStartMinutes!==undefined && (typeof dayStartMinutes!=='number' || !Number.isInteger(dayStartMinutes)
+      || dayStartMinutes<0 || dayStartMinutes>1439)) throw new Error('Invalid saved-view day boundary.');
     if (filters.some(f=>f.relative!==undefined) && timeZone===undefined) throw new Error('Relative saved views require a timezone.');
     if (view.columns && new Set(view.columns).size !== view.columns.length) throw new Error('Duplicate saved-view columns.');
     referenced = [...(view.columns ?? []), ...filters.map(f => f.column), ...(view.sort ?? []).map(s => s.column)];

@@ -11,6 +11,8 @@ const properties: Property[] = [
 ];
 const spring={today:'2026-03-08',start:'2026-03-08T05:00:00.000Z',end:'2026-03-09T04:00:00.000Z'};
 const fall={today:'2026-11-01',start:'2026-11-01T04:00:00.000Z',end:'2026-11-02T05:00:00.000Z'};
+const shiftedSpring={today:'2026-03-07',start:'2026-03-07T08:00:00.000Z',end:'2026-03-08T07:00:00.000Z'};
+const shiftedFall={today:'2026-10-31',start:'2026-10-31T07:00:00.000Z',end:'2026-11-01T08:00:00.000Z'};
 const dbs:Database[]=[];
 afterEach(()=>{for(const db of dbs.splice(0))db.close();});
 function fixture() {
@@ -48,7 +50,7 @@ test('daily grouped query includes all projects and only open urgent items due b
   expect(f.ids(daily)).toEqual(['c','b','a']);
 });
 
-test.each([spring,fall])('rolling Today uses local date values and exact offset-bearing instants %#',calendar=>{
+test.each([spring,fall,shiftedSpring,shiftedFall])('rolling Today uses local date values and exact offset-bearing instants %#',calendar=>{
   const f=fixture();const start=Date.parse(calendar.start),end=Date.parse(calendar.end);
   f.insert('before',new Date(start-1).toISOString());
   f.insert('start',calendar.start);f.insert('last',new Date(end-1).toISOString());
