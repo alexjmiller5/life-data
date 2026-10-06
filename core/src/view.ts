@@ -83,7 +83,7 @@ function compile(view: View, properties: Property[], requireCalendar: boolean): 
     // CASE guards both JSON functions, including against legacy malformed cells.
     const array = `CASE WHEN json_valid(${col}) THEN CASE WHEN json_type(${col}) = 'array' THEN ${col} END END`;
     if (filter.relative !== undefined) {
-      if (filter.relative!=='today' || Object.hasOwn(filter,'value') || !['date','datetime'].includes(type ?? '')
+      if (filter.relative!=='today' || Object.hasOwn(filter,'value') || !['date','datetime','date_or_datetime'].includes(type ?? '')
         || !['eq','ne','gt','gte','lt','lte'].includes(filter.op)) throw new Error('Invalid relative date filter');
       if (!calendar) {
         if (requireCalendar) throw new Error('Relative query requires a calendar context');

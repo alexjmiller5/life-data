@@ -36,6 +36,13 @@ async function search(db: core.SqlDriver, args: { text: string; table?: string; 
 }
 async function ids(db: core.SqlDriver, text: string) { return (await search(db, { text })).map(r => r.id); }
 
+test('mixed calendar values remain searchable at their stored precision', async () => {
+  const { db } = await local();
+  await db.run("UPDATE catalog_properties SET type='date_or_datetime' WHERE col='body'");
+  await db.run("UPDATE items SET body='2032-02-29' WHERE id='a'");
+  expect(await ids(db, '2032')).toEqual(['a']);
+});
+
 test('FTS searches raw Markdown and catalog text with accent folding and literal prefixes', async () => {
   const { db } = await local();
   expect(await ids(db, 'cafe off')).toEqual(['a']);

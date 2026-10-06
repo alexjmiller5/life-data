@@ -179,6 +179,7 @@ TYPES = {
     "bool",
     "date",
     "datetime",
+    "date_or_datetime",
     "json",
     "select",
     "multi_select",
@@ -196,6 +197,7 @@ STORAGE = {
     "bool": "INTEGER",
     "date": "TEXT",
     "datetime": "TEXT",
+    "date_or_datetime": "TEXT",
     "json": "TEXT",
     "select": "TEXT",
     "multi_select": "TEXT",
@@ -562,6 +564,11 @@ def validate_row(
             continue
         elif t == "datetime" and not (isinstance(v, str) and DATETIME_RE.match(v)):
             fail(col, "type", f"{label} must be ISO-8601 UTC with milliseconds.")
+            continue
+        elif t == "date_or_datetime" and not (
+            isinstance(v, str) and (DATE_RE.match(v) or DATETIME_RE.match(v))
+        ):
+            fail(col, "type", f"{label} must be YYYY-MM-DD or ISO-8601 UTC with milliseconds.")
             continue
         elif t == "json":
             try:

@@ -5,7 +5,7 @@ import { qident, type Row } from './validate.ts';
 import { displayName } from './view.ts';
 import { isReadOnlyTable } from './write.ts';
 
-export const SEARCH_TEXT_TYPES = new Set(['text', 'markdown', 'select', 'url', 'email', 'phone', 'ref', 'date', 'datetime']);
+export const SEARCH_TEXT_TYPES = new Set(['text', 'markdown', 'select', 'url', 'email', 'phone', 'ref', 'date', 'datetime', 'date_or_datetime']);
 
 /** FTS syntax is never user syntax. All words are literal prefixes, ANDed.
  * Unicode letters/numbers/marks work in JSC without Intl or a platform parser. */
