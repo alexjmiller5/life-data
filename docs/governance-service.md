@@ -69,6 +69,19 @@ unknown typed values; history pagination does not certify inverse continuity.
 
 ## Host integration
 
+The capability supplies non-secret `deploymentId` and `sessionId` for durable
+journal binding. `deploymentId` is the configured stable service identity;
+`sessionId` is an opaque credential-bound identity from the verified authority
+record, stable across process restarts, label changes and preview-key rotation.
+A different enrolled credential receives a different session identity. This
+version uses the authority record's opaque principal UUID for both roles;
+clients must use each advertised field, never infer their relationship or derive
+an identity from a URL, token, token hash or fingerprint. The journal combines
+these fields with `principal.principalId` and its own workspace identity.
+Revalidate the current capability after reconnect/reopen. Revocation removes
+eligibility; reauthorizing the same credential preserves its identity and exact
+receipt recovery. A new credential cannot replay the old credential's journal.
+
 `validateDeviceSession` retains a valid optional `SessionInfo.governance` while
 replica eligibility remains independent. `createGovernanceAPI(capability, transport)`
 returns null for an absent/unsupported capability or absent raw transport.

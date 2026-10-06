@@ -4,7 +4,7 @@ import {createCoreHandlers} from '../src/operations.ts';
 import {createHttpHub} from '../src/http.ts';
 import type {GovernanceCapability} from '../src/contract.generated.ts';
 const actor={principalId:'principal',kind:'user' as const};
-const capability:GovernanceCapability={protocol:'selected-inverse-proposals-v1',principal:actor,authority:{propose:true,approve:true},limits:{maxSelectedEvents:100,maxChangedColumns:64,maxRequestBytes:65536,maxPageSize:100,previewTtlSeconds:300}};
+const capability:GovernanceCapability={protocol:'selected-inverse-proposals-v1',deploymentId:'deployment',sessionId:'session',principal:actor,authority:{propose:true,approve:true},limits:{maxSelectedEvents:100,maxChangedColumns:64,maxRequestBytes:65536,maxPageSize:100,previewTtlSeconds:300}};
 const target={table:'items',rowId:'r'},revision={updated_at:'2026-01-01T00:00:00.000Z',hub_at:null};
 const args={proposalId:'p',expectedVersion:'v',previewToken:'opaque',idempotencyKey:'exact-original'};
 const receipt={operationId:'op',proposalId:'p',proposalVersion:'v',target,revision,historyEventIds:[],approvedBy:actor,committedAt:'2026-01-01T00:00:00.001Z'};
@@ -84,4 +84,15 @@ test('enums require scalar strings and cannot be supplied as single-element arra
     {kind:'error',code:'revision_changed',resolution:['not_committed'],conflicts:[]},
     {kind:'error',code:'revision_changed',resolution:'not_committed',conflicts:[{code:['unavailable'],column:null,eventIds:[],message:''}]},
   ])expect(parseGovernanceReply('approveProposal',args,{status:409,data},capability)).toEqual(indeterminate);
+});
+
+test('governance rejects missing or malformed durable journal identities',()=>{
+  const complete={...capability,deploymentId:'deployment',sessionId:'session'};
+  const transport=async()=>({status:200,data:{kind:'purged'}});
+  expect(createGovernanceAPI(complete,transport)).not.toBeNull();
+  for(const key of ['deploymentId','sessionId']){
+    const absent:Record<string,unknown>={...complete};delete absent[key];
+    expect(createGovernanceAPI(absent,transport)).toBeNull();
+    for(const value of ['', ' ', null, 12])expect(createGovernanceAPI({...complete,[key]:value},transport)).toBeNull();
+  }
 });

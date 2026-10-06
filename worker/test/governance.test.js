@@ -433,3 +433,21 @@ test('approved REAL patch stores the exact previewed native value: '+value,async
   expect(done.body.kind).toBe('success');expect(f.row().precise).toBe(value);
   expect(await f.update({other:'later'})).toMatchObject({status:200});expect(f.row().precise).toBe(value);
 });
+
+test('governance journal identity is server-issued, stable and credential-specific',async()=>{
+  const f=await fixture();
+  const session=async token=>(await worker.fetch(new Request('https://hub.test/v1/session',{headers:{Authorization:'Bearer '+token}}),f.env,{waitUntil(){}})).json();
+  const first=await session('user'),again=await session('user'),agent=await session(f.agent);
+  const identity=first.capabilities.governance;
+  expect(identity.deploymentId).toBe(f.env.GOVERNANCE_DEPLOYMENT_ID);
+  expect(typeof identity.sessionId).toBe('string');expect(identity.sessionId.length).toBeGreaterThan(0);
+  expect(identity.sessionId).not.toBe('user');expect(identity.sessionId).not.toBe(await hashToken('user'));
+  expect(again.capabilities.governance).toEqual(identity);
+  expect(agent.capabilities.governance.deploymentId).toBe(identity.deploymentId);
+  expect(agent.capabilities.governance.sessionId).not.toBe(identity.sessionId);
+  f.env.GOVERNANCE_PREVIEW_KEY='AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI';
+  expect((await session('user')).capabilities.governance).toEqual(identity);
+  f.env.GOVERNANCE_DEPLOYMENT_ID='replacement-deployment';
+  expect((await session('user')).capabilities.governance).toMatchObject({deploymentId:'replacement-deployment',sessionId:identity.sessionId});
+  expect(first.capabilities.replica_sync).toBe(true);
+});
