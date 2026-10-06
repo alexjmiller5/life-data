@@ -1,7 +1,8 @@
 # Governance API contract draft
 
 This is the canonical proposed service boundary for client review. These
-operations are not available, advertised capabilities, generated DTOs, or HTTP
+data shapes have canonical generated TypeScript and Swift DTOs. The operations
+are not available as advertised capabilities, core dispatch methods, or HTTP
 routes yet. Clients can build presentation and capability-disabled adapters;
 they must not derive inverse patches or substitute the existing direct writer.
 
@@ -178,10 +179,12 @@ the first failed. These transport outcomes are not evidence of server rollback.
 Retrying the original key can recover its committed receipt even when the preview
 token has since expired; an uncommitted expired preview requires fresh review.
 
-Until canonical generation, a client may copy these exact type-only shapes into
-its isolated presentation module with a provisional marker. Use an injected API
-that is null when unavailable, with no invented capability names or HTTP paths.
-Replace those copies with canonical generated imports during integration.
+Clients import canonical generated shapes during integration. The generic
+notation above is emitted as concrete `ProposalMutationResult`, `ApprovalResult`,
+`HistoryEventsResult`, `PreviewResult`, `ProposalsResult`, and `ProposalResult`.
+Operation argument definitions are generated without adding unimplemented
+operations to `CoreOperations`. Use an injected API that is null when unavailable,
+with no invented capability names or HTTP paths.
 
 ## Inverse and conflict semantics
 

@@ -60,7 +60,9 @@ CLI.
   Python login behavior and hub routes are independent of these pure UI operations.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
-  codecs; `--check` verifies reproducibility without writing. Edit the contract,
+  codecs, including named discriminated object unions; `--check` verifies
+  reproducibility without writing. Governance DTOs describe data only: no
+  service capability follows from a generated type. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
 - `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
