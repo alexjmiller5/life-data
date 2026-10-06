@@ -84,6 +84,11 @@ CLI.
   separate from local edits/search and deduplicate IDs across changing pages.
   No coverage, count or snapshot guarantee follows from browsing; usage caps
   still apply and core never retries. The bridge contract owns both operations.
+- `core/src/view.ts` compiles bounded AND/OR groups, runtime Today operands and
+  option-rank sorting. Version 2 saved definitions retain timezone and groups;
+  hosts supply the local day bounds on each query, never persist the calendar,
+  and refresh on midnight/resume. Multi-select order uses the first selected
+  option; unknown/empty values trail known ones. Version 1 remains supported.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.

@@ -2,7 +2,7 @@ import type { Catalog, DeleteViewArgs, ListViewsArgs, SaveViewArgs, SavedViewDef
 import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
-import { compileView } from './view.ts';
+import { compileView, validateView } from './view.ts';
 import { writeRow } from './write.ts';
 import storage from '../schema/saved-views.json';
 
@@ -60,14 +60,19 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
   let view: View;
   let referenced: string[];
   try {
-    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths']);
-    if (value.version !== 1) throw new Error('Unsupported saved-view definition version.');
+    object(value);
+    if (value.version !== 1 && value.version !== 2) throw new Error('Unsupported saved-view definition version.');
+    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone']:[])]);
     if (!catalog.tables.some(t => t.id === table)) throw new Error('Saved-view target is absent from the catalog.');
-    const { version: _version, widths, ...query } = value;
+    const { version, widths, timeZone, ...query } = value;
     view = { table, ...query } as View;
-    compileView(view, catalog.properties);
+    validateView(view, catalog.properties);
+    const filters=[...(view.filters ?? []),...(view.groups ?? []).flatMap(g=>g.filters)];
+    if (version===1 && (filters.some(f=>f.relative!==undefined) || view.sort?.some(s=>s.mode!==undefined))) throw new Error('View extensions require version 2.');
+    if (timeZone!==undefined && (typeof timeZone!=='string' || timeZone.length>100 || !/^[A-Za-z_]+(?:\/[A-Za-z0-9_+.-]+)*$/.test(timeZone))) throw new Error('Invalid saved-view timezone.');
+    if (filters.some(f=>f.relative!==undefined) && timeZone===undefined) throw new Error('Relative saved views require a timezone.');
     if (view.columns && new Set(view.columns).size !== view.columns.length) throw new Error('Duplicate saved-view columns.');
-    referenced = [...(view.columns ?? []), ...(view.filters ?? []).map(f => f.column), ...(view.sort ?? []).map(s => s.column)];
+    referenced = [...(view.columns ?? []), ...filters.map(f => f.column), ...(view.sort ?? []).map(s => s.column)];
     if (widths !== undefined) {
       object(widths);
       for (const [column, width] of Object.entries(widths)) {

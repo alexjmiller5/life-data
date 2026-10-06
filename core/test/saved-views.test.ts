@@ -42,6 +42,32 @@ async function insert(db: TestSql, id: string, value: unknown, name = id) {
   await db.run('INSERT INTO views(id,name,tbl,definition,updated_at) VALUES (?,?,?,?,?)', [id,name,'items',typeof value === 'string' ? value : JSON.stringify(value),T0]);
 }
 
+test('version 2 grouped and relative definitions round-trip without persisting a calendar',async()=>{
+  const db=await local();
+  await db.run('ALTER TABLE items ADD COLUMN due TEXT');
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('items.due','items','due','date')");
+  const definition:core.SavedViewDefinition={version:2,timeZone:'America/New_York',groups:[{match:'any',filters:[{column:'qty',op:'gte',value:3},{column:'qty',op:'empty'}]}],filters:[{column:'due',op:'lte',relative:'today'}]};
+  const saved=await save(db,{table:'items',name:'Daily',definition});
+  expect(saved.unavailable).toBeNull();expect(saved.definition).toEqual(definition);
+  const reopened=(await list(db)).views[0];expect(reopened.definition).toEqual(definition);
+  expect(reopened.view).toEqual({table:'items',groups:definition.groups,filters:definition.filters});
+  await expect(core.readRows(db,reopened.view!)).rejects.toThrow(/calendar/i);
+  const before=await db.all('SELECT * FROM views');
+  for(const bad of [{...definition,calendar:{today:'2026-03-08'}},{...definition,timeZone:undefined},{...definition,version:1}]){
+    await expect(save(db,{table:'items',name:'Invalid',definition:bad})).rejects.toThrow();
+  }
+  expect(await db.all('SELECT * FROM views')).toEqual(before);
+});
+
+test('version 2 query extensions remain unavailable to version 1 definitions',async()=>{
+  const db=await local();
+  await insert(db,'old',{version:1});await insert(db,'future',{version:3});
+  await insert(db,'bad',{version:1,groups:[{match:'any',filters:[{column:'qty',op:'empty'}]}]});
+  const result=await list(db);
+  expect(result.views.find(v=>v.id==='old')?.unavailable).toBeNull();
+  for(const id of ['future','bad'])expect(result.views.find(v=>v.id===id)?.unavailable).toBeTruthy();
+});
+
 test.each(['canonical', 'ddl', 'metadata'])('a standalone browser bundle recognizes its packaged saved-view manifest: %s', async variant => {
   const temp = await mkdtemp(join(tmpdir(), 'core-manifest-'));
   try {
@@ -189,7 +215,7 @@ test.each([
 });
 
 test.each([
-  { version: 2 }, { version: 1, table: 'elsewhere' }, { version: 1, limit: 10 }, { version: 1, offset: 4 },
+  { version: 3 }, { version: 1, table: 'elsewhere' }, { version: 1, limit: 10 }, { version: 1, offset: 4 },
   { version: 1, owner: 'private' }, { version: 1, columns: [] }, { version: 1, columns: ['missing'] },
   { version: 1, columns: ['name', 'name'] },
   { version: 1, filters: [{ column: 'qty', op: 'sql', value: '1=1' }] },

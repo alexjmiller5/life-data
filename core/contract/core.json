@@ -50,6 +50,9 @@
         },
         "direction": {
           "$ref": "#/$defs/SortDirection"
+        },
+        "mode": {
+          "$ref": "#/$defs/SortMode"
         }
       },
       "required": [
@@ -68,6 +71,9 @@
         },
         "value": {
           "$ref": "#/$defs/FilterValue"
+        },
+        "relative": {
+          "$ref": "#/$defs/FilterRelative"
         }
       },
       "required": [
@@ -110,6 +116,15 @@
         },
         "search": {
           "type": "string"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterGroup"
+          }
+        },
+        "calendar": {
+          "$ref": "#/$defs/CalendarContext"
         }
       },
       "required": [
@@ -1024,6 +1039,15 @@
           "additionalProperties": {
             "type": "number"
           }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterGroup"
+          }
+        },
+        "timeZone": {
+          "type": "string"
         }
       },
       "required": [
@@ -1881,6 +1905,60 @@
         "message"
       ],
       "description": "HTTP 403. Canonical message and response fixture: tests/fixtures/hub-capabilities-contract.json."
+    },
+    "SortMode": {
+      "type": "string",
+      "enum": [
+        "value",
+        "options"
+      ]
+    },
+    "FilterRelative": {
+      "type": "string",
+      "enum": [
+        "today"
+      ]
+    },
+    "FilterGroup": {
+      "type": "object",
+      "properties": {
+        "match": {
+          "type": "string",
+          "enum": [
+            "all",
+            "any"
+          ]
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Filter"
+          }
+        }
+      },
+      "required": [
+        "match",
+        "filters"
+      ]
+    },
+    "CalendarContext": {
+      "type": "object",
+      "properties": {
+        "today": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "end": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "today",
+        "start",
+        "end"
+      ]
     }
   },
   "operations": {

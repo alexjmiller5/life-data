@@ -364,6 +364,29 @@ and references use bulk reads/upserts and transaction-scoped triggers.
 D1 statement/text budgets fail closed with per-row rejections; retry those rows
 in smaller batches. No partial history remains after a failed transaction.
 
+### Saved view query semantics
+
+Version 1 saved definitions remain supported. Version 2 adds bounded filter
+groups, relative dates and catalog option sorting. Flat filters and outer
+groups combine with AND; each `{match: "all" | "any", filters}` group uses
+AND or OR internally. Groups cannot nest. Queries permit at most 16 groups,
+64 filters per group, 128 filters total and 16 ordered sort clauses.
+
+`{column, op: "lte", relative: "today"}` compares a date or datetime with
+the current local day. Relative filters also support `eq`, `ne`, `lt`, `gt`
+and `gte`, and cannot include `value`. The saved definition retains `timeZone`;
+the host resolves it and supplies runtime `calendar: {today, start, end}`,
+where `today` is a calendar date and the bounds are exact UTC millisecond
+timestamps. The end is exclusive, including on daylight-saving days. Refresh
+the context at local midnight and on resume. Never persist this runtime clock.
+Absent or invalid calendar context rejects execution instead of broadening it.
+
+Sort `mode: "options"` uses catalog option order. Multi-selects use the
+first stored selection; later selections do not break ties. Unknown values
+remain visible after known options, then empty values, in either direction.
+Remaining clauses apply in order, with a stable ID tie-breaker. Omitted mode
+keeps ordinary value sorting. Older clients report version 2 unavailable.
+
 ### Durable change subscriptions
 
 `POST /v1/subscriptions` accepts `{label, start: "now", sources}`. Each
