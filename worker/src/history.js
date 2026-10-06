@@ -158,7 +158,7 @@ export function historyStatements(db, table, key, plan) {
     begin.push(db.prepare('INSERT INTO _governance_writes(tbl) VALUES (?)').bind(table));
     end.push(db.prepare('DELETE FROM _governance_writes WHERE tbl=?').bind(table));
   }
-  const receipts = key + '_receipts', trigger = key + '_history';
+  const receipts = key + '_receipts';
   begin.push(db.prepare(`CREATE TABLE ${qident(receipts)} AS SELECT value FROM json_each(?)`).bind(JSON.stringify(plan.summaries)));
   const cell = (c) => `SELECT value FROM ${qident(receipts)} WHERE json_extract(value,'$.row_id') IS NEW.id AND json_extract(value,'$.col')=${literal(c)} AND json_extract(value,'$.updated_at') IS NEW.updated_at`;
   const checks = plan.cols.filter(c=>!['updated_at','hub_at'].includes(c)).map(c=> {
@@ -175,8 +175,20 @@ export function historyStatements(db, table, key, plan) {
       WHERE ${storageChanged('OLD.'+qident(c),'NEW.'+qident(c))} AND NOT EXISTS (
         ${cell(c)} AND json_extract(value,'$.valid')=1
         AND json_extract(value,'$.old') IS ${old} COLLATE BINARY AND json_extract(value,'$.new') IS ${value} COLLATE BINARY);`;
-  }).join('\n');
-  if (checks) {
+  });
+  // Typed evidence expands each column into several SQL statements. Keep the
+  // complete per-cell sequence together, but split wide tables below D1's
+  // statement limit. Every trigger still runs in the same mutation transaction.
+  const chunks=[];
+  let chunk=[],bytes=0;
+  for(const check of checks){
+    const size=new TextEncoder().encode(check).length+1;
+    if(chunk.length && bytes+size>90_000){chunks.push(chunk.join('\n'));chunk=[];bytes=0;}
+    chunk.push(check);bytes+=size;
+  }
+  if(chunk.length)chunks.push(chunk.join('\n'));
+  for(const [i,checks] of chunks.entries()){
+    const trigger=key+'_history_'+i;
     begin.push(db.prepare(`CREATE TRIGGER ${qident(trigger)} AFTER UPDATE ON ${qident(table)} BEGIN ${checks} END`));
     end.push(db.prepare(`DROP TRIGGER ${qident(trigger)}`));
   }
