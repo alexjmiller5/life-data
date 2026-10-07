@@ -22,7 +22,7 @@ import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
-import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -846,7 +846,9 @@ async function handle(request, env, ctx, url) {
     if (optionsRequest) return json(await scopedOptions(url.searchParams,tenant.db,tenant.scopes));
     if (narrowRows) {
       const body = await request.json();
-      if (!body || !(rowOperation === 'read' ? authorizeRowRead(tenant.scopes,body) : authorizeTable(tenant.scopes,rowOperation,body.table)) || Object.hasOwn(body,"history")) {
+      if (!body || !(rowOperation === 'read' ? authorizeRowRead(tenant.scopes,body)
+        : authorizeTable(tenant.scopes,rowOperation,body.table)
+          || (url.pathname === '/v1/rows/patch' && authorizeRowPatch(tenant.scopes,body))) || Object.hasOwn(body,"history")) {
         return json({error:"insufficient scope"},403);
       }
       if (rowOperation === "read") {
@@ -854,7 +856,7 @@ async function handle(request, env, ctx, url) {
         return out instanceof Response ? out : json(out);
       }
       if (url.pathname === '/v1/rows/patch') {
-        const out=await patchChecked(tenant.db,body,scopedTable);
+        const out=await patchChecked(tenant.db,body,scopedPatchTable);
         return out instanceof Response ? out : json(out);
       }
       if (!Array.isArray(body.columns) || !body.columns.includes('id') || !Array.isArray(body.rows)) {
