@@ -492,3 +492,30 @@ test("subscription consumption, ACK and admin routes stay capped without leaking
   expect(response.status).toBe(204);
   expect(response.headers.get("Access-Control-Allow-Methods")).toContain("PATCH");
 });
+
+test("repeating an operator test resumes only its failed delivery without replaying accepted receipts",async()=>{
+  const env=environment();
+  const path="/v1/notifications/test/00000000-0000-4000-8000-000000000002";
+  const first=await call(env,path,{method:"POST"});const {id}=await first.json();
+  await call(env,path); // initializes the supported receipt store
+  for(const [installation,eventId,outcome,next] of [
+    ['retry',id,'retry',9999999999999],['accepted',id,'accepted',777],
+    ['permanent',id,'permanent',888],['unrelated','other-event','retry',9999999999999]]) {
+    await env.AUTH_DB.prepare('INSERT INTO _push_deliveries VALUES (?,?,?, ?,7,?)')
+      .bind(installation,eventId,'revision',outcome,next).run();
+  }
+  const full=await addToken(env,'consumer','full');
+  expect((await call(env,path,{method:'POST',token:full})).status).toBe(403);
+  expect((await call(env,path,{method:'POST'})).status).toBe(200);
+  const {results}=await env.AUTH_DB.prepare('SELECT installation_id,outcome,attempts,next_attempt FROM _push_deliveries ORDER BY installation_id').all();
+  expect(results).toEqual([
+    {installation_id:'accepted',outcome:'accepted',attempts:7,next_attempt:777},
+    {installation_id:'permanent',outcome:'permanent',attempts:7,next_attempt:888},
+    {installation_id:'retry',outcome:'retry',attempts:7,next_attempt:0},
+    {installation_id:'unrelated',outcome:'retry',attempts:7,next_attempt:9999999999999}]);
+  expect(await env.AUTH_DB.prepare('SELECT count(*) AS count,read_at FROM _notifications WHERE id=?').bind(id).first()).toEqual({count:1,read_at:null});
+  await env.AUTH_DB.prepare("UPDATE _notifications SET producer='unrelated' WHERE id=?").bind(id).run();
+  await env.AUTH_DB.prepare("UPDATE _push_deliveries SET next_attempt=9999999999999 WHERE installation_id='retry'").run();
+  await call(env,path,{method:'POST'});
+  expect(await env.AUTH_DB.prepare("SELECT next_attempt FROM _push_deliveries WHERE installation_id='retry'").first()).toEqual({next_attempt:9999999999999});
+});
