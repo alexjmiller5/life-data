@@ -73,6 +73,13 @@ CLI.
   a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
+- `core/schema/sidebar-pins.json` owns durable table-pin storage. The contract
+  generator packages its byte-exact Python resource; do not edit that copy.
+  `life table provision sidebar-pins` installs logged DDL/catalog metadata and
+  refuses foreign collisions. Pin operations use ordinary validated writes,
+  deterministic identities, revision guards and tombstones; reorder is locally
+  atomic, while sync retains ordinary row-level LWW semantics. Recognized pins
+  follow table renames through copy-plus-tombstone rekeying.
 - `core/src/undo.ts` owns a bounded volatile stack of 100 undo receipts per `createCoreHandlers`.
   Capture is inside the existing write transaction; receipts publish only
   after COMMIT. Inverses use the same writer and captured revision/shape.

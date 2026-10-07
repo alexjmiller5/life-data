@@ -3466,6 +3466,154 @@
         "derived",
         "failed"
       ]
+    },
+    "SidebarPin": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "tbl",
+        "position",
+        "updated_at",
+        "deleted_at",
+        "unavailable"
+      ]
+    },
+    "SidebarPinList": {
+      "type": "object",
+      "properties": {
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPin"
+          }
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pins",
+        "unavailable"
+      ]
+    },
+    "PinTableArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "expectedUpdatedAt"
+      ]
+    },
+    "UnpinTableArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedUpdatedAt"
+      ]
+    },
+    "PinRevision": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "updated_at"
+      ]
+    },
+    "MoveTablePinArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "expected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PinRevision"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "direction",
+        "expected"
+      ]
     }
   },
   "operations": {
@@ -3810,6 +3958,38 @@
         "$ref": "#/$defs/ResolveDerivedResult"
       },
       "description": "Request hub-owned derivation for an unchanged saved row. Hosts retain drafts, then sync and re-read the record; this operation never writes replica values."
+    },
+    "listSidebarPins": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "pinTable": {
+      "args": {
+        "$ref": "#/$defs/PinTableArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "unpinTable": {
+      "args": {
+        "$ref": "#/$defs/UnpinTableArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "moveTablePin": {
+      "args": {
+        "$ref": "#/$defs/MoveTablePinArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
     }
   }
 }

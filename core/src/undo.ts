@@ -134,5 +134,11 @@ export function createWriteSession(db: SqlDriver, origin: string) {
       return result;
     });
   }
-  return { write, runRowAction, undo, undoStatus, viewMutation };
+  // A sidebar reorder can touch multiple rows; it must not replace record Undo
+  // with a receipt for only one part of that committed operation.
+  async function sidebarMutation<A,T>(input:A,operation:(args:A)=>Promise<T>):Promise<T> {
+    const args=snapshot(input);
+    return queued(()=>operation(args));
+  }
+  return { write, runRowAction, undo, undoStatus, viewMutation, sidebarMutation };
 }

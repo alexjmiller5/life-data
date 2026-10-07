@@ -1,0 +1,32 @@
+{
+  "ddl": [
+    "CREATE TABLE \"sidebar_pins\" (\n    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),\n    \"tbl\" TEXT,\n    \"position\" INTEGER,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n    deleted_at TEXT,\n    hub_at TEXT\n)",
+    "CREATE TRIGGER \"sidebar_pins_updated_at\" AFTER UPDATE ON \"sidebar_pins\" FOR EACH ROW\nWHEN NEW.updated_at = OLD.updated_at\nBEGIN\n    UPDATE \"sidebar_pins\" SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid;\nEND"
+  ],
+  "table": {
+    "id": "sidebar_pins",
+    "kind": "table",
+    "display": "tbl"
+  },
+  "properties": [
+    {
+      "id": "sidebar_pins.tbl",
+      "tbl": "sidebar_pins",
+      "col": "tbl",
+      "type": "ref",
+      "required": 1,
+      "sort": 10,
+      "ref_table": "catalog_tables",
+      "source": "life-core",
+      "source_ref": "sidebar-pins/v1"
+    },
+    {
+      "id": "sidebar_pins.position",
+      "tbl": "sidebar_pins",
+      "col": "position",
+      "type": "int",
+      "required": 1,
+      "sort": 20
+    }
+  ]
+}

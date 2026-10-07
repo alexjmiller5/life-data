@@ -890,6 +890,9 @@ def rename_refs(conn, old: str, new: str) -> None:
         )
     if conn.execute("SELECT 1 FROM catalog_tables WHERE id = ?", (old,)).fetchone():
         _rekey(conn, "catalog_tables", old, new)
+    from .sidebar_pins import rename as rename_sidebar_pins
+
+    rename_sidebar_pins(conn, old, new)
     if _has_shared_views(conn):
         # Definitions contain layout/query state, never a repeated table name.
         # Keep tombstones pointed at the renamed target for later restoration.

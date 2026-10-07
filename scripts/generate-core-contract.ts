@@ -226,6 +226,11 @@ if (import.meta.main) {
     [option('--ts', resolve(root, 'core/src/contract.generated.ts')), result.typescript],
     [option('--swift', resolve(root, 'core/generated/CoreContract.generated.swift')), result.swift],
   ];
+  // Python wheels need a regular packaged resource; the core manifest remains canonical.
+  if (schema === resolve(root, 'core/contract/core.json')) outputs.push([
+    resolve(root, 'src/life_data/schema/sidebar-pins.json'),
+    await readFile(resolve(root, 'core/schema/sidebar-pins.json'), 'utf8'),
+  ]);
   for (const [path, content] of outputs) {
     if (args.includes('--check')) {
       if (await readFile(path, 'utf8').catch(() => '') !== content) throw new Error(`Stale generated contract: ${path}`);

@@ -236,6 +236,13 @@ def _column_properties(columns: list[str]):
         yield s["col"], fields
 
 
+def provision_sidebar_pins(path: Path) -> None:
+    """Provision the recognized synced navigation table through normal schema writes."""
+    from .sidebar_pins import provision
+
+    provision(path)
+
+
 def rename_table(path: Path, old: str, new: str) -> None:
     """Rename a table and every reference to it - catalog rows, refs, rule SQL,
     provenance, history - in one transaction, as logged DDL that replays to
@@ -1482,6 +1489,8 @@ def main(argv: list[str] | None = None) -> int:
     k_sub.add_parser("list", help="list tokens (names/scopes, never values)")
     p_table = sub.add_parser("table", help="table operations")
     t_sub = p_table.add_subparsers(dest="table_command", required=True)
+    t_provision = t_sub.add_parser("provision", help="install a supported shared table schema")
+    t_provision.add_argument("schema", choices=["sidebar-pins"])
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
     p_create.add_argument("name")
     p_create.add_argument("columns", nargs="+", metavar="name:type")
@@ -1688,7 +1697,9 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         else:
             print(json.dumps(hub.token_list(), indent=2))
     elif args.command == "table":
-        if args.table_command == "create":
+        if args.table_command == "provision":
+            provision_sidebar_pins(path)
+        elif args.table_command == "create":
             descriptions = {}
             for entry in args.description:
                 col, separator, description = entry.partition("=")
