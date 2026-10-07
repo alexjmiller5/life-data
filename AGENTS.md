@@ -73,9 +73,13 @@ CLI.
   a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
-- `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
+- `core/src/undo.ts` owns a bounded volatile stack of 100 undo receipts per `createCoreHandlers`.
   Capture is inside the existing write transaction; receipts publish only
   after COMMIT. Inverses use the same writer and captured revision/shape.
+  Only the top receipt can be undone. Undo advances an earlier same-row receipt
+  only when its full captured state exactly matches the state being restored;
+  external writes never become a local baseline. Saved views use captured writes
+  and revalidate their definition on restoration. No-op writes preserve the stack.
   Session mutations/status are queued; host-wide serialization still applies.
   Dispose handlers with the workspace. No undo persistence, history replay,
   redo or autosave grouping. Hosts preserve newer drafts and pause autosave
