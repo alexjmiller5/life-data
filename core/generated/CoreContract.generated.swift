@@ -4,7 +4,7 @@ import Foundation
 
 public enum CoreContract {
   public static let hash = "1635e7bf3ab2d8c8e273ce86adf889783741e8ce867ec92ff4f7ef9311c8ffa8"
-  static func checkInteger(_ value: Int) throws {
+  public static func checkInteger(_ value: Int) throws {
     guard (-9_007_199_254_740_991...9_007_199_254_740_991).contains(value) else {
       throw EncodingError.invalidValue(value, .init(codingPath: [], debugDescription: "Integer exceeds JavaScript precision"))
     }
