@@ -868,3 +868,11 @@ Singleton creation policies can use `occurrenceType: "none"` and the generic
 `prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
 recurring policy encodings and revisions remain unchanged. Prefixes and
 source registries are deployment state, never consumer-specific constants.
+
+
+Transferable extension queries use canonical `prepareReadPlan` and the same view
+compiler. Emit typed calendar slots at binding sites, never infer them from values
+or SQL text. Exact ordered schema/catalog/view/hub guard rows must be checked by
+read-only consumers in the query transaction; host workspace/replica identity,
+coherent publication, policy, work budget and stale presentation remain mandatory.
+Plans reject nonempty FTS; list/count limits are 20/10,001 respectively.

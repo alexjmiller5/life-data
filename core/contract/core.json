@@ -3777,6 +3777,254 @@
         "direction",
         "expected"
       ]
+    },
+    "SQLScalar": {
+      "type": [
+        "string",
+        "number",
+        "null"
+      ]
+    },
+    "CalendarSlot": {
+      "type": "string",
+      "enum": [
+        "today",
+        "start",
+        "end"
+      ]
+    },
+    "ReadPlanLiteral": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "literal"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/SQLScalar"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ReadPlanCalendar": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "calendar"
+          ]
+        },
+        "slot": {
+          "$ref": "#/$defs/CalendarSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "slot"
+      ]
+    },
+    "ReadPlanParameter": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ReadPlanLiteral"
+        },
+        {
+          "$ref": "#/$defs/ReadPlanCalendar"
+        }
+      ]
+    },
+    "ReadPlanKind": {
+      "type": "string",
+      "enum": [
+        "list",
+        "count"
+      ]
+    },
+    "ReadPlanCalendarPolicy": {
+      "type": "object",
+      "properties": {
+        "timeZone": {
+          "type": "string"
+        },
+        "dayStartMinutes": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "timeZone",
+        "dayStartMinutes"
+      ]
+    },
+    "ReadPlanGuard": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "schema",
+            "catalog",
+            "view",
+            "identity"
+          ]
+        },
+        "sql": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SQLScalar"
+          }
+        },
+        "expectedRows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "sql",
+        "parameters",
+        "expectedRows"
+      ],
+      "description": "Exact ordered SQL rows are collision-free structural fingerprints. Hosts compare scalar values and UTF-8 strings exactly in the same read transaction as execution; never trust metadata alone."
+    },
+    "PrepareReadPlanArgs": {
+      "type": "object",
+      "properties": {
+        "workspaceID": {
+          "type": "string"
+        },
+        "replicaID": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ReadPlanKind"
+        },
+        "viewID": {
+          "type": "string"
+        },
+        "expectedViewUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceID",
+        "replicaID",
+        "table",
+        "kind"
+      ]
+    },
+    "ReadPlan": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/Count"
+        },
+        "workspaceID": {
+          "type": "string"
+        },
+        "replicaID": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "viewID": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "viewUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ReadPlanKind"
+        },
+        "sql": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadPlanParameter"
+          }
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "displayColumn": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maximumRows": {
+          "$ref": "#/$defs/Count"
+        },
+        "calendarPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadPlanCalendarPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadPlanGuard"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "workspaceID",
+        "replicaID",
+        "table",
+        "viewID",
+        "viewUpdatedAt",
+        "kind",
+        "sql",
+        "parameters",
+        "columns",
+        "displayColumn",
+        "maximumRows",
+        "calendarPolicy",
+        "guards"
+      ]
     }
   },
   "operations": {
@@ -4171,6 +4419,15 @@
       "result": {
         "$ref": "#/$defs/SidebarPinList"
       }
+    },
+    "prepareReadPlan": {
+      "args": {
+        "$ref": "#/$defs/PrepareReadPlanArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ReadPlan"
+      },
+      "description": "Prepare a bounded read-only title-list or capped-count plan from the canonical compiler. No FTS, schema initialization, or query execution. Host owns stable workspace/replica identity, coherent publication, read-only work budget and exact guards in one read transaction."
     }
   }
 }

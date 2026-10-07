@@ -1,7 +1,7 @@
 import { qident, validEditTimestamp, type Property, type Row } from "./validate.ts";
 import { compileSearch } from './search.ts';
 
-import type { View, Filter, CalendarContext } from './contract.generated.ts';
+import type { View, Filter, CalendarContext, CalendarSlot, ReadPlanKind, ReadPlanParameter } from './contract.generated.ts';
 export type { Filter, View } from './contract.generated.ts';
 
 const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at", "deleted_at", "hub_at"]);
@@ -21,7 +21,22 @@ function checkObject(value: unknown, keys: string[], label: string): asserts val
  * which drains its queue and queries in the same transaction.
  */
 export function compileView(view: View, properties: Property[]): { sql: string; params: (string | number | null)[] } {
-  return compile(view, properties, true);
+  const result = compile(view, properties, true);
+  return {sql: result.sql, params: result.parameters.map(p => {
+    if (p.kind !== 'literal') throw new Error('Unbound calendar parameter');
+    return p.value;
+  })};
+}
+
+/** Same compiler, tagged at binding sites. The caller supplies explicit title/id
+ * projection and validates the saved definition before count drops its ordering. */
+export function compileReadQuery(view: View, properties: Property[], kind: ReadPlanKind): {sql:string; parameters:ReadPlanParameter[]} {
+  if (!['list','count'].includes(kind)) throw new Error('Invalid read-plan kind');
+  if (view.search) throw new Error('Read-only plans do not support nonempty FTS search');
+  if (!view.columns?.length) throw new Error('Read plans require explicit columns');
+  const count = kind === 'count';
+  const query = compile({...view, ...(count ? {sort:[],columns:['id']} : {}),limit:count?10001:20,offset:0},properties,'plan',count?10001:20);
+  return count ? {...query,sql:`SELECT count(*) AS count FROM (${query.sql}) AS _read_count`} : query;
 }
 
 /** Saved definitions validate without a host clock; executing a relative query requires one. */
@@ -36,7 +51,7 @@ export function validateCalendarContext(value: CalendarContext | undefined): Cal
   return value;
 }
 
-function compile(view: View, properties: Property[], requireCalendar: boolean): { sql: string; params: (string | number | null)[] } {
+function compile(view: View, properties: Property[], requireCalendar: boolean | 'plan', maximum=200): { sql: string; parameters: ReadPlanParameter[] } {
   checkObject(view, ["table", "columns", "filters", "sort", "limit", "offset", "trash", "search", "groups", "calendar"], "view");
   if (typeof view.table !== "string") throw new Error("Invalid table");
   const table = qident(view.table);
@@ -62,14 +77,19 @@ function compile(view: View, properties: Property[], requireCalendar: boolean): 
 
   const selected: string[] = [];
   for (const name of view.columns ?? []) selected.push(column(name));
-  const params: (string | number | null)[] = [];
+  const parameters: ReadPlanParameter[] = [];
   const bind = (value: unknown): string => {
     if (value !== null && typeof value !== "string" && typeof value !== "boolean"
       && !(typeof value === "number" && Number.isFinite(value))) throw new Error("Invalid filter value");
-    params.push(typeof value === "boolean" ? Number(value) : value as string | number | null);
+    parameters.push({kind:'literal',value:typeof value === "boolean" ? Number(value) : value as string | number | null});
     return "?";
   };
   const calendar=validateCalendarContext(view.calendar);
+  const bindCalendar = (slot: CalendarSlot): string => {
+    if (requireCalendar !== 'plan') return bind(calendar![slot]);
+    parameters.push({kind:'calendar',slot});
+    return '?';
+  };
   if ((view.groups?.length ?? 0)>16 || (view.sort?.length ?? 0)>16) throw new Error('View exceeds group or sort limit');
   let filterCount=0;
   const where = [`${column("deleted_at")} IS ${view.trash ? "NOT " : ""}NULL`];
@@ -85,23 +105,23 @@ function compile(view: View, properties: Property[], requireCalendar: boolean): 
     if (filter.relative !== undefined) {
       if (filter.relative!=='today' || Object.hasOwn(filter,'value') || !['date','datetime','date_or_datetime'].includes(type ?? '')
         || !['eq','ne','gt','gte','lt','lte'].includes(filter.op)) throw new Error('Invalid relative date filter');
-      if (!calendar) {
+      if (!calendar && requireCalendar !== 'plan') {
         if (requireCalendar) throw new Error('Relative query requires a calendar context');
         return '0';
       }
       const op={eq:'=',ne:'!=',gt:'>',gte:'>=',lt:'<',lte:'<='}[filter.op as 'eq'|'ne'|'gt'|'gte'|'lt'|'lte'];
       const dateOnly=`(length(${col})=10 AND ${col} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(${col},'+0 days')=${col})`;
-      const dateComparison=`${col} ${op} ${bind(calendar.today)}`;
+      const dateComparison=`${col} ${op} ${bindCalendar('today')}`;
       const instant=`julianday(${col})`;
-      const bound=(value:string)=>`julianday(${bind(value)})`;
+      const bound=(slot:CalendarSlot)=>`julianday(${bindCalendar(slot)})`;
       let timed:string;
       switch(filter.op) {
-        case 'eq':timed=`${instant} >= ${bound(calendar.start)} AND ${instant} < ${bound(calendar.end)}`;break;
-        case 'ne':timed=`${instant} < ${bound(calendar.start)} OR ${instant} >= ${bound(calendar.end)}`;break;
-        case 'gt':timed=`${instant} >= ${bound(calendar.end)}`;break;
-        case 'gte':timed=`${instant} >= ${bound(calendar.start)}`;break;
-        case 'lt':timed=`${instant} < ${bound(calendar.start)}`;break;
-        default:timed=`${instant} < ${bound(calendar.end)}`;
+        case 'eq':timed=`${instant} >= ${bound('start')} AND ${instant} < ${bound('end')}`;break;
+        case 'ne':timed=`${instant} < ${bound('start')} OR ${instant} >= ${bound('end')}`;break;
+        case 'gt':timed=`${instant} >= ${bound('end')}`;break;
+        case 'gte':timed=`${instant} >= ${bound('start')}`;break;
+        case 'lt':timed=`${instant} < ${bound('start')}`;break;
+        default:timed=`${instant} < ${bound('end')}`;
       }
       const zoned=`(${col} GLOB '????-??-??T??:??*' AND (substr(${col},-1)='Z' OR (substr(${col},-6,1) IN ('+','-') AND substr(${col},-3,1)=':')))`;
       return `(CASE WHEN ${dateOnly} THEN ${dateComparison} WHEN ${zoned} THEN (${timed}) ELSE 0 END)`;
@@ -174,8 +194,8 @@ function compile(view: View, properties: Property[], requireCalendar: boolean): 
     if (sort.column === "id") sortedById = true;
   }
   if (!sortedById) order.push(`${column("id")} ASC`);
-  const sql = `SELECT ${selected.length ? selected.join(", ") : `${row}.*`} FROM ${table} AS ${row} WHERE ${where.join(" AND ")} ORDER BY ${order.join(", ")} LIMIT ${bind(Math.min(limit, 200))} OFFSET ${bind(offset)}`;
-  return { sql, params };
+  const sql = `SELECT ${selected.length ? selected.join(", ") : `${row}.*`} FROM ${table} AS ${row} WHERE ${where.join(" AND ")} ORDER BY ${order.join(", ")} LIMIT ${bind(Math.min(limit, maximum))} OFFSET ${bind(offset)}`;
+  return { sql, parameters };
 }
 
 /** Use only the configured scalar label, then id; never infer a schema. */
