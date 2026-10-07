@@ -34,7 +34,8 @@ background command's dependencies through `watch.packages`.
 ```bash
 life init                                  # create the data dir + database
 life path                                  # print the database path
-life table create people name:text birthday:text
+life table create people name:text birthday:text \
+  --description 'name=Display name.' --description 'birthday=Source birthday text.'
 life sql "INSERT INTO people (name) VALUES ('Ada')"
 life sql "SELECT * FROM people"            # results as JSON
 life sql "ALTER TABLE people ADD COLUMN likes TEXT"
@@ -267,6 +268,16 @@ it is a complete backup. Never put the data dir inside a file-sync folder
 - **Tables created via `life table create` get sync-ready columns
   automatically**: `id` (random 128-bit hex), `created_at`, `updated_at`
   (trigger-maintained), `deleted_at`. ISO 8601 UTC, millisecond precision.
+  Repeat `--description COLUMN=TEXT` to document each supplied column.
+  The table, timestamp trigger, catalog definitions and schema log commit
+  together; a rejected definition leaves none of them behind.
+- **Catalog policy is data.** Enforced table invariants on
+  `catalog_properties` apply to `life property set`, raw metadata writes and
+  hub pushes. A rule using `changed` can require descriptions on new or edited
+  definitions while leaving ordinary data edits available for older tables.
+  `life check` evaluates `changed` against the full table to report existing
+  gaps. Configure naming and documentation rules through `life rule set`;
+  the application ships no user-specific catalog policy.
 - **`history`** records every edit to every cataloged table, one row per
   changed cell (`tbl`, `row_id`, `col`, `old`, `new`, `origin` = hostname,
   `created_at` = when), in the same transaction as the edit. Updates only:
