@@ -4,6 +4,7 @@ export function validEnrollmentScopes(scopes: unknown): scopes is string[] {
     || new Set(scopes).size !== scopes.length) return false;
   return scopes.every(scope => {
     if (typeof scope === 'string' && /^captures:(submit|read):[a-z][a-z0-9-]{0,63}$/.test(scope)) return true;
+    if (typeof scope === 'string' && /^streams:(read|append):[A-Za-z0-9_-]{1,64}$/.test(scope)) return true;
     const p = typeof scope === 'string'
       ? /^(tables:read|tables:patch|catalog:read):([A-Za-z][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)$/.exec(scope) : null;
     if (!p || /^(?:sqlite_|catalog_)/i.test(p[2]!) || /^(?:history|provenance|purges)$/i.test(p[2]!)

@@ -151,6 +151,14 @@ function allowed(pathname, method, scopes) {
     return scopes.includes("full") || fileAllowed(pathname, method, scopes);
   }
   if (pathname === "/v1/backup") return scopes.includes("full");
+  if (pathname.startsWith('/v1/streams/')) {
+    const route = /^\/v1\/streams\/([A-Za-z0-9_-]{1,64})\/(append|tail|records)$/.exec(pathname);
+    if (route) {
+      const [, stream, op] = route;
+      if (method === 'POST' && op === 'append' && scopes.includes(`streams:append:${stream}`)) return true;
+      if (method === 'GET' && ['tail','records'].includes(op) && scopes.includes(`streams:read:${stream}`)) return true;
+    }
+  }
   if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
     return scopes.includes("full") || scopes.includes("streams:append");
   }
@@ -694,10 +702,57 @@ async function streamManifest(env, stream, origin) {
   return { parquet: parquet.map(toUrl), landing: landing.map(toUrl) };
 }
 
+async function streamRecords(env, stream, params) {
+  const bad = () => json({error:'invalid stream page'},400);
+  if ([...params.keys()].some(key=>!['limit','cursor'].includes(key))
+    || params.getAll('limit').length > 1 || params.getAll('cursor').length > 1) return bad();
+  const limit = params.has('limit') ? Number(params.get('limit')) : 20;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20) return bad();
+  let cursor;
+  if (params.has('cursor')) {
+    try {
+      const encoded = params.get('cursor');
+      if (encoded.length > 8192) return bad();
+      const value = JSON.parse(atob(encoded));
+      if (!Array.isArray(value) || value.length !== 3 || value[0] !== 'stream-records-v1'
+        || value[1] !== stream || typeof value[2] !== 'string' || !value[2]) return bad();
+      cursor = value[2];
+    } catch { return bad(); }
+  }
+  try {
+    const prefix = `landing/${stream}/`;
+    const page = await env.ARCHIVE.list({prefix, cursor, limit});
+    if (!Array.isArray(page.objects) || page.objects.length > limit || typeof page.truncated !== 'boolean'
+      || (page.truncated && (typeof page.cursor !== 'string' || !page.cursor || page.cursor === cursor))) {
+      return json({error:'stream page unavailable'},503);
+    }
+    const entries = [];
+    let bytes = 0;
+    for (const item of page.objects) {
+      if (typeof item.key !== 'string' || !item.key.startsWith(prefix)) return json({error:'stream page unavailable'},503);
+      if (item.size > 2_000_000) return json({error:'stream page too large'},413);
+      const object = await env.ARCHIVE.get(item.key);
+      if (!object) return json({error:'stream page unavailable'},503);
+      if (object.size > 2_000_000) return json({error:'stream page too large'},413);
+      const raw = await object.arrayBuffer();
+      if (raw.byteLength > 2_000_000) return json({error:'stream page too large'},413);
+      const entry = {id:await sha256hex(item.key), body:new TextDecoder('utf-8',{fatal:true}).decode(raw)};
+      bytes += new TextEncoder().encode(JSON.stringify(entry)).byteLength;
+      if (bytes > 2_000_000) return json({error:'stream page too large'},413);
+      entries.push(entry);
+    }
+    const result = {entries, next_cursor:page.truncated ? btoa(JSON.stringify(['stream-records-v1',stream,page.cursor])) : null};
+    if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 2_000_000) return json({error:'stream page too large'},413);
+    return Response.json(result,{headers:{'Cache-Control':'no-store'}});
+  } catch { return json({error:'stream page unavailable'},503); }
+}
+
 async function handleStreams(request, env, url) {
   const parts = url.pathname.split("/").filter(Boolean); // v1 streams <name> <op>
   const [, , stream, op] = parts;
-  if (!STREAM_NAME.test(stream ?? "")) return json({ error: "bad stream name" }, 400);
+  if (parts.length !== 4 || !STREAM_NAME.test(stream ?? "")) return json({ error: "bad stream name" }, 400);
+
+  if (op === 'records' && request.method === 'GET') return streamRecords(env,stream,url.searchParams);
 
   if (op === "append" && request.method === "POST") {
     const body = await request.arrayBuffer();
