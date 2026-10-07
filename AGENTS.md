@@ -874,3 +874,15 @@ Singleton creation policies can use `occurrenceType: "none"` and the generic
 `prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
 recurring policy encodings and revisions remain unchanged. Prefixes and
 source registries are deployment state, never consumer-specific constants.
+
+## Apple push
+
+`worker/src/apple-push.js` owns optional native registration and APNs delivery.
+The three exact auth-store registration routes are usage-cap exempt. Native
+authority comes from explicit Access-verified app-profile approval, never token
+names or caller-supplied principals. Revisions guard rotation and revocation;
+opaque session/installation bindings never expose token hashes. Push acceptance,
+OS presentation and shared read state remain separate. Deployment/event identity
+uses the 43-byte base64url SHA-256 JSON tuple in `docs/apple-push.md`; delivery
+receipts also bind the installation. Configure the dedicated provider key and
+profiles through the owning project's service ENV, never client settings.

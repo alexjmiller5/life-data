@@ -1556,6 +1556,15 @@
         },
         "enrollmentProfile": {
           "$ref": "#/$defs/EnrollmentProfileReceipt"
+        },
+        "pushRegistration": {
+          "$ref": "#/$defs/PushRegistrationCapability"
+        },
+        "pushProfiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PushAppProfile"
+          }
         }
       },
       "required": [
@@ -1895,6 +1904,15 @@
         },
         "rowCreation": {
           "$ref": "#/$defs/RowCreationCapability"
+        },
+        "push_registration": {
+          "$ref": "#/$defs/PushRegistrationCapability"
+        },
+        "push_profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PushAppProfile"
+          }
         }
       },
       "required": [
@@ -3875,6 +3893,171 @@
         "updated_at",
         "view",
         "unavailable"
+      ]
+    },
+    "PushAppProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "platform": {
+          "$ref": "#/$defs/PushPlatform"
+        }
+      },
+      "required": [
+        "id",
+        "platform"
+      ]
+    },
+    "PushRegistrationCapability": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "deploymentIdentity": {
+          "type": "string"
+        },
+        "sessionBinding": {
+          "type": "string"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PushAppProfile"
+          }
+        }
+      },
+      "required": [
+        "protocol",
+        "deploymentIdentity",
+        "sessionBinding",
+        "profiles"
+      ]
+    },
+    "PushRegistrationState": {
+      "type": "object",
+      "properties": {
+        "installationId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/PushRegistrationStatus"
+        },
+        "deploymentIdentity": {
+          "type": "string"
+        },
+        "sessionBinding": {
+          "type": "string"
+        },
+        "appProfile": {
+          "type": "string"
+        },
+        "activatedAfterSeq": {
+          "$ref": "#/$defs/Count"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "installationId",
+        "revision",
+        "state",
+        "deploymentIdentity",
+        "sessionBinding",
+        "appProfile",
+        "activatedAfterSeq",
+        "updatedAt"
+      ]
+    },
+    "PushRegistrationRequest": {
+      "type": "object",
+      "properties": {
+        "appProfile": {
+          "type": "string"
+        },
+        "deviceToken": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "appProfile",
+        "deviceToken",
+        "expectedRevision",
+        "requestId"
+      ]
+    },
+    "PushRevocationRequest": {
+      "type": "object",
+      "properties": {
+        "appProfile": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "appProfile",
+        "expectedRevision",
+        "requestId"
+      ]
+    },
+    "PushRegistrationReceipt": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "registration": {
+          "$ref": "#/$defs/PushRegistrationState"
+        }
+      },
+      "required": [
+        "requestId",
+        "registration"
+      ]
+    },
+    "PushPlatform": {
+      "type": "string",
+      "enum": [
+        "ios",
+        "macos"
+      ]
+    },
+    "PushRegistrationStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "revoked"
       ]
     }
   },

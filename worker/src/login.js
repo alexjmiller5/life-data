@@ -6,6 +6,7 @@ import {
   authorityStatement,
 } from "./auth.js";
 import {enrollmentProfile} from './enrollment-profile.js';
+import {pushConfiguration,ensurePush,pushEnrollmentStatement} from './apple-push.js';
 
 const HTML_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
@@ -83,8 +84,8 @@ function sameOrigin(request, url) {
 function queryValues(url) {
   const values = Object.fromEntries(url.searchParams.entries());
   const keys = [...url.searchParams.keys()];
-  if (![2,3].includes(keys.length) || new Set(keys).size !== keys.length
-    || !keys.includes("key") || !keys.includes("name") || keys.some(k=>!['key','name','profile'].includes(k)))
+  if (![2,3,4].includes(keys.length) || new Set(keys).size !== keys.length
+    || !keys.includes("key") || !keys.includes("name") || keys.some(k=>!['key','name','profile','pushProfile'].includes(k)))
     return null;
   return values;
 }
@@ -121,23 +122,30 @@ async function approvedLogin(request, env, url) {
   const contentType=request.headers.get('Content-Type')?.split(';',1)[0]?.trim();
   if (contentType !== 'application/x-www-form-urlencoded' || Number(request.headers.get('Content-Length')) > 4096) return json({error:'invalid login request'},400);
   const text=await request.text();
-  const form = parseForm(text,["key","name"]) ?? parseForm(text,["key","name","profile","profileRevision"]);
+  const form = parseForm(text,["key","name"]) ?? parseForm(text,["key","name","profile","profileRevision"])
+    ?? parseForm(text,["key","name","pushProfile"]) ?? parseForm(text,["key","name","profile","profileRevision","pushProfile"]);
   if (!form || !validFingerprint(form.key) || !validLabel(form.name)) {
     return json({ error: "invalid login request" }, 400);
   }
   const profile=Object.hasOwn(form,'profile') ? await enrollmentProfile(env,form.profile) : null;
   if (Object.hasOwn(form,'profile') && !profile) return json({error:'enrollment profile unavailable'},403);
   if (profile && form.profileRevision !== profile.revision) return json({error:'enrollment profile changed'},409);
+  const push=Object.hasOwn(form,'pushProfile') ? pushConfiguration(env)?.profiles.find(p=>p.id===form.pushProfile) : null;
+  if(Object.hasOwn(form,'pushProfile') && !push)return json({error:'push profile unavailable'},403);
   await ensureAuthReady(env.AUTH_DB);
+  if(push)await ensurePush(env.AUTH_DB);
   const name = deviceName(form.key);
   const registration=env.AUTH_DB.prepare(`INSERT INTO _tokens
     (hash,name,scopes,label,enrollment_profile,enrollment_revision) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(hash) DO UPDATE SET label=excluded.label
+    ON CONFLICT(hash) DO UPDATE SET label=${push?'_tokens.label':'excluded.label'}
     WHERE _tokens.name=excluded.name AND _tokens.revoked_at IS NULL
       AND _tokens.scopes=excluded.scopes AND _tokens.enrollment_profile IS excluded.enrollment_profile
       AND _tokens.enrollment_revision IS excluded.enrollment_revision
     RETURNING name`).bind(form.key,name,profile?profile.scopes.join(','):'full',form.name.trim(),profile?.id??null,profile?.revision??null);
-  const result=await env.AUTH_DB.batch(profile?[registration]:[registration,authorityStatement(env.AUTH_DB,form.key,'user',true)]);
+  const statements=profile?[registration]:[registration,authorityStatement(env.AUTH_DB,form.key,'user',true)];
+  if(push)statements.push(pushEnrollmentStatement(env.AUTH_DB,form.key,name,profile?profile.scopes.join(','):'full',
+    push.id,profile?.id??null,profile?.revision??null));
+  const result=await env.AUTH_DB.batch(statements);
   if (!result[0].results?.length) {
     return page(
       "Life API token cannot be reused",
@@ -204,10 +212,13 @@ export async function handleLogin(request, env, ctx, url) {
     }
     const profile=Object.hasOwn(values,'profile') ? await enrollmentProfile(env,values.profile) : null;
     if (Object.hasOwn(values,'profile') && !profile) return json({error:'enrollment profile unavailable'},403);
+    const push=Object.hasOwn(values,'pushProfile') ? pushConfiguration(env)?.profiles.find(p=>p.id===values.pushProfile) : null;
+    if(Object.hasOwn(values,'pushProfile') && !push)return json({error:'push profile unavailable'},403);
     const profileFields=profile ? `<p>Application: <strong>${escapeHtml(profile.label)}</strong></p><p>${profile.scopes.some(s=>s.startsWith('tables:patch:'))?'Read and update access (listed fields only):':'Read-only access:'}</p><ul>${profile.scopes.map(s=>`<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul><input type="hidden" name="profile" value="${escapeHtml(profile.id)}"><input type="hidden" name="profileRevision" value="${profile.revision}">` : '';
+    const pushFields=push ? `<p>Allow Apple push notifications for <strong>${escapeHtml(push.id)}</strong> (${escapeHtml(push.platform)}) on this installation.</p><input type="hidden" name="pushProfile" value="${escapeHtml(push.id)}">` : "";
     return page(
       "Approve Life device",
-      `<p><strong>${escapeHtml(identity.email)}</strong>, approve this device:</p><p><code>${escapeHtml(values.name)}</code></p><p>Approval code: <code>${escapeHtml(values.key.slice(0, 8))}</code></p><p>This approval link does not expire. Approve it only while your device is waiting to sign in.</p><form method="post" action="/login"><input type="hidden" name="key" value="${escapeHtml(values.key)}"><input type="hidden" name="name" value="${escapeHtml(values.name)}">${profileFields}<button type="submit">Approve device</button></form>`,
+      `<p><strong>${escapeHtml(identity.email)}</strong>, approve this device:</p><p><code>${escapeHtml(values.name)}</code></p><p>Approval code: <code>${escapeHtml(values.key.slice(0, 8))}</code></p><p>This approval link does not expire. Approve it only while your device is waiting to sign in.</p><form method="post" action="/login"><input type="hidden" name="key" value="${escapeHtml(values.key)}"><input type="hidden" name="name" value="${escapeHtml(values.name)}">${profileFields}${pushFields}<button type="submit">Approve device</button></form>`,
     );
   }
   if (url.pathname === "/login" && request.method === "POST")
