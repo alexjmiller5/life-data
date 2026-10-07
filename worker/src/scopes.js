@@ -25,6 +25,7 @@ import { trustedSubscriptionTrigger } from './subscription-triggers.js';
 import { checkedReads, readGuards } from './write.js';
 import { trustedContinuityTrigger } from './governance-continuity.js';
 import { trustedEvidenceTrigger } from './governance-evidence.js';
+import {supportedRuleSql} from '../../core/src/rule-sql.ts';
 
 export class ScopeDenied extends Error {}
 const deny = () => { throw new ScopeDenied('insufficient scope'); };
@@ -126,7 +127,12 @@ export function scopedTable(view,table,write=false,rowIds=null) {
 export function scopedPatchTable(view,table,write,rowIds) {
   return inspectTable(view,table,write,rowIds,false,true);
 }
-async function inspectTable(view, table, write, rowIds, origin, livePatch=false) {
+// Only a caller with broad read authority may inspect arbitrary runtime rules
+// and options. This verifies table mechanics; it does not grant that authority.
+export function changesetTable(view,table,write=false,rowIds=null){
+  return inspectTable(view,table,write,rowIds,table==='provenance',false,true);
+}
+async function inspectTable(view, table, write, rowIds, origin, livePatch=false, changeset=false) {
   if (!ordinaryName(table) && !(origin && table === 'provenance')) deny();
   if (write && (!Array.isArray(rowIds) || rowIds.some(id=>typeof id !== 'string' || !id.trim()))) deny();
   const schema=await view.prepare("SELECT name,type,sql FROM sqlite_master WHERE name=?").bind(table).first();
@@ -163,11 +169,12 @@ async function inspectTable(view, table, write, rowIds, origin, livePatch=false)
   if (foreignKeys.length) deny();
   if (!await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_properties'").first()) deny();
   const {results:props}=await view.prepare('SELECT * FROM catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY id').bind(table).all();
-  if (!props.length || props.some(p=>(p.options_sql && !(origin && originOptions.get(p.col) === p.options_sql)) || p.derived_by || String(p.default_value ?? '').startsWith('sql:'))) deny();
+  if (!props.length || props.some(p=>(p.options_sql && !(changeset && supportedRuleSql(p.options_sql)) && !(origin && originOptions.get(p.col) === p.options_sql)) || p.derived_by || String(p.default_value ?? '').startsWith('sql:'))) deny();
+  if(changeset && columns.some(c=>!['id','created_at','updated_at','hub_at'].includes(c.name) && /\b(?:strftime|randomblob)\s*\(/i.test(c.dflt_value ?? '')))deny();
   for (const prop of props) if (prop.ref_table) await scopedTable(view,prop.ref_table);
   if (await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_rules'").first()) {
     const {results:rules}=await view.prepare("SELECT * FROM catalog_rules WHERE deleted_at IS NULL AND kind='invariant' AND enforce != 0 AND (tbl=? OR scope='estate') ORDER BY id").bind(table).all();
-    for (const rule of rules) if (!scopedInvariant(rule,table,columns,livePatch) && !(origin && await originInvariant(view,rule))) deny();
+    for (const rule of rules) if (!(changeset && rule.tbl===table && rule.scope==='table' && supportedRuleSql(rule.sql)) && !scopedInvariant(rule,table,columns,livePatch) && !(origin && await originInvariant(view,rule))) deny();
   }
   return columns;
 }
