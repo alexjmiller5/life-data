@@ -131,7 +131,7 @@ export async function enforcedRules(db, table) {
 
 // Triggers exist only inside this batch transaction. No temp schema or user
 // context tables; OLD/NEW have SQLite's actual types, defaults and values.
-export async function prepareChecked(db, table, rules, statements, now, history = null, expected = [], props = [], transitions = [], probe = false) {
+export async function prepareChecked(db, table, rules, statements, now, history = null, expected = [], props = [], transitions = [], probe = false, {finalState = false} = {}) {
   const key = '_life_write_' + crypto.randomUUID().replaceAll('-', '');
   const schema = (await db.prepare(`PRAGMA table_info(${qident(table)})`).all()).results;
   const cols = schema.map(c => c.name);
@@ -144,6 +144,21 @@ export async function prepareChecked(db, table, rules, statements, now, history 
   const context = (prefix) => cols.map(c => `${prefix}.${qident(c)} AS ${qident(c)}`).join(',');
   const begin = [];
   const end = [];
+  const checks = [];
+  const snapshot = key + '_before', validation = key + '_validation';
+  if (finalState) {
+    if (!expected.length) throw new Error('Final-state validation needs explicit targets');
+    begin.push(db.prepare(`CREATE TABLE ${qident(snapshot)} AS SELECT * FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(expected.map(r=>r.id))));
+    begin.push(db.prepare(`CREATE TABLE ${qident(validation)} (ok INTEGER CONSTRAINT life_invariant_final CHECK(ok=1))`));
+    end.push(db.prepare(`DROP TABLE ${qident(snapshot)}`),db.prepare(`DROP TABLE ${qident(validation)}`));
+    for (const rule of rules) {
+      if (!supportedRuleSql(rule.sql)) throw new Error('invalid invariant SELECT');
+      checks.push(db.prepare(`INSERT INTO ${qident(validation)} SELECT 0 WHERE EXISTS (
+        WITH changed AS (SELECT * FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))),
+          before AS (SELECT * FROM ${qident(snapshot)}), now AS (SELECT ? AS ts)
+        ${rule.sql})`).bind(JSON.stringify(expected.map(r=>r.id)),now));
+    }
+  }
   const approval = key + '_approved',numbers=key+'_numbers';
   // Large unchanged stored text must not be expanded into an oversized JSON
   // approval value by a sparse write. Native cells also preserve exact REALs.
@@ -180,7 +195,7 @@ export async function prepareChecked(db, table, rules, statements, now, history 
   }
   if (rules.length || expected.length) for (const event of ['INSERT', 'UPDATE']) {
     const trigger = key + '_' + event.toLowerCase();
-    let checks = rules.map((rule, i) => {
+    let triggerChecks = (finalState ? [] : rules).map((rule, i) => {
       if (!supportedRuleSql(rule.sql)) throw new Error('invalid invariant SELECT');
       const before = event === 'UPDATE' ? `SELECT ${context('OLD')}` : `SELECT ${context('NEW')} WHERE 0`;
       return `SELECT RAISE(ABORT, 'life_invariant_${i}') WHERE EXISTS (
@@ -200,11 +215,16 @@ export async function prepareChecked(db, table, rules, statements, now, history 
           THEN EXISTS (SELECT 1 FROM ${qident(numbers)} n WHERE n.id=json_extract(${value},'$.native') AND (${actual} IS n.value${nativeInteger}))
           ELSE (${actual} IS ${value}${integer}) END)`;
       }).join(' AND ');
-      checks += dependencyChecks(props, event, approval);
-      checks += ` SELECT RAISE(ABORT, 'life_write_conflict') WHERE NOT EXISTS (SELECT 1 FROM ${qident(approval)} a WHERE ${matches});`;
+      if (!finalState) triggerChecks += dependencyChecks(props, event, approval);
+      triggerChecks += ` SELECT RAISE(ABORT, 'life_write_conflict') WHERE NOT EXISTS (SELECT 1 FROM ${qident(approval)} a WHERE ${matches});`;
     }
-    begin.push(db.prepare(`CREATE TRIGGER ${qident(trigger)} AFTER ${event} ON ${qident(table)} BEGIN ${checks} END`));
+    begin.push(db.prepare(`CREATE TRIGGER ${qident(trigger)} AFTER ${event} ON ${qident(table)} BEGIN ${triggerChecks} END`));
     end.unshift(db.prepare(`DROP TRIGGER ${qident(trigger)}`));
+  }
+  if (finalState) for (const {condition} of dependencyConditions(props,'UPDATE',approval)) {
+    checks.push(db.prepare(`INSERT INTO ${qident(validation)} SELECT 0 WHERE EXISTS (
+      SELECT 1 FROM ${qident(table)} AS NEW WHERE NEW.id IN (SELECT value FROM json_each(?)) AND (${condition}))`)
+      .bind(JSON.stringify(expected.map(r=>r.id))));
   }
   const log = historyStatements(db, table, key, history);
   if (probe) {
@@ -214,7 +234,7 @@ export async function prepareChecked(db, table, rules, statements, now, history 
     end.push(db.prepare(`CREATE TABLE ${qident(key + '_probe')} (ok INTEGER CONSTRAINT life_probe_complete CHECK(ok=1))`));
     end.push(db.prepare(`INSERT INTO ${qident(key + '_probe')} VALUES (0)`));
   }
-  return {begin:[...begin,...log.begin],statements,end:[...log.end,...end]};
+  return {begin:[...begin,...log.begin],statements,checks,end:[...log.end,...end]};
 }
 
 // A trusted service can compose prepared table plans into ONE batch. Preparing
@@ -378,23 +398,28 @@ async function pushAttempt(db, table, rows, upsertSql, stamping, history, probe,
 // Dependencies can change earlier in this same batch. Check them at NEW,
 // retaining sparse UPDATE semantics and the original public rejection shape.
 function dependencyChecks(props, event, approval) {
-  return props.map((p,i)=> {
+  return dependencyConditions(props,event,approval).map(({condition,error})=>
+    `SELECT RAISE(ABORT,${literal(error)}) WHERE ${condition};`).join('\n');
+}
+
+function dependencyConditions(props, event, approval) {
+  return props.flatMap((p,i)=> {
     const v = `NEW.${qident(p.col)}`;
     const touched = event === 'INSERT' ? '1' : `EXISTS (SELECT 1 FROM ${qident(approval)} a, json_each(a.value,'$.touched') t WHERE json_extract(a.value,'$.row.id') IS NEW.id AND (json_extract(a.value,'$.row.updated_at') IS NULL OR json_extract(a.value,'$.row.updated_at') IS NEW.updated_at) AND t.value=${literal(p.col)})`;
     const active = `NEW.deleted_at IS NULL AND ${touched} AND ${v} IS NOT NULL AND ${v} <> ''`;
-    let checks = '';
+    const checks = [];
     if (p.ref_table && ['ref','multi_ref'].includes(p.type)) {
       const missing = x=>`NOT EXISTS (SELECT 1 FROM ${qident(p.ref_table)} WHERE id=${x} AND deleted_at IS NULL)`;
       const invalid = p.type === 'ref' ? missing(v) : `EXISTS (SELECT 1 FROM json_each(${v}) item WHERE ${missing('item.value')})`;
-      checks += `SELECT RAISE(ABORT,'life_property_${i}_ref') WHERE ${active} AND ${invalid};`;
+      checks.push({error:`life_property_${i}_ref`,condition:`${active} AND ${invalid}`});
     }
     if (p.options_sql && ['select','multi_select'].includes(p.type)) {
       // Our transaction-lifetime helper objects are not user schema options.
       const query = `WITH sqlite_master AS (SELECT * FROM main.sqlite_master WHERE name NOT GLOB '_life_write_*') SELECT ${quoteColumn(p.optionColumn)} FROM (${p.options_sql})`;
       const choices = `WITH choices(v) AS (${query}) SELECT v FROM choices UNION SELECT json_extract(value,'$.v') FROM json_each(${literal(JSON.stringify(p.options ?? []))})`;
       const invalid = p.type === 'select' ? `NOT EXISTS (SELECT 1 FROM allowed WHERE v IS ${v})` : `EXISTS (SELECT 1 FROM json_each(${v}) item WHERE NOT EXISTS (SELECT 1 FROM allowed WHERE v IS item.value))`;
-      checks += `SELECT RAISE(ABORT,'life_property_${i}_options') WHERE ${active} AND (WITH allowed AS (${choices}) SELECT EXISTS (SELECT 1 FROM allowed) AND ${invalid});`;
+      checks.push({error:`life_property_${i}_options`,condition:`${active} AND (WITH allowed AS (${choices}) SELECT EXISTS (SELECT 1 FROM allowed) AND ${invalid})`});
     }
     return checks;
-  }).join('\n');
+  });
 }

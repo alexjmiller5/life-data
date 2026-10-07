@@ -1,3 +1,4 @@
+import type {ChangesetTransport} from './changeset-client.ts';
 import type {GovernanceTransport} from './governance-service.ts';
 import type { Hub } from "./driver.ts";
 import { validEditTimestamp, type Row } from "./validate.ts";
@@ -5,6 +6,7 @@ import { validEditTimestamp, type Row } from "./validate.ts";
 /** Native hosts implement GET with the same credential/redirect rules as POST. */
 export interface ServiceHub extends Hub {
   governancePost?: GovernanceTransport;
+  changesetPost?: ChangesetTransport;
   get(route: string): Promise<{ data: unknown; date?: string }>;
 }
 
