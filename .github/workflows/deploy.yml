@@ -42,5 +42,11 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: op://Life Data/Life Data CI Cloudflare Token/api-token
           CLOUDFLARE_ACCOUNT_ID: op://Life Data/Life Data CI Cloudflare Token/account-id
+          APNS_CONFIG: op://Life Data/Life Data ENV/APNS_CONFIG
+          APNS_PRIVATE_KEY: op://Life Data/Life Data ENV/APNS_PRIVATE_KEY
+      - name: Sync Apple push service secrets
+        working-directory: worker
+        run: |
+          bun -e 'process.stdout.write(JSON.stringify({APNS_CONFIG:process.env.APNS_CONFIG,APNS_PRIVATE_KEY:process.env.APNS_PRIVATE_KEY}))' | bunx wrangler@4 secret bulk
       - working-directory: worker
         run: bunx wrangler@4 deploy

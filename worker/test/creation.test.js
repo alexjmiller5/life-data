@@ -286,3 +286,35 @@ for(const suffix of ['\n','\r','\u2028','\u2029'])test('configured creation iden
   {fixture:{...config,origin:{...config.origin,kind:config.origin.kind+suffix}}},
  ])expect(await creationPolicies({ROW_CREATION_POLICIES:JSON.stringify(value)})).toEqual([]);
 });
+
+const singleton={...config,namespace:'6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+ occurrenceType:'none',identity:{encoding:'prefix-source-v1',prefix:'fixture:singleton:'},
+ origin:{kind:'fixture-source',table:null,relation:'imported_from'}};
+test('singleton identity preserves raw prefix/source bytes and omits occurrence',async()=>{
+ expect(await creationId(singleton,'11111111-1111-4111-8111-111111111111')).toBe('29a7fbc6d04d517b933ad71ab15b72aa');
+ expect(await creationPolicies({ROW_CREATION_POLICIES:JSON.stringify({fixture:singleton})})).toHaveLength(1);
+});
+test('singleton HTTP creation, retry and adoption never invent an occurrence or alternate ID',async()=>{
+ const {env,request}=await setup();env.ROW_CREATION_POLICIES=JSON.stringify({fixture:singleton});
+ const policies=await creationPolicies(env);expect(policies).toHaveLength(1);
+ const [p]=policies;const policy={id:p.id,revision:p.revision};
+ const {token}=await (await request('fixture-operator','/v1/tokens/create',{name:'singleton',scopes:`rows:create:${p.id}:${p.revision}`})).json();
+ const sourceId='11111111-1111-4111-8111-111111111111';
+ const input={policy,sourceId,target:{kind:'generated',id:'29a7fbc6d04d517b933ad71ab15b72aa'},updatedAt:T,values:{title:'one reminder'}};
+ for(const occurrenceKey of [null,'',0,'singleton'])expect((await request(token,'/v1/rows/create',{...input,occurrenceKey})).status).toBe(400);
+ let response=await request(token,'/v1/rows/create',input);expect(response.status).toBe(200);expect((await response.json()).kind).toBe('created');
+ const before=snapshot(env.DB);
+ response=await request(token,'/v1/rows/create',input);expect((await response.json()).kind).toBe('existing');expect(snapshot(env.DB)).toEqual(before);
+ response=await request(token,'/v1/rows/create',{...input,target:{kind:'adopted',id:'missing'}});
+ expect(response.status).toBe(409);expect(snapshot(env.DB)).toEqual(before);
+});
+test('identity policy changes revoke old grants and invalid encodings fail closed',async()=>{
+ const env={ROW_CREATION_POLICIES:JSON.stringify({fixture:singleton})};
+ const [p]=await creationPolicies(env);expect(p).toBeDefined();
+ const [changed]=await creationPolicies({ROW_CREATION_POLICIES:JSON.stringify({fixture:{...singleton,identity:{...singleton.identity,prefix:'different:'}}})});
+ expect(changed.revision).not.toBe(p.revision);
+ for(const bad of [{...singleton,identity:undefined},{...singleton,occurrenceType:'integer'},
+ {...singleton,identity:{encoding:'wrong',prefix:'x'}},{...singleton,identity:{encoding:'prefix-source-v1',prefix:''}}]){
+ expect(await creationPolicies({ROW_CREATION_POLICIES:JSON.stringify({fixture:bad})})).toEqual([]);
+ }
+});

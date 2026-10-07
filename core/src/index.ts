@@ -12,6 +12,7 @@ export * from './contract.generated.ts';
 export * from './operations.ts';
 export * from './search.ts';
 export * from './saved-views.ts';
+export * from './sidebar-pins.ts';
 export * from './remote.ts';
 export * from './enrollment.ts';
 
@@ -27,3 +28,7 @@ export {parseChangesetApproval} from './changeset-service.ts';
 export type {ChangesetApprovalScope} from './changeset-service.ts';
 
 export * from './changeset-client.ts';
+export * from './calendar-rows.ts';
+export * from './board-rows.ts';
+
+export {getViewDefault,setViewDefault} from './view-defaults.ts';

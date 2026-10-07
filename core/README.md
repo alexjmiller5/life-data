@@ -482,6 +482,23 @@ them automatically. Ordinary synced replicas still receive existing logged
 DDL only. Core exports no provisioning operation, and the manifest contains
 no actual view definitions or default selection.
 
+Per-table preferred views use the optional ordinary synced `view_defaults` table.
+`schema/view-defaults.json` defines its exact operator-provisioned schema and
+catalog marker (`view_defaults.view_id`, `life-core`, `view-defaults/v1`).
+`getViewDefault({table})` is read-only. `setViewDefault` accepts a saved-view ID
+(or null to clear) plus the displayed `expectedUpdatedAt` revision (null for
+first creation), validates a live same-table view, and writes through the
+ordinary history, invariant, outbox and Undo path. IDs are deterministic:
+`default:v1:` followed by the table name's lowercase ASCII hex. Preferences
+therefore sync without client-generated competing identities. Table renames
+rekey recognized preference rows with a synced tombstone and monotonic revision;
+invalid storage is never adopted. Rename invariant failure rolls back the whole
+rename. Invalid, deleted or wrong-table targets return a visible fallback reason
+without modifying either the preference or any saved view. Hosts apply this
+preference only for plain table navigation; an explicit view/record destination
+wins. Absent configuration uses the catalog-generated view. Operators include
+both preference and saved-view tables in the client's permitted sync scope.
+
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases
 run in both Python and TypeScript; core tests also call the actual Worker over

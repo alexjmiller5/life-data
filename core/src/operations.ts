@@ -1,3 +1,6 @@
+import {getViewDefault,setViewDefault} from './view-defaults.ts';
+import { boardRows } from './board-rows.ts';
+import { calendarRows } from './calendar-rows.ts';
 import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
 import {unavailableGovernance,type GovernanceAPI} from './governance-service.ts';
 import type { SqlDriver } from './driver.ts';
@@ -17,6 +20,7 @@ import { prepareSearch, search } from './search.ts';
 import { readRemoteRows, readRemoteRow } from './remote.ts';
 import { resolveDerived } from './resolve-derived.ts';
 import { listViews, saveView, deleteView } from './saved-views.ts';
+import { listSidebarPins, pinTable, unpinTable, moveTablePin } from './sidebar-pins.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
 /** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
@@ -59,13 +63,21 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),
     resolveSourceLink: args => resolveSourceLink(db, args),
+    calendarRows,
+    boardRows,
     resolveDerived: ({ endpoint, ...args }) => resolveDerived(db, hub(endpoint), args),
     remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
     listViews: args => listViews(db, args),
-    saveView: args => writes.viewMutation(args, (input, capture) => saveView(db, input, { origin }, capture)),
-    deleteView: args => writes.viewMutation(args, (input, capture) => deleteView(db, input, { origin }, capture)),
+    getViewDefault: args => getViewDefault(db,args),
+    setViewDefault: args => writes.capturedMutation('view_defaults',args,(input,capture)=>setViewDefault(db,input,{origin},capture)),
+    saveView: args => writes.capturedMutation('views', args, (input, capture) => saveView(db, input, { origin }, capture)),
+    deleteView: args => writes.capturedMutation('views', args, (input, capture) => deleteView(db, input, { origin }, capture)),
+    listSidebarPins: args => listSidebarPins(db, args),
+    pinTable: args => writes.sidebarMutation(args, input => pinTable(db,input,{origin})),
+    unpinTable: args => writes.sidebarMutation(args, input => unpinTable(db,input,{origin})),
+    moveTablePin: args => writes.sidebarMutation(args, input => moveTablePin(db,input,{origin})),
     options: args => readOptions(db, args),
     write: writes.write,
     runRowAction: writes.runRowAction,

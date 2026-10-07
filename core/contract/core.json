@@ -1064,6 +1064,9 @@
           "items": {
             "$ref": "#/$defs/ViewLayoutItem"
           }
+        },
+        "presentation": {
+          "$ref": "#/$defs/ViewPresentation"
         }
       },
       "required": [
@@ -1553,6 +1556,15 @@
         },
         "enrollmentProfile": {
           "$ref": "#/$defs/EnrollmentProfileReceipt"
+        },
+        "pushRegistration": {
+          "$ref": "#/$defs/PushRegistrationCapability"
+        },
+        "pushProfiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PushAppProfile"
+          }
         }
       },
       "required": [
@@ -1892,6 +1904,15 @@
         },
         "rowCreation": {
           "$ref": "#/$defs/RowCreationCapability"
+        },
+        "push_registration": {
+          "$ref": "#/$defs/PushRegistrationCapability"
+        },
+        "push_profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PushAppProfile"
+          }
         },
         "changesets": {
           "$ref": "#/$defs/ChangesetCapability"
@@ -3325,7 +3346,6 @@
       "required": [
         "policy",
         "sourceId",
-        "occurrenceKey",
         "target",
         "updatedAt",
         "values"
@@ -3468,6 +3488,579 @@
       "required": [
         "derived",
         "failed"
+      ]
+    },
+    "ViewPresentation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "table",
+            "calendar",
+            "gallery",
+            "board"
+          ]
+        },
+        "dateColumn": {
+          "type": "string"
+        },
+        "endDateColumn": {
+          "type": "string"
+        },
+        "coverColumn": {
+          "type": "string"
+        },
+        "groupColumn": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "description": "Version 2 display settings, independent of SQL projection. Calendar uses a start date and optional inclusive end-date column. Board groups by a select property. Gallery uses an optional cover property."
+    },
+    "CalendarRowsArgs": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "dateColumn": {
+          "type": "string"
+        },
+        "endDateColumn": {
+          "type": "string"
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarContext"
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "dateColumn",
+        "days"
+      ]
+    },
+    "CalendarDayRows": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "date",
+        "rowIds"
+      ]
+    },
+    "CalendarRowsResult": {
+      "type": "object",
+      "properties": {
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarDayRows"
+          }
+        },
+        "undated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "days",
+        "undated"
+      ]
+    },
+    "BoardRowsArgs": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "column": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "column",
+        "options"
+      ]
+    },
+    "BoardColumnRows": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "value",
+        "rowIds"
+      ]
+    },
+    "BoardRowsResult": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BoardColumnRows"
+          }
+        }
+      },
+      "required": [
+        "columns"
+      ]
+    },
+    "SidebarPinList": {
+      "type": "object",
+      "properties": {
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPin"
+          }
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pins",
+        "unavailable"
+      ]
+    },
+    "SidebarPin": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "tbl",
+        "position",
+        "updated_at",
+        "deleted_at",
+        "unavailable"
+      ]
+    },
+    "PinTableArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "expectedUpdatedAt"
+      ]
+    },
+    "UnpinTableArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedUpdatedAt"
+      ]
+    },
+    "PinRevision": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "updated_at"
+      ]
+    },
+    "MoveTablePinArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "expected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PinRevision"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "direction",
+        "expected"
+      ]
+    },
+    "GetViewDefaultArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "SetViewDefaultArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "viewId",
+        "expectedUpdatedAt"
+      ]
+    },
+    "ViewDefault": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavedViewRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "viewId",
+        "updated_at",
+        "view",
+        "unavailable"
+      ]
+    },
+    "PushAppProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "platform": {
+          "$ref": "#/$defs/PushPlatform"
+        }
+      },
+      "required": [
+        "id",
+        "platform"
+      ]
+    },
+    "PushRegistrationCapability": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "deploymentIdentity": {
+          "type": "string"
+        },
+        "sessionBinding": {
+          "type": "string"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PushAppProfile"
+          }
+        }
+      },
+      "required": [
+        "protocol",
+        "deploymentIdentity",
+        "sessionBinding",
+        "profiles"
+      ]
+    },
+    "PushRegistrationState": {
+      "type": "object",
+      "properties": {
+        "installationId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/PushRegistrationStatus"
+        },
+        "deploymentIdentity": {
+          "type": "string"
+        },
+        "sessionBinding": {
+          "type": "string"
+        },
+        "appProfile": {
+          "type": "string"
+        },
+        "activatedAfterSeq": {
+          "$ref": "#/$defs/Count"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "installationId",
+        "revision",
+        "state",
+        "deploymentIdentity",
+        "sessionBinding",
+        "appProfile",
+        "activatedAfterSeq",
+        "updatedAt"
+      ]
+    },
+    "PushRegistrationRequest": {
+      "type": "object",
+      "properties": {
+        "appProfile": {
+          "type": "string"
+        },
+        "deviceToken": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "appProfile",
+        "deviceToken",
+        "expectedRevision",
+        "requestId"
+      ]
+    },
+    "PushRevocationRequest": {
+      "type": "object",
+      "properties": {
+        "appProfile": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "appProfile",
+        "expectedRevision",
+        "requestId"
+      ]
+    },
+    "PushRegistrationReceipt": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "registration": {
+          "$ref": "#/$defs/PushRegistrationState"
+        }
+      },
+      "required": [
+        "requestId",
+        "registration"
+      ]
+    },
+    "PushPlatform": {
+      "type": "string",
+      "enum": [
+        "ios",
+        "macos"
+      ]
+    },
+    "PushRegistrationStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "revoked"
       ]
     },
     "ChangesetCreate": {
@@ -4347,6 +4940,72 @@
         "$ref": "#/$defs/ResolveDerivedResult"
       },
       "description": "Request hub-owned derivation for an unchanged saved row. Hosts retain drafts, then sync and re-read the record; this operation never writes replica values."
+    },
+    "calendarRows": {
+      "args": {
+        "$ref": "#/$defs/CalendarRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/CalendarRowsResult"
+      },
+      "description": "Lay out already loaded rows using host-supplied civil-day bounds. All-day end dates are inclusive; timed ends exclusive, with equal start/end treated as an instant. No query, write or timezone engine."
+    },
+    "boardRows": {
+      "args": {
+        "$ref": "#/$defs/BoardRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/BoardRowsResult"
+      },
+      "description": "Group already loaded rows by a select property, preserving supplied option order and unknown stored values. No writes."
+    },
+    "pinTable": {
+      "args": {
+        "$ref": "#/$defs/PinTableArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "listSidebarPins": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "unpinTable": {
+      "args": {
+        "$ref": "#/$defs/UnpinTableArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "moveTablePin": {
+      "args": {
+        "$ref": "#/$defs/MoveTablePinArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "getViewDefault": {
+      "args": {
+        "$ref": "#/$defs/GetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
+    },
+    "setViewDefault": {
+      "args": {
+        "$ref": "#/$defs/SetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
     }
   }
 }
