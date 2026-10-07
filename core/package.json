@@ -13,7 +13,8 @@
     "./creation": "./src/creation.ts",
     "./consumer-config": "./src/consumer-config.ts",
     "./query": "./src/query.ts",
-    "./capture": "./src/capture.ts"
+    "./capture": "./src/capture.ts",
+    "./schema/catalog-log.json": "./schema/catalog-log.json"
   },
   "files": [
     "src",

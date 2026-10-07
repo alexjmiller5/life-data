@@ -191,6 +191,12 @@ explicit destinations win. Provisioning is operator-owned, never implicit in rea
   date label belongs to the interval's start; source timestamps stay intact.
   Multi-select order uses the first selected
   option; unknown/empty values trail known ones. Version 1 remains supported.
+- `core/src/catalog-edit.ts` owns explicit property/rule edits and their atomic
+  `catalog_log` entries. It shares storage/coverage guards with record writes,
+  preserves displayed revisions and compiles rule SQL through the driver.
+  Only an explicit new-property request adds a nullable logged column;
+  catalog editing never rewrites existing record values or provisions missing
+  engine storage. Ordinary record writes still reject catalog tables.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.
