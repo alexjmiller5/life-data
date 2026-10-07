@@ -1,6 +1,8 @@
 import {expect, test} from 'bun:test';
 import worker from '../src/index.js';
 import {D1Shim} from './d1shim.js';
+import {validateDeviceSession} from '../../core/src/enrollment.ts';
+import {enrollmentProfile} from '../src/enrollment-profile.js';
 
 // The auth registry and route dispatcher are real; only remote storage is local.
 async function setup() {
@@ -29,7 +31,7 @@ async function setup() {
   const mint = async (name,scopes) => (await (await request('root','/v1/tokens/create','POST',
     JSON.stringify({name,scopes}))).json()).token;
   const add = (name,key,body) => archive.put(`landing/${name}/${key}.json`,body);
-  return {request,mint,add,objects,calls,archive};
+  return {request,mint,add,objects,calls,archive,env};
 }
 
 test('exact producer append is independent from reads and forbidden mutation routes',async()=>{
@@ -145,4 +147,32 @@ test('invalid UTF-8 cannot silently change the original record',async()=>{
   const invalid=await request(token,'/v1/streams/sample/records');
   expect(invalid.status).toBe(503);
   expect(await invalid.json()).toEqual({error:'stream page unavailable'});
+});
+
+test('browser enrollment and native policy keep exact stream profiles narrow',async()=>{
+  for(const operation of ['read','append']) {
+    const {env,request}=await setup();
+    const expected={id:`stream-${operation}`,scopes:[`streams:${operation}:sample`]};
+    env.LOGIN_ACCESS_AUD='aud';
+    env.ENROLLMENT_PROFILES=JSON.stringify({[expected.id]:{label:'Scoped Stream',scopes:expected.scopes}});
+    const token=`synthetic-${operation}-device`;
+    const fingerprint=new Bun.CryptoHasher('sha256').update(token).digest('hex');
+    const ctx={access:{aud:'aud',getIdentity:async()=>({email:'owner@example.test'})},waitUntil(){}};
+    const profile=await enrollmentProfile(env,expected.id);
+    expect(profile).not.toBeNull();
+    const form=new URLSearchParams({key:fingerprint,name:'Device',profile:expected.id,profileRevision:profile.revision});
+    const approved=await worker.fetch(new Request('https://hub.test/login',{method:'POST',headers:{Origin:'https://hub.test','Content-Type':'application/x-www-form-urlencoded'},body:form}),env,ctx);
+    expect(approved.status).toBe(200);
+    const session=await (await request(token,'/v1/session')).json();
+    const native=validateDeviceSession(session,expected);
+    expect(native.scopes).toEqual(expected.scopes);
+    expect(native.replica.allowed).toBe(false);
+    expect(native.governance).toBeUndefined();
+    if(operation==='read') expect((await request(token,'/v1/streams/sample/records')).status).toBe(200);
+    else expect((await request(token,'/v1/streams/sample/append','POST','{}')).status).toBe(200);
+    for(const invalid of ['streams:read','streams:append','streams:read:*','streams:read:sample/other','streams:read:sample:extra']) {
+      env.ENROLLMENT_PROFILES=JSON.stringify({bad:{label:'Invalid',scopes:[invalid]}});
+      expect(await enrollmentProfile(env,'bad')).toBeNull();
+    }
+  }
 });

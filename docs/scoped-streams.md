@@ -7,6 +7,11 @@ Names use the existing literal stream-name grammar. Neither grant permits
 batch import, replay, manifest, arbitrary files, SQL, tables or token management.
 Existing broad grants retain their existing behavior.
 
+Service-owned enrollment profiles may contain exact stream grants. Browser
+approval and native enrollment policy validate and preserve the exact grant set;
+no profile is installed or credential minted by enabling the protocol. Existing
+column-only profile revisions stay unchanged.
+
 `GET /v1/streams/<name>/records?limit=20&cursor=<opaque>` returns
 `{entries: [{id, body}], next_cursor}`. IDs are stable opaque landing identities;
 body is the original UTF-8 text, including arrays from historical batch imports.
