@@ -1892,6 +1892,9 @@
         },
         "rowCreation": {
           "$ref": "#/$defs/RowCreationCapability"
+        },
+        "changesets": {
+          "$ref": "#/$defs/ChangesetCapability"
         }
       },
       "required": [
@@ -3465,6 +3468,540 @@
       "required": [
         "derived",
         "failed"
+      ]
+    },
+    "ChangesetCreate": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "create"
+          ]
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "null"
+        },
+        "values": {
+          "$ref": "#/$defs/Row"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "id",
+        "expected_revision",
+        "values"
+      ]
+    },
+    "ChangesetPatch": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "patch"
+          ]
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/Revision"
+        },
+        "values": {
+          "$ref": "#/$defs/Row"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "id",
+        "expected_revision",
+        "values"
+      ]
+    },
+    "ChangesetSoftDelete": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "soft_delete"
+          ]
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/Revision"
+        }
+      },
+      "required": [
+        "kind",
+        "table",
+        "id",
+        "expected_revision"
+      ]
+    },
+    "ChangesetOperation": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChangesetCreate"
+        },
+        {
+          "$ref": "#/$defs/ChangesetPatch"
+        },
+        {
+          "$ref": "#/$defs/ChangesetSoftDelete"
+        }
+      ]
+    },
+    "ChangesetReadSet": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/FilterValue"
+          }
+        },
+        "expected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangesetReadMember"
+          }
+        }
+      },
+      "required": [
+        "table",
+        "where",
+        "expected"
+      ]
+    },
+    "ChangesetInput": {
+      "type": "object",
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangesetOperation"
+          }
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangesetReadSet"
+          }
+        }
+      },
+      "required": [
+        "operations",
+        "reads"
+      ]
+    },
+    "ChangesetChange": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "create",
+            "patch",
+            "soft_delete"
+          ]
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Row"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Row"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "kind",
+        "before",
+        "after"
+      ]
+    },
+    "ChangesetPreview": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangesetChange"
+          }
+        },
+        "previewToken": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changes",
+        "previewToken",
+        "expiresAt"
+      ]
+    },
+    "ChangesetProposal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ProposalState"
+        },
+        "input": {
+          "$ref": "#/$defs/ChangesetInput"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangesetChange"
+          }
+        },
+        "dependencies": {
+          "type": "string"
+        },
+        "proposedBy": {
+          "$ref": "#/$defs/Actor"
+        },
+        "claimedOrigin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "state",
+        "input",
+        "changes",
+        "dependencies",
+        "proposedBy",
+        "claimedOrigin",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChangesetRowReceipt": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "create",
+            "patch",
+            "soft_delete"
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "kind",
+        "revision"
+      ]
+    },
+    "ChangesetApproval": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "proposalId": {
+          "type": "string"
+        },
+        "proposalVersion": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChangesetRowReceipt"
+          }
+        },
+        "historyEventIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approvedBy": {
+          "$ref": "#/$defs/Actor"
+        },
+        "committedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "proposalId",
+        "proposalVersion",
+        "rows",
+        "historyEventIds",
+        "approvedBy",
+        "committedAt"
+      ]
+    },
+    "ChangesetPreviewSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/ChangesetPreview"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ChangesetPreviewResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChangesetPreviewSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/PurgedResult"
+        },
+        {
+          "$ref": "#/$defs/MutationError"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "ChangesetProposalSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/ChangesetProposal"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ChangesetProposalResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChangesetProposalSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/PurgedResult"
+        },
+        {
+          "$ref": "#/$defs/MutationError"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "ChangesetApprovalSuccess": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "success"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/ChangesetApproval"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ChangesetApprovalResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChangesetApprovalSuccess"
+        },
+        {
+          "$ref": "#/$defs/UnavailableResult"
+        },
+        {
+          "$ref": "#/$defs/PurgedResult"
+        },
+        {
+          "$ref": "#/$defs/MutationError"
+        },
+        {
+          "$ref": "#/$defs/TransportError"
+        }
+      ]
+    },
+    "ChangesetLimits": {
+      "type": "object",
+      "properties": {
+        "maxOperations": {
+          "type": "integer"
+        },
+        "maxTables": {
+          "type": "integer"
+        },
+        "maxBytes": {
+          "type": "integer"
+        },
+        "maxReadSets": {
+          "type": "integer"
+        },
+        "maxMembershipRows": {
+          "type": "integer"
+        },
+        "maxReadRows": {
+          "type": "integer"
+        },
+        "previewTtlSeconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxOperations",
+        "maxTables",
+        "maxBytes",
+        "maxReadSets",
+        "maxMembershipRows",
+        "maxReadRows",
+        "previewTtlSeconds"
+      ]
+    },
+    "ChangesetCapability": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "bounded-changeset-proposals-v1"
+          ]
+        },
+        "principal": {
+          "$ref": "#/$defs/Actor"
+        },
+        "authority": {
+          "$ref": "#/$defs/GovernanceAuthority"
+        },
+        "limits": {
+          "$ref": "#/$defs/ChangesetLimits"
+        },
+        "deploymentId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "principal",
+        "authority",
+        "limits",
+        "deploymentId",
+        "sessionId"
+      ]
+    },
+    "ChangesetReadMember": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "$ref": "#/$defs/Revision"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
       ]
     }
   },

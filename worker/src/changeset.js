@@ -14,7 +14,7 @@ const revision=v=>exact(v,['updated_at','hub_at']) && validEditTimestamp(v.updat
 const plans=new WeakSet();
 const now="strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
-function validOperations(operations){
+export function validOperations(operations){
   if(!Array.isArray(operations) || !operations.length || operations.length>changesetLimits.maxOperations)return false;
   let bytes;try{bytes=new TextEncoder().encode(JSON.stringify(operations)).length;}catch{return false;}
   if(bytes>changesetLimits.maxBytes)return false;
@@ -47,7 +47,7 @@ export async function prepareChangeset(database,operations,{authorize,view:provi
   // All authorization precedes target reads, including absence disclosure.
   for(const op of operations)await authorize(view,op.table,op.kind,[op.id]);
   await view.prepare("SELECT name,sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
-  const groups=new Map();let millis=Date.now();
+  const groups=new Map(),originals=new Map(),changes=[];let millis=Date.now();
   for(const op of operations){
     let group=groups.get(op.table);
     if(!group){
@@ -62,6 +62,7 @@ export async function prepareChangeset(database,operations,{authorize,view:provi
     }
     if(Object.keys(op.values ?? {}).some(c=>!group.names.has(c)))fail('invalid_changeset');
     const current=await view.prepare(`SELECT * FROM ${qident(op.table)} WHERE id=?`).bind(op.id).first();
+    originals.set(JSON.stringify([op.table,op.id]),current);
     if(op.kind==='create'){if(current)fail('revision_conflict');}
     else{
       if(!current || current.id!==op.id || current.deleted_at!==null
@@ -71,15 +72,23 @@ export async function prepareChangeset(database,operations,{authorize,view:provi
     group.operations.push(op);
   }
   const updatedAt=new Date(millis).toISOString();if(!validEditTimestamp(updatedAt))fail('invalid_changeset');
-  const prepared=[];
+  const prepared=[];let historyInitialization=false;
   for(const group of groups.values()){
     const {table}=group;
     const proposed=group.operations.map(op=>({id:op.id,...(op.kind==='soft_delete'?{deleted_at:updatedAt}:op.values),updated_at:updatedAt}));
     const validated=await validatePush(view,table,proposed,db);
     if(validated.rejected.length || validated.expected.length!==proposed.length || validated.accepted.length!==proposed.length)fail('validation_failed');
     const {accepted,expected,props,transitions}=validated;
+    const values=row=>row===null?null:Object.fromEntries(Object.entries(row).filter(([c])=>!managed.has(c)));
+    for(let i=0;i<group.operations.length;i++){
+      const op=group.operations[i];
+      changes.push({table,id:op.id,kind:op.kind,before:values(originals.get(JSON.stringify([table,op.id]))),after:op.kind==='soft_delete'?null:values(expected[i])});
+    }
     const rules=await enforcedRules(view,table),history=await historyPlan(view,db,table,accepted,[],transitions);
-    if(history){history.actor=actor;history.operationId=operationId;}
+    if(history){
+      if(!history.exists){if(historyInitialization)history.exists=true;else historyInitialization=true;}
+      history.actor=actor;history.operationId=operationId;
+    }
     const statements=accepted.map((row,i)=>{
       const op=group.operations[i],columns=Object.keys(row).filter(c=>c!=='hub_at');
       const values=columns.map(c=>typeof row[c]==='boolean'?Number(row[c]):typeof row[c]==='object' && row[c]!==null?JSON.stringify(row[c]):row[c]);
@@ -93,7 +102,8 @@ export async function prepareChangeset(database,operations,{authorize,view:provi
       SELECT 1 FROM ${qident(table)} WHERE id=? AND updated_at=?) THEN 1 ELSE abs(-9223372036854775808) END AS life_write_conflict`).bind(op.id,updatedAt));
     prepared.push(plan);
   }
-  const plan={db,view,operations:structuredClone(operations),prepared,updatedAt};plans.add(plan);return plan;
+  changes.sort((a,b)=>operations.findIndex(o=>o.table===a.table && o.id===a.id)-operations.findIndex(o=>o.table===b.table && o.id===b.id));
+  const plan={db,view,operations:structuredClone(operations),changes,prepared,updatedAt};plans.add(plan);return plan;
 }
 
 export async function commitChangeset(plan,{after=[],probe=false}={}){

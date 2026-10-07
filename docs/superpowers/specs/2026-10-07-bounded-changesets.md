@@ -34,12 +34,44 @@ No domain schema, classification or personal policy belongs in this implementati
 
 ## Authorization boundary
 
-This is an internal service primitive, not a new route, advertised capability or
-approval mechanism. Existing single-row governance stays unchanged. A public
-changeset requires its own canonical DTO, current authenticated actor/scope,
-principal-bound preview, exact proposal version, user approval, durable idempotency
-and negative-receipt exclusion, purge handling and host acceptance. An operator
-credential or an array of existing approvals does not supply those semantics.
+The HTTP protocol is separate from single-row governance. `/v1/session` advertises
+`bounded-changeset-proposals-v1` only for configured eligible principals. Broad
+read is required for proposal access; approval additionally requires authenticated
+USER authority and broad write. Operator credentials cannot approve, and narrowed
+row/table grants are not expanded.
+
+The fixed routes under `/v1/governance/changesets` are `preview`,
+`proposals/create`, `proposals/get`, `proposals/preview`, `proposals/approve` and
+`proposals/reject`. The canonical generated DTO defines typed operations and
+read sets with equality predicates plus expected complete ID/revision membership.
+The service captures full queried rows, complete mutated-table revision and
+continuity sets, schema/catalog dependencies and reference/option reads. Evidence
+creation guards exact edge absence without loading unrelated retained evidence.
+
+Preview is authenticated and revocation-checked, but remains inert for domain,
+proposal, evidence/history, auth usage and outbound effects. Provider/security
+access logs are outside this promise. An encrypted five-minute preview binds the
+principal, immutable proposal/version, exact input, displayed before/after and
+all captured dependencies. Proposal creation and approval reject drift rather than
+rebasing. Native random ID defaults are safe only because the ID is explicit;
+unresolved dynamic defaults and unsupported schema mechanics fail closed.
+
+Approval commits all writes, history, proposal state and one original-key receipt
+in the same transaction. Terminal negative receipts exclude delayed execution.
+Retries resolve that key before mutable proposal validation, after current auth
+and scope checks. Same-key changed requests conflict. Purges redact dependent
+payloads and receipts while preserving exclusion keys. Client receipt parsing
+requires every expected member, actor, proposal and version; partial/mismatched or
+uncertain outcomes remain unresolved in the host's durable journal.
+
+Bounds include 64 operations, 8 mutated tables, 64 explicit read sets, 2,000 total
+explicit read rows, 20,000 continuity/membership rows per mutated table, the
+existing SQL/query budgets, and a 38,000-byte preview binding (within the 65,536-byte
+HTTP envelope after encryption). Exceeding any bound rejects the complete set.
+Complete-table membership is deliberately conservative and may invalidate a review
+when another member changes. A host must supply its whole displayed dependency
+sets, including source parents and allocation siblings, and still provide an
+actual USER session and recoverable captured-scope journal before activation.
 
 ## Verification
 
@@ -47,3 +79,8 @@ Synthetic records exercise both cross-table mutation orders, final-entry removal
 new referenced rows, invalid final states, exact revisions, tombstone collision,
 immutable properties, complete membership races, native before/after aggregates,
 full rollback and typed actor/history linkage. Tests use no personal schema or data.
+
+HTTP tests cover inertness across both stores, actual user/agent/operator authority,
+first-preview membership drift, unversioned sibling edits, late-original exclusion,
+lost receipt replay, revocation, purge, final-receipt failure and real SQLite/D1
+limits. Generated TypeScript and Swift contracts share the canonical hash.

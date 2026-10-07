@@ -104,8 +104,20 @@ CLI.
   `prepareChecked(..., {finalState:true})` returns `checks` that MUST execute after
   every table's mutation and before cleanup; use `commitChangeset` for composition.
   Catalog invariants receive full native before/final sets, while ordinary writes
-  retain per-mutation validation. This internal primitive is not an HTTP route,
-  governance approval or an advertised multi-row capability.
+  retain per-mutation validation.
+- `worker/src/changeset-governance.js` exposes the separate
+  `bounded-changeset-proposals-v1` capability under `/v1/governance/changesets`.
+  Configured broad-read agents can preview/propose; only authenticated USER actors
+  with current broad read/write and approval authority can approve. Operators and
+  narrow grants do not gain authority. Frozen proposals, principal-bound previews,
+  explicit expected read membership, complete mutated-table continuity guards and
+  original-key positive/negative receipts protect one atomic final-state result.
+  Previews never persist domain/auth usage/proposals/history or outbound effects.
+  Limits are advertised and reject wholly, never chunk. Provenance is insert-only.
+  Purges redact dependent proposals/receipts while retaining retry exclusion.
+  Generated DTOs and `parseChangesetApproval` validate whole-set client receipts;
+  hosts still need actual USER enrollment and a durable captured-scope journal.
+  Existing single-row governance and its clients retain their own protocol.
 - `worker/src/write.js` exposes `prepareChecked` for trusted service composition.
   It prepares table approval/history setup, mutations and cleanup without running
   a batch. All shared read guards must execute before every plan setup, and all
