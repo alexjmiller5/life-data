@@ -9,11 +9,11 @@ participate in replica synchronization or governance proposal/approval.
 ## Service configuration
 
 `ENROLLMENT_PROFILES` is optional, service-owned JSON keyed by a public profile
-ID. Each value has only `label` and `scopes`. IDs match
+ID. Each value has `label`, `scopes` and optional `config`. IDs match
 `[a-z][a-z0-9-]{0,63}`. Labels follow the existing enrollment label policy.
-A profile has 1-64 distinct `tables:read:<table>:<column>` or
-`tables:patch:<table>:<column>` grants; each table must include its `id` read.
-Patch grants require reads for the same column plus `updated_at` and `hub_at`.
+A profile has 1-256 distinct `tables:read:<table>:<column>` or
+`tables:patch:<table>:<column>` or `catalog:read:<table>:<column>` grants; each table must include its `id` read.
+Metadata grants require a read grant for that same column. Patch grants require reads for the same column plus `updated_at` and `hub_at`.
 Identity, creation/update timestamps, hub revisions and deletion fields cannot
 be patched. Internal, catalog, history, provenance and purge tables are not
 eligible. Full, admin, whole-table, file and general write grants are not
@@ -103,3 +103,89 @@ Writable browser approval shows the complete grants as read/update access.
 Canonical enrollment validation requires `conditional_patch: revision-v1`
 as well as the exact profile/scope receipt. Existing reader profiles and
 accepted credentials keep their original grants until explicit reenrollment.
+
+## Profile configuration and projected metadata
+
+Profiles may contain `config: {version:1,namespace,bindings}`. Namespace is a
+lowercase dotted identifier; bindings is an installation-owned JSON object.
+Canonical sorted object keys, a depth limit of 16 and 16 KiB UTF-8 limit apply.
+This is consumer configuration, never storage URLs, credentials or provider IDs.
+A configured profile hashes `[id,trimmedLabel,sortedScopes,canonicalConfig]`.
+Profiles without config retain the original revision algorithm.
+
+`GET /v1/consumer/config` returns `{profile:{id,revision},config}` only for the
+credential's enrolled profile, with `Cache-Control: no-store`. It takes no
+profile selector. A changed profile/config or grant set returns 409 and requires
+reenrollment. Missing config returns 404; operator tokens are not consumer
+sessions. `life-core/consumer-config` exports canonical pure configuration checks.
+
+`POST /v1/catalog/projection` takes `{table,columns}` (1-256 distinct columns).
+Every column needs both `catalog:read` and `tables:read` grants, even for an
+operator calling this narrow endpoint. The reply is `{table,properties}` with
+column, type, description, required, readOnly and optional static options.
+Only option values, descriptions and sort ranks are exposed; dynamic SQL,
+reference targets, defaults and private metadata are never disclosed or run.
+Read-only includes identity/revision fields, derived/immutable/dynamic-option
+properties and columns without a patch grant. Metadata does not authorize edits;
+normal checked writes remain the final authority.
+
+## Bounded record queries
+
+Session capability `row_query: bounded-v1` advertises `POST /v1/rows/query`.
+Clients require that capability; absence never permits a full-catalog fallback.
+`life-core/query` validates and normalizes the bounded request policy without
+transport or credentials. Canonical wire types are generated from core.json.
+
+The request is `{table,columns,filter?,order?,limit?,cursor?}`. A filter is an
+`and`/`or` object with nonempty child arrays, or `{column,op,value}`. Operators
+are eq, in, gte, lte, contains and is_null. `is_null` takes a boolean; contains
+matches a literal substring with SQLite's ASCII case folding (no SQL wildcard
+syntax). IN accepts 1-200 scalar values. Groups are bounded at depth 4 and 64
+leaves. Order has at most three distinct column/direction pairs, asc or desc;
+identity is the final ascending tie-breaker unless explicitly ordered last.
+Known values precede nulls in both directions. Pages contain 1-200 rows, default
+50. Projected, predicate, sort and identity columns all require read permission.
+
+The reply is `{rows,next_cursor}`. Opaque cursors bind the normalized request,
+inspected table/catalog shape and enrolled profile revision. Changing any of
+those returns 409. A schema change during a read fails without disclosing a
+stale projection. Text primary-key identity and SQLite native collations are
+preserved; null identities and unsafe numeric sort values fail explicitly.
+Tombstones are returned unless the authorized filter excludes them.
+
+Pages are independent reads, not a snapshot. Clients deduplicate identities,
+restart after relevant changes and never infer complete coverage from a page.
+Indexes are installation schema, provisioned through the normal logged schema
+contract. For null-last ordering, use matching expression indexes where needed;
+the synthetic scale test verifies the query plan against a 250,000-row catalog.
+
+## Capture adapters
+
+An optional `CAPTURE_ADAPTERS` service secret configures fixed HTTPS adapters.
+Each entry has `url`, a dedicated `credential`, and `fields` mapping logical
+edit names to arrays of required `tables:patch:TABLE:COLUMN` grants. Every
+configured grant must be present before submit, because resolution can infer
+edits from input text. No endpoint, workspace or credential comes from callers.
+The adapter owner separately limits its gateway credential to categories and
+logical fields; changing a name does not change a credential's authority.
+
+The caller needs `captures:submit:ADAPTER` or `captures:read:ADAPTER`.
+`GET /v1/session` advertises only configured, usable adapters in
+`capabilities.captures = {protocol:"receipt-v1",adapters:[{id,read,submit}]}`.
+Hosts use `life-core/capture` to check capability and validate receipts.
+Enrolled callers with changed profile bindings or grants receive 409 before
+submission. Revoked tokens are denied by ordinary authentication.
+
+`POST /v1/captures/ADAPTER` submits `{request_id,input,intent,fields?}`.
+The request ID is a canonical lowercase UUID; input has exactly one `text` or
+HTTP(S) `url`; intent is `save` or `record_consumption`. The same UUID must be
+retained for retries. `GET /v1/captures/ADAPTER/REQUEST_ID` reads the same caller's
+receipt. Request and response bodies are bounded to 64 KiB, upstream calls to
+15 seconds, and redirects are refused. Device tokens never leave Life Data.
+
+A 202 `received` or `processing` receipt is acceptance only. A `saved` receipt
+includes the resolved `{kind,id}` after verified commit. `needs_review`,
+`failed` and `uncertain` never imply success. A transport failure has unknown
+acceptance; query or resubmit the same UUID, never silently create a new one.
+The adapter owns receipt persistence, deduplication and mutation reconciliation;
+Life Data adds no queue, receipt database or schedule.

@@ -834,6 +834,29 @@ Credentials have separate owners:
 - Pipeline sink storage credentials may derive from a provisioning token. Check
   that dependency before rotating it; routine app sign-in needs no provider key.
 
+## Bounded consumer queries
+
+`worker/src/rows-query.js` owns `/v1/rows/query`, advertised as
+`row_query: bounded-v1`. The pure `life-core/query` entry owns request validation.
+Projected, predicate and sort columns require read grants. Cursors bind request,
+schema/catalog shape and profile revision, with native SQLite collation and
+null-last ordering. Text identities and safe scalar sort values are supported.
+Pages are separate reads, never snapshot or full-catalog coverage. Runtime
+schemas own query indexes; no consumer table names belong in service code.
+
+## Consumer configuration
+
+`worker/src/consumer-config.js` serves profile-bound configuration at
+`GET /v1/consumer/config` and column-authorized static metadata at
+`POST /v1/catalog/projection`. Config is installation-owned state inside
+`ENROLLMENT_PROFILES`, included in the canonical profile revision. Changed
+bindings require reenrollment; config-less legacy hashes remain stable.
+Canonical config checks export from `life-core/consumer-config`; generated
+Swift/TypeScript DTOs come from `core/contract/core.json`. Profiles admit up to
+256 distinct column grants. Metadata grants require matching row read grants;
+projection never executes or discloses dynamic option SQL. These endpoints
+confer no replica, arbitrary SQL or general catalog authority.
+
 ## File service
 
 `PUT/GET/HEAD /v1/files/<key>` serves retained originals through the hub's
@@ -889,6 +912,21 @@ and explicit ACK receipts. Consumers need the subscription grant plus read acces
 to every source. Live auth is rechecked before release; GET never advances ACK.
 Empty retired subscriptions honor the requested wait. Admin selects immutable
 sources at creation and can pause/resume or permanently retire recording.
+
+## Capture service interface
+
+`worker/src/capture-gateway.js` is a stateless supported consumer API. Synapse
+owns the media resolver, category/field restrictions, durable receipts and
+serialized writes. Life Data holds its own independently minted Synapse gateway
+credential in `CAPTURE_ADAPTERS`, never in a native client. Consumers hold only
+their scoped Life Data session. The gateway delegates an opaque credential-bound
+subject; receipt namespaces belong to gateway-client plus subject plus UUID.
+Replacing either credential changes that receipt namespace. Revoking the gateway
+stops captures but leaves ordinary catalog reads and edits available. Deploying
+Media Center's poller or native clients does not mutate service infrastructure.
+The contract and bounds are in `docs/scoped-enrollment.md`; portable fixtures
+are in `tests/fixtures/hub-capture-contract.json`. No adapter is enabled by source
+alone. The pure receipt/capability policy is `core/src/capture.ts`.
 
 Singleton creation policies can use `occurrenceType: "none"` and the generic
 `prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;

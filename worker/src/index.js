@@ -9,6 +9,9 @@
 import { pushChecked, queryBudget } from "./write.js";
 import {pushConfiguration,pushCapability,pushRegistrationRoute,handlePushRegistration} from './apple-push.js';
 import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
+import {captureGateway,captureCapability} from './capture-gateway.js';
+import {rowsQuery} from './rows-query.js';
+import {consumerConfig, catalogProjection} from './consumer-config.js';
 import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
@@ -532,6 +535,8 @@ const json = (obj, status = 200) =>
 async function handleSession(request, tenant, env) {
   if (request.method === "GET") {
     const capabilities=sessionCapabilities(tenant.scopes);
+    const captures=captureCapability(env,tenant.scopes);
+    if(captures)capabilities.captures=captures;
     const profiles=!tenant.admin && pushConfiguration(env)?.profiles;
     if(profiles)capabilities.push_profiles=profiles.map(({id,platform})=>({id,platform}));
     const push=await pushCapability(env,tenant);
@@ -856,6 +861,10 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
+  if (url.pathname.startsWith('/v1/captures/')) return captureGateway(request,tenant,env);
+  if (url.pathname === '/v1/rows/query') return rowsQuery(request,tenant,env);
+  if (url.pathname === '/v1/consumer/config') return consumerConfig(request,tenant,env);
+  if (url.pathname === '/v1/catalog/projection') return catalogProjection(request,tenant);
   if (url.pathname === "/v1/rows/create") return handleCreation(request,tenant,env);
   if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {
