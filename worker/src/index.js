@@ -8,6 +8,7 @@
 
 import { pushChecked, queryBudget } from "./write.js";
 import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
+import {rowsQuery} from './rows-query.js';
 import {consumerConfig, catalogProjection} from './consumer-config.js';
 import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
@@ -842,6 +843,7 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
+  if (url.pathname === '/v1/rows/query') return rowsQuery(request,tenant,env);
   if (url.pathname === '/v1/consumer/config') return consumerConfig(request,tenant,env);
   if (url.pathname === '/v1/catalog/projection') return catalogProjection(request,tenant);
   if (url.pathname === "/v1/rows/create") return handleCreation(request,tenant,env);

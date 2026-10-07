@@ -3594,6 +3594,81 @@
         "table",
         "properties"
       ]
+    },
+    "RowsQueryOrder": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      },
+      "required": [
+        "column",
+        "direction"
+      ]
+    },
+    "RowsQueryRequest": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filter": true,
+        "order": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RowsQueryOrder"
+          }
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "columns"
+      ]
+    },
+    "RowsQueryReply": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rows",
+        "next_cursor"
+      ]
     }
   },
   "operations": {

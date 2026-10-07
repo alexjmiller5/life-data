@@ -128,3 +128,33 @@ reference targets, defaults and private metadata are never disclosed or run.
 Read-only includes identity/revision fields, derived/immutable/dynamic-option
 properties and columns without a patch grant. Metadata does not authorize edits;
 normal checked writes remain the final authority.
+
+## Bounded record queries
+
+Session capability `row_query: bounded-v1` advertises `POST /v1/rows/query`.
+Clients require that capability; absence never permits a full-catalog fallback.
+`life-core/query` validates and normalizes the bounded request policy without
+transport or credentials. Canonical wire types are generated from core.json.
+
+The request is `{table,columns,filter?,order?,limit?,cursor?}`. A filter is an
+`and`/`or` object with nonempty child arrays, or `{column,op,value}`. Operators
+are eq, in, gte, lte, contains and is_null. `is_null` takes a boolean; contains
+matches a literal substring with SQLite's ASCII case folding (no SQL wildcard
+syntax). IN accepts 1-200 scalar values. Groups are bounded at depth 4 and 64
+leaves. Order has at most three distinct column/direction pairs, asc or desc;
+identity is the final ascending tie-breaker unless explicitly ordered last.
+Known values precede nulls in both directions. Pages contain 1-200 rows, default
+50. Projected, predicate, sort and identity columns all require read permission.
+
+The reply is `{rows,next_cursor}`. Opaque cursors bind the normalized request,
+inspected table/catalog shape and enrolled profile revision. Changing any of
+those returns 409. A schema change during a read fails without disclosing a
+stale projection. Text primary-key identity and SQLite native collations are
+preserved; null identities and unsafe numeric sort values fail explicitly.
+Tombstones are returned unless the authorized filter excludes them.
+
+Pages are independent reads, not a snapshot. Clients deduplicate identities,
+restart after relevant changes and never infer complete coverage from a page.
+Indexes are installation schema, provisioned through the normal logged schema
+contract. For null-last ordering, use matching expression indexes where needed;
+the synthetic scale test verifies the query plan against a 250,000-row catalog.

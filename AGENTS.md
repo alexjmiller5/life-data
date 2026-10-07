@@ -793,6 +793,16 @@ Credentials have separate owners:
 - Pipeline sink storage credentials may derive from a provisioning token. Check
   that dependency before rotating it; routine app sign-in needs no provider key.
 
+## Bounded consumer queries
+
+`worker/src/rows-query.js` owns `/v1/rows/query`, advertised as
+`row_query: bounded-v1`. The pure `life-core/query` entry owns request validation.
+Projected, predicate and sort columns require read grants. Cursors bind request,
+schema/catalog shape and profile revision, with native SQLite collation and
+null-last ordering. Text identities and safe scalar sort values are supported.
+Pages are separate reads, never snapshot or full-catalog coverage. Runtime
+schemas own query indexes; no consumer table names belong in service code.
+
 ## Consumer configuration
 
 `worker/src/consumer-config.js` serves profile-bound configuration at
