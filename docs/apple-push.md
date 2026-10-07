@@ -3,7 +3,9 @@
 An operator can explicitly test delivery with
 `POST /v1/notifications/test/<lowercase-v4-uuid>`. This inserts one fixed,
 clearly labeled synthetic event in the normal feed and delivery path. Retrying
-the same UUID does not insert another event. It does not manufacture usage
+the same UUID does not insert another event. It makes only that test event’s
+unresolved retry receipts eligible again; accepted and permanent receipts,
+other events and read state remain unchanged. It does not manufacture usage
 thresholds or change any existing event's read state; ordinary API usage is
 metered normally. After delivery settles, `DELETE` on the same exact path
 removes only that test event and its delivery receipts. `GET` on that path
@@ -59,7 +61,8 @@ scheduled accounting; the existing sweep provides retry opportunities while
 clients are closed. Auth-store leases and durable retry timestamps prevent
 concurrent drains and hot retries. A single drain is limited to 40 events,
 20 eligible installations, four events per installation and a 20-second start
-window. Provider requests time out after ten seconds. Large backlogs can require
+window. Provider requests time out after ten seconds. Use supported manual redirect mode;
+redirect responses are never followed, so provider credentials stay on the Apple origin. Large backlogs can require
 multiple invocations. Provider tokens are reused for at most 50 minutes.
 
 The collapse key is exactly 43 ASCII bytes:

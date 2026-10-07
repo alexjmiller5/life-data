@@ -125,7 +125,7 @@ test('sender uses canonical identity, advances only delivery receipt, and never 
   expect(options.headers['apns-topic']).toBe('org.example.desktop');
   expect(options.headers['apns-push-type']).toBe('alert');
   expect(options.headers['apns-collapse-id']).toHaveLength(43);
-  expect(options.redirect).toBe('error');
+  expect(options.redirect).toBe('manual');
   expect(JSON.parse(options.body)).toEqual({aps:{alert:{title:'Synthetic alert',body:'Synthetic message'},sound:'default'},lifeNotification:{deploymentIdentity:'deployment-one',eventId:'event-one'}});
   expect(await env.AUTH_DB.prepare('SELECT read_at FROM _notifications').first()).toEqual({read_at:null});
   await push.deliverPush?.(env,async()=>{throw Error('accepted event replayed');});
@@ -281,4 +281,16 @@ test('transport diagnostics classify supported failures without arbitrary error 
     await push.deliverPush(env,async()=>{throw Error('secret-device-token');},Date.now()+60000);
     expect(warn.mock.calls).toEqual([['APNs transport failed','Other']]);
   }finally{warn.mockRestore();}
+});
+
+test('sender uses supported manual redirect mode and never follows a provider redirect',async()=>{
+  const env=await providerEnvironment();await notify(env.AUTH_DB,event());
+  let sends=0;
+  await push.deliverPush(env,async(url,options)=>{
+    if(!['follow','manual'].includes(options.redirect))throw TypeError('Invalid redirect value');
+    sends++;return new Response(null,{status:301,headers:{Location:'https://other.example.test'}});
+  });
+  expect(sends).toBe(1);
+  expect(await env.AUTH_DB.prepare('SELECT outcome FROM _push_deliveries').first()).toEqual({outcome:'retry'});
+  expect(await env.AUTH_DB.prepare('SELECT read_at FROM _notifications').first()).toEqual({read_at:null});
 });

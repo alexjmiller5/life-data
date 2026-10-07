@@ -232,7 +232,7 @@ export async function deliverPush(env,send=fetch,now=Date.now()){
         try{
           if(!jwt || !collapse)throw Error('Provider token unavailable');
           const response=await send(`https://${profile.environment==='sandbox'?'api.sandbox.push.apple.com':'api.push.apple.com'}/3/device/${claimed.device_token}`,{
-            method:'POST',redirect:'error',signal:AbortSignal.timeout(10000),
+            method:'POST',redirect:'manual',signal:AbortSignal.timeout(10000),
             headers:{authorization:`bearer ${jwt}`,'content-type':'application/json','apns-topic':profile.topic,
               'apns-push-type':'alert','apns-priority':'10','apns-expiration':String(Math.floor(now/1000)+86400),
               'apns-collapse-id':collapse},body});

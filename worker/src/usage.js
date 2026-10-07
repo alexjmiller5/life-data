@@ -475,6 +475,11 @@ async function ownRoute(request, url, env, tenant) {
       const created = await notify(env.AUTH_DB, {id, producer: "delivery-test", type: "notification.test",
         severity: "info", title: "Life notification test",
         body: "Synthetic delivery check. No usage thresholds or read state were changed."});
+      if (!created) {
+        await ensurePush(env.AUTH_DB);
+        await env.AUTH_DB.prepare(`UPDATE _push_deliveries SET next_attempt=0 WHERE outcome='retry' AND event_id IN
+          (SELECT id FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test')`).bind(id).run();
+      }
       return json({id}, created ? 201 : 200);
     }
     await ensurePush(env.AUTH_DB);
