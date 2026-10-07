@@ -1,4 +1,4 @@
-import {expect,test} from 'bun:test';
+import {expect,test,spyOn} from 'bun:test';
 import hub,{authenticate,SWEEP_CRON} from '../src/index.js';
 import {withUsage} from '../src/usage.js';
 import {hashToken} from '../src/auth.js';
@@ -257,4 +257,16 @@ test('same-token confirmation cannot release another in-flight delivery lease',a
     return new Response(null,{status:200});
   });
   expect(duplicate).toBe(0);
+});
+
+test('provider refusal diagnostic reports only allowlisted status and reason',async()=>{
+  const env=await providerEnvironment();await notify(env.AUTH_DB,event());
+  const warn=spyOn(console,'warn').mockImplementation(()=>{});
+  try{
+    await push.deliverPush(env,async()=>Response.json({reason:'InvalidProviderToken',private:'secret-device-token'},{status:403}));
+    expect(warn.mock.calls).toEqual([['APNs delivery refused',403,'InvalidProviderToken']]);
+    warn.mockClear();
+    await push.deliverPush(env,async()=>Response.json({reason:'secret-device-token'},{status:403}),Date.now()+60000);
+    expect(warn.mock.calls).toEqual([['APNs delivery refused',403,'Other']]);
+  }finally{warn.mockRestore();}
 });

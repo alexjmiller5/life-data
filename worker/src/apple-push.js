@@ -223,7 +223,7 @@ export async function deliverPush(env,send=fetch,now=Date.now()){
         try{
           jwt??=await providerToken(config,env.APNS_PRIVATE_KEY,now);
           collapse=await pushIdentity(config.deploymentIdentity,event.id);
-        }catch{/* Persist signing failures using the same bounded retry policy. */}
+        }catch{console.warn('APNs signing failed');}
         // Recheck authorization and generation immediately before dispatch.
         const current=await db.prepare(`SELECT 1 FROM _push_registrations r JOIN _tokens t ON t.hash=r.token_hash
           WHERE r.installation_id=? AND r.revision=? AND r.delivery_lease=? AND r.state='active' AND t.revoked_at IS NULL`)
@@ -237,12 +237,19 @@ export async function deliverPush(env,send=fetch,now=Date.now()){
               'apns-push-type':'alert','apns-priority':'10','apns-expiration':String(Math.floor(now/1000)+86400),
               'apns-collapse-id':collapse},body});
           if(response.status===200)outcome='accepted';
-          else if(response.status===410 || response.status===400){
-            const reason=await response.json().catch(()=>({}));
-            invalidToken=response.status===410 || ['BadDeviceToken','DeviceTokenNotForTopic'].includes(reason.reason);
-            outcome='permanent';
+          else{
+            const {reason}=await response.json().catch(()=>({}));
+            const safeReason=['InvalidProviderToken','ExpiredProviderToken','MissingProviderToken',
+              'Forbidden','BadEnvironmentKeyIdInToken','BadDeviceToken','DeviceTokenNotForTopic',
+              'BadTopic','TopicDisallowed','Unregistered','TooManyRequests','TooManyProviderTokenUpdates',
+              'InternalServerError','ServiceUnavailable','Shutdown'].includes(reason)?reason:'Other';
+            console.warn('APNs delivery refused',response.status,safeReason);
+            if(response.status===410 || response.status===400){
+              invalidToken=response.status===410 || ['BadDeviceToken','DeviceTokenNotForTopic'].includes(reason);
+              outcome='permanent';
+            }
           }
-        }catch{/* No tokens, provider body or request URLs enter logs. */}
+        }catch{console.warn('APNs transport failed');}
       }
       const attempts=event.attempts+1;
       const retryAt=outcome==='retry'?now+Math.min(3600000,30000*2**Math.min(attempts-1,7)):0;
