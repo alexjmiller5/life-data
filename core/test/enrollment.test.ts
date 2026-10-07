@@ -218,3 +218,14 @@ test('minimal enrollment entry bundles without replica handlers and accepts a re
   expect(vm.runInContext('typeof Enrollment.createCoreHandlers',realm)).toBe('undefined');
  } finally {await rm(temp,{recursive:true,force:true});}
 });
+
+test('scoped enrollment accepts 256 distinct grants including metadata without broadening authority',()=>{
+ const scopes=Array.from({length:255},(_,i)=>`tables:read:items:${i===0?'id':`field_${i}`}`);
+ scopes.push('catalog:read:items:field_1');
+ const expected={id:'library',scopes};
+ const session={...profiledSession,scopes,enrollmentProfile:{id:'library',revision:'b'.repeat(64)}};
+ expect(core.validateDeviceSession(session,expected).scopes).toHaveLength(256);
+ for(const invalid of [[...scopes,'tables:read:items:extra'],[...scopes.slice(0,-1),scopes[0]],['catalog:read:items:field_1'],['tables:read:items:id','catalog:read:other:field_1']]){
+  expect(()=>core.validateDeviceSession({...session,scopes:invalid},{id:'library',scopes:invalid})).toThrow();
+ }
+});

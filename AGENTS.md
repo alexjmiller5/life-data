@@ -793,6 +793,19 @@ Credentials have separate owners:
 - Pipeline sink storage credentials may derive from a provisioning token. Check
   that dependency before rotating it; routine app sign-in needs no provider key.
 
+## Consumer configuration
+
+`worker/src/consumer-config.js` serves profile-bound configuration at
+`GET /v1/consumer/config` and column-authorized static metadata at
+`POST /v1/catalog/projection`. Config is installation-owned state inside
+`ENROLLMENT_PROFILES`, included in the canonical profile revision. Changed
+bindings require reenrollment; config-less legacy hashes remain stable.
+Canonical config checks export from `life-core/consumer-config`; generated
+Swift/TypeScript DTOs come from `core/contract/core.json`. Profiles admit up to
+256 distinct column grants. Metadata grants require matching row read grants;
+projection never executes or discloses dynamic option SQL. These endpoints
+confer no replica, arbitrary SQL or general catalog authority.
+
 ## File service
 
 `PUT/GET/HEAD /v1/files/<key>` serves retained originals through the hub's
