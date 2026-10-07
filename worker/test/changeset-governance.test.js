@@ -250,3 +250,20 @@ test('caller-supplied identity permits a native random ID default without evalua
   const r=await f.call(prefix+'preview',request,f.agent);
   expect(r.body.kind).toBe('success');expect(r.body.value.changes[0].id).toBe('fixed');
 });
+
+test('canonical client consumes the actual service proposal, preview and approval receipts',async()=>{
+  const {createChangesetAPI}=await import('../../core/src/changeset-client.ts');
+  const f=await fixture();
+  const session=async token=>(await (await hub.fetch(new Request('https://hub.test/v1/session',{headers:{Authorization:'Bearer '+token}}),f.env,{waitUntil(){}})).json());
+  const client=async token=>createChangesetAPI((await session(token)).capabilities.changesets,async(route,body)=>{
+    const r=await f.call(route.slice(4),body,token);return {status:r.status,data:r.body};
+  });
+  const agent=await client(f.agent),user=await client('user');
+  const preview=await agent.preview(input);expect(preview.kind).toBe('success');
+  const created=await agent.createProposal({previewToken:preview.value.previewToken,idempotencyKey:'client-create'});expect(created.kind).toBe('success');
+  const p=created.value,shown=await user.getProposal({proposalId:p.id});expect(shown.kind).toBe('success');
+  const approvalPreview=await user.previewProposal({proposalId:p.id,expectedVersion:p.version},p);expect(approvalPreview.kind).toBe('success');
+  const args={proposalId:p.id,expectedVersion:p.version,previewToken:approvalPreview.value.previewToken,idempotencyKey:'client-approve'};
+  const result=await user.approveProposal(args,p);expect(result.kind).toBe('success');
+  expect(await user.approveProposal(args,p)).toEqual(result);
+});

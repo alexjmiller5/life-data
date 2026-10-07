@@ -25,3 +25,5 @@ export * from './resolve-derived.ts';
 
 export {parseChangesetApproval} from './changeset-service.ts';
 export type {ChangesetApprovalScope} from './changeset-service.ts';
+
+export * from './changeset-client.ts';

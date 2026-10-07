@@ -36,6 +36,15 @@ export function parseChangesetApproval(scope:ChangesetApprovalScope,reply:unknow
       if(new Set(actual.map(key)).size!==actual.length || actual.some(r=>!expected.has(key(r))))return unknown();
       return data as ChangesetApprovalResult;
     }
+    return parseChangesetFailure(reply);
+  }catch{return unknown();}
+}
+
+/** Only authenticated, durable negative outcomes may settle an original request. */
+export function parseChangesetFailure(reply:unknown):ChangesetApprovalResult{
+  try{
+    if(!exact(reply,['status','data'],['retryAfterSeconds']) || !Number.isInteger(reply.status) || !object(reply.data))return unknown();
+    const status=Number(reply.status),data=reply.data;
     if(!exact(data,['kind','code','resolution','conflicts']) || data.kind!=='error' || typeof data.code!=='string'
       || !['unresolved','not_committed'].includes(String(data.resolution)) || !conflicts(data.conflicts))return unknown();
     const matrix:Record<number,readonly string[]>={400:['validation_failed'],401:['permission_denied'],403:['permission_denied'],404:['unavailable'],
