@@ -136,11 +136,13 @@ export async function handlePushRegistration(request,tenant,env){
       ON CONFLICT(token_hash,app_profile) DO NOTHING`)
       .bind(tenant.hash,body.appProfile,installation,revision,state,token,stamp,
         tenant.hash,body.appProfile,cap.sessionBinding,tenant.hash,body.requestId)
-    : db.prepare(`UPDATE _push_registrations SET revision=CASE WHEN state='active' AND ?='active' AND device_token=? THEN revision ELSE ? END,state=?,device_token=?,updated_at=?,delivery_lease=NULL,lease_until=0,
+    : db.prepare(`UPDATE _push_registrations SET revision=CASE WHEN state='active' AND ?='active' AND device_token=? THEN revision ELSE ? END,state=?,device_token=?,updated_at=?,
+      delivery_lease=CASE WHEN state='active' AND ?='active' AND device_token=? THEN delivery_lease ELSE NULL END,
+      lease_until=CASE WHEN state='active' AND ?='active' AND device_token=? THEN lease_until ELSE 0 END,
       activated_after_seq=CASE WHEN state='revoked' AND ?='active' THEN ${cursor} ELSE activated_after_seq END,
       delivery_cursor=CASE WHEN state='revoked' AND ?='active' THEN ${cursor} ELSE delivery_cursor END
       WHERE token_hash=? AND app_profile=? AND revision=? AND ${authorized} AND ${noReceipt}`)
-      .bind(state,token,revision,state,token,stamp,state,state,tenant.hash,body.appProfile,body.expectedRevision,
+      .bind(state,token,revision,state,token,stamp,state,token,state,token,state,state,tenant.hash,body.appProfile,body.expectedRevision,
         tenant.hash,body.appProfile,cap.sessionBinding,tenant.hash,body.requestId);
   const results=await db.batch([change,
     db.prepare(`INSERT INTO _push_requests(token_hash,request_id,fingerprint,app_profile,revision)

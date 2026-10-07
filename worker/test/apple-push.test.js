@@ -247,3 +247,14 @@ test('another window confirming the same token preserves its current registratio
   expect(same.body.receipt.registration.revision).toBe(first.body.receipt.registration.revision);
   expect((await post(env,registration())).body.kind).toBe('confirmed');
 });
+test('same-token confirmation cannot release another in-flight delivery lease',async()=>{
+  const env=await providerEnvironment();await notify(env.AUTH_DB,event());
+  const before=await (await call(env,'/v1/push/registration?appProfile=desktop')).json();
+  let duplicate=0;
+  await push.deliverPush(env,async()=>{
+    await post(env,registration({expectedRevision:before.registration.revision,requestId:'other-window'}));
+    await push.deliverPush(env,async()=>{duplicate++;return new Response(null,{status:200});});
+    return new Response(null,{status:200});
+  });
+  expect(duplicate).toBe(0);
+});
