@@ -1064,6 +1064,9 @@
           "items": {
             "$ref": "#/$defs/ViewLayoutItem"
           }
+        },
+        "presentation": {
+          "$ref": "#/$defs/ViewPresentation"
         }
       },
       "required": [
@@ -3466,6 +3469,167 @@
         "derived",
         "failed"
       ]
+    },
+    "ViewPresentation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "table",
+            "calendar",
+            "gallery",
+            "board"
+          ]
+        },
+        "dateColumn": {
+          "type": "string"
+        },
+        "endDateColumn": {
+          "type": "string"
+        },
+        "coverColumn": {
+          "type": "string"
+        },
+        "groupColumn": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "description": "Version 2 display settings, independent of SQL projection. Calendar uses a start date and optional inclusive end-date column. Board groups by a select property. Gallery uses an optional cover property."
+    },
+    "CalendarRowsArgs": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "dateColumn": {
+          "type": "string"
+        },
+        "endDateColumn": {
+          "type": "string"
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarContext"
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "dateColumn",
+        "days"
+      ]
+    },
+    "CalendarDayRows": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "date",
+        "rowIds"
+      ]
+    },
+    "CalendarRowsResult": {
+      "type": "object",
+      "properties": {
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarDayRows"
+          }
+        },
+        "undated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "days",
+        "undated"
+      ]
+    },
+    "BoardRowsArgs": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "column": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "column",
+        "options"
+      ]
+    },
+    "BoardColumnRows": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "value",
+        "rowIds"
+      ]
+    },
+    "BoardRowsResult": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BoardColumnRows"
+          }
+        }
+      },
+      "required": [
+        "columns"
+      ]
     }
   },
   "operations": {
@@ -3810,6 +3974,24 @@
         "$ref": "#/$defs/ResolveDerivedResult"
       },
       "description": "Request hub-owned derivation for an unchanged saved row. Hosts retain drafts, then sync and re-read the record; this operation never writes replica values."
+    },
+    "calendarRows": {
+      "args": {
+        "$ref": "#/$defs/CalendarRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/CalendarRowsResult"
+      },
+      "description": "Lay out already loaded rows using host-supplied civil-day bounds. All-day end dates are inclusive; timed ends exclusive, with equal start/end treated as an instant. No query, write or timezone engine."
+    },
+    "boardRows": {
+      "args": {
+        "$ref": "#/$defs/BoardRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/BoardRowsResult"
+      },
+      "description": "Group already loaded rows by a select property, preserving supplied option order and unknown stored values. No writes."
     }
   }
 }

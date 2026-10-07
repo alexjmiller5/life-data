@@ -387,3 +387,47 @@ test.each([1, 2])('version %s shared views round-trip through the real hub with 
   expect((await other.all("SELECT col FROM history WHERE tbl='views' ORDER BY col"))).toEqual([{ col: 'definition' }, { col: 'deleted_at' }, { col: 'name' }]);
   expect(requests.filter(r => r.route === '/v1/schema/push')).toEqual([]);
 });
+
+test('presentation settings round-trip independently of SQL projections', async () => {
+  const db = await local();
+  for (const [col,type] of [['start','date_or_datetime'],['end','date'],['cover','url'],['status','select']]) {
+    await db.run(`ALTER TABLE items ADD COLUMN ${col} TEXT`);
+    await db.run('INSERT INTO catalog_properties(id,tbl,col,type) VALUES (?,?,?,?)',[`items.${col}`,'items',col,type]);
+  }
+  for (const presentation of [
+    {kind:'table'},
+    {kind:'calendar',dateColumn:'start',endDateColumn:'end'},
+    {kind:'gallery',coverColumn:'cover'},
+    {kind:'board',groupColumn:'status'},
+  ] satisfies core.ViewPresentation[]) {
+    const saved = await save(db,{table:'items',name:presentation.kind,definition:{version:2,presentation}});
+    expect(saved.definition).toEqual({version:2,presentation});
+    expect(saved.view).toEqual({table:'items'});
+    expect((await list(db)).views.find(v=>v.id===saved.id)?.definition).toEqual(saved.definition);
+  }
+});
+
+test('presentation validates catalog types, version and exact allowed keys without writes', async () => {
+  const db = await local();
+  for (const presentation of [null,[],{kind:'future'},{kind:'calendar'},
+    {kind:'calendar',dateColumn:'qty'}, {kind:'calendar',dateColumn:'missing'},
+    {kind:'board',groupColumn:'name'},{kind:'board'},
+    {kind:'gallery',coverColumn:'qty'}, {kind:'table',groupColumn:'qty'},
+    {kind:'gallery',coverColumn:'name',privateSetting:true}]) {
+    await expect(save(db,{table:'items',name:'Invalid',definition:{version:2,presentation}})).rejects.toThrow();
+  }
+  await expect(save(db,{table:'items',name:'Legacy',definition:{version:1,presentation:{kind:'table'}}})).rejects.toThrow();
+  expect(await db.all('SELECT * FROM views')).toEqual([]);
+  expect(await db.all('SELECT * FROM history')).toEqual([]);
+});
+
+test('an imported presentation whose property disappears stays visibly unavailable', async () => {
+  const db = await local();
+  await db.run('ALTER TABLE items ADD COLUMN due TEXT');
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('items.due','items','due','date')");
+  const saved = await save(db,{table:'items',name:'Calendar',definition:{version:2,presentation:{kind:'calendar',dateColumn:'due'}}});
+  await db.run("UPDATE catalog_properties SET deleted_at=? WHERE id='items.due'",[T1]);
+  const unavailable=(await list(db)).views.find(v=>v.id===saved.id)!;
+  expect(unavailable.definition).toBeNull();
+  expect(unavailable.unavailable).toMatch(/presentation/i);
+});
