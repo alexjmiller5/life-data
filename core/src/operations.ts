@@ -20,6 +20,7 @@ import { prepareSearch, search } from './search.ts';
 import { readRemoteRows, readRemoteRow } from './remote.ts';
 import { resolveDerived } from './resolve-derived.ts';
 import { listViews, saveView, deleteView } from './saved-views.ts';
+import { listSidebarPins, pinTable, unpinTable, moveTablePin } from './sidebar-pins.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
 /** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
@@ -73,6 +74,10 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     setViewDefault: args => writes.capturedMutation('view_defaults',args,(input,capture)=>setViewDefault(db,input,{origin},capture)),
     saveView: args => writes.capturedMutation('views', args, (input, capture) => saveView(db, input, { origin }, capture)),
     deleteView: args => writes.capturedMutation('views', args, (input, capture) => deleteView(db, input, { origin }, capture)),
+    listSidebarPins: args => listSidebarPins(db, args),
+    pinTable: args => writes.sidebarMutation(args, input => pinTable(db,input,{origin})),
+    unpinTable: args => writes.sidebarMutation(args, input => unpinTable(db,input,{origin})),
+    moveTablePin: args => writes.sidebarMutation(args, input => moveTablePin(db,input,{origin})),
     options: args => readOptions(db, args),
     write: writes.write,
     runRowAction: writes.runRowAction,
