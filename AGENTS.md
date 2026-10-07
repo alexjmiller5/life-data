@@ -641,6 +641,15 @@ selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals -
 it never computes a derived value itself. Requires a hub token with
 `tables:write` (or `full`/admin).
 
+Manual record Resolve uses `POST /v1/derive/resolve` with exactly one `ids`
+entry, `col` and required `expectedUpdatedAt`. The separate route makes older
+hubs fail closed. It shares broad table-write authorization; narrow table/column
+writers cannot invoke external derivations. The displayed row revision must
+match the guarded provider snapshot before HTTP; existing read guards reject
+provider-time changes. Core `resolveDerived` requires a bound replica, a live
+saved derived property and matching local/hub revisions, and never writes local
+values from its receipt. Hosts retain drafts, sync normally and re-read the row.
+
 Endpoint requests have a 60-second abort timeout. Non-2xx failures retain
 `id`, `col`, `error` and integer `status`. Diagnostics use only sanitized
 string `JSON.error` from bodies up to 16 KiB, capped at 512 characters;

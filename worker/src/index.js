@@ -148,7 +148,7 @@ function allowed(pathname, method, scopes) {
   if (pathname.match(/^\/v1\/streams\/[^/]+\/append$/)) {
     return scopes.includes("full") || scopes.includes("streams:append");
   }
-  if (pathname === "/v1/rows/push" || pathname === "/v1/rows/insert" || pathname === "/v1/rows/patch" || pathname === "/v1/derive") {
+  if (pathname === "/v1/rows/push" || pathname === "/v1/rows/insert" || pathname === "/v1/rows/patch" || pathname === "/v1/derive" || pathname === "/v1/derive/resolve") {
     return scopes.includes("full") || scopes.includes("tables:write");
   }
   const readOnly =
@@ -432,6 +432,18 @@ const ROUTES = {
     const out = await pushChecked(db,table,rows,(t,c,s)=>upsertSql(t,c,s,true),stamping,[],true,policy);
     if (!policy && out.accepted.length && ctx && env) ctx.waitUntil(logDerive(deriveStale(queryBudget(db,200),env,table,out.accepted)));
     return {inserted:out.accepted.map(row=>row.id),existing:out.existing ?? [],rejected:out.rejected};
+  },
+
+  // A separate route makes older hubs fail closed instead of ignoring the
+  // displayed revision. Existing bulk derive/cron behavior stays unchanged.
+  "/v1/derive/resolve": async (body, db, env) => {
+    if (!body || Object.keys(body).some(key => !['table','ids','col','expectedUpdatedAt'].includes(key))
+      || !Array.isArray(body.ids) || body.ids.length !== 1
+      || typeof body.ids[0] !== 'string' || !body.ids[0]
+      || typeof body.col !== 'string' || !body.col
+      || !validEditTimestamp(body.expectedUpdatedAt)) return json({error:'invalid Resolve request'},400);
+    const table = ident(body.table), col = ident(body.col);
+    return deriveRows(db,env,table,body.ids,{col,expectedUpdatedAt:body.expectedUpdatedAt});
   },
 
   // Synchronous derivation for a named set of rows: `life derive` and the

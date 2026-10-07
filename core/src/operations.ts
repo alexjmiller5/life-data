@@ -15,6 +15,7 @@ import { syncStatus } from './status.ts';
 import { readRejections } from './rejections.ts';
 import { prepareSearch, search } from './search.ts';
 import { readRemoteRows, readRemoteRow } from './remote.ts';
+import { resolveDerived } from './resolve-derived.ts';
 import { listViews, saveView, deleteView } from './saved-views.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
@@ -58,6 +59,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),
     resolveSourceLink: args => resolveSourceLink(db, args),
+    resolveDerived: ({ endpoint, ...args }) => resolveDerived(db, hub(endpoint), args),
     remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),

@@ -59,7 +59,7 @@ test('table/body authorization precedes any data lookup and never interprets bro
   for (const table of ['secrets','Articles','articles ','articles;SELECT 1','sqlite_master','history','provenance','catalog_properties','purges','_tokens',null,{}]) {
     for (const route of ['pull','insert','push','patch']) expect((await call(`/v1/rows/${route}`,'POST',{...insert(),table})).status).toBe(403);
   }
-  for (const [path,method] of [['/v1/catalog','GET'],['/v1/stats','POST'],['/v1/cursor','POST'],['/v1/backup','POST'],['/v1/archive/query','POST'],['/v1/derive','POST'],['/v1/tokens/list','POST'],['/v1/streams/anything','GET'],['/v1/files/captures/a','GET']]) {
+  for (const [path,method] of [['/v1/catalog','GET'],['/v1/stats','POST'],['/v1/cursor','POST'],['/v1/backup','POST'],['/v1/archive/query','POST'],['/v1/derive','POST'],['/v1/derive/resolve','POST'],['/v1/tokens/list','POST'],['/v1/streams/anything','GET'],['/v1/files/captures/a','GET']]) {
     expect((await call(path,method,method==='POST'?{}:undefined)).status).toBe(403);
   }
 });
@@ -512,4 +512,13 @@ test('projected keyset requires ID access and never accepts malformed grant suff
     const {call}=await setup(scopes);
     expect((await call('/v1/rows/pull','POST',{table:'articles',columns:['url']})).status).toBe(403);
   }
+});
+
+test('manual Resolve keeps broad table-write authorization and denies read-only consumers',async()=>{
+  for(const scopes of [['tables:read'],['tables:read:articles'],['tables:write:articles']]) {
+    const {call}=await setup(scopes);
+    expect((await call('/v1/derive/resolve','POST',{})).status).toBe(403);
+  }
+  const {call}=await setup(['tables:write'],rowDb());
+  expect((await call('/v1/derive/resolve','POST',{})).status).toBe(400);
 });

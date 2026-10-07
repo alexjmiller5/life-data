@@ -3395,6 +3395,77 @@
         "string",
         "integer"
       ]
+    },
+    "ResolveDerivedArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "table",
+        "id",
+        "column",
+        "expectedUpdatedAt"
+      ],
+      "description": "Resolve one saved derived property on the bound hub, requiring the displayed row revision. Never accepts draft values or locally computes metadata."
+    },
+    "DerivationFailure": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "col": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "retry_after": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "col",
+        "error"
+      ]
+    },
+    "ResolveDerivedResult": {
+      "type": "object",
+      "properties": {
+        "derived": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DerivationFailure"
+          }
+        }
+      },
+      "required": [
+        "derived",
+        "failed"
+      ]
     }
   },
   "operations": {
@@ -3730,6 +3801,15 @@
         "$ref": "#/$defs/ProposalMutationResult"
       },
       "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "resolveDerived": {
+      "args": {
+        "$ref": "#/$defs/ResolveDerivedArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ResolveDerivedResult"
+      },
+      "description": "Request hub-owned derivation for an unchanged saved row. Hosts retain drafts, then sync and re-read the record; this operation never writes replica values."
     }
   }
 }
