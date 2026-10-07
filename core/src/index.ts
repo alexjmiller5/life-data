@@ -2,6 +2,7 @@ export * from './validate.ts';
 export * from './driver.ts';
 export * from './sync.ts';
 export * from './view.ts';
+export * from './read-plan.ts';
 export * from './catalog.ts';
 export * from './http.ts';
 export { writeRow, writeability, isReadOnlyTable, ValidationError } from './write.ts';
