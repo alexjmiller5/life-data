@@ -55,6 +55,33 @@ function snapshot<T>(value: T): T {
   return copy(value) as T;
 }
 
+function presentationColumns(value: unknown, catalog: Catalog, table: string): string[] {
+  if (value === undefined) return [];
+  object(value);
+  const keys: Record<string,string[]> = {
+    table: ['kind'], calendar: ['kind','dateColumn','endDateColumn'],
+    gallery: ['kind','coverColumn'], board: ['kind','groupColumn'],
+  };
+  if (typeof value.kind !== 'string' || !Object.hasOwn(keys,value.kind)) throw new Error('Invalid view presentation kind.');
+  object(value,keys[value.kind]);
+  const config = value;
+  const columns: string[] = [];
+  function property(key: string, types: string[], required: boolean) {
+    const column = config[key];
+    if (column === undefined && !required) return;
+    const p = catalog.properties.find(p => p.tbl === table && p.col === column && !p.deprecated);
+    if (typeof column !== 'string' || !p || !types.includes(p.type ?? '')) throw new Error('View presentation property is unavailable or has the wrong type.');
+    columns.push(column);
+  }
+  if (value.kind === 'calendar') {
+    property('dateColumn',['date','datetime','date_or_datetime'],true);
+    property('endDateColumn',['date','datetime','date_or_datetime'],false);
+  }
+  if (value.kind === 'gallery') property('coverColumn',['text','url','json'],false);
+  if (value.kind === 'board') property('groupColumn',['select'],true);
+  return columns;
+}
+
 class UnavailableView extends Error {}
 
 async function definitionView(db: SqlDriver, catalog: Catalog, table: string, value: unknown): Promise<View> {
@@ -63,9 +90,9 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
   try {
     object(value);
     if (value.version !== 1 && value.version !== 2) throw new Error('Unsupported saved-view definition version.');
-    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','dayStartMinutes','actions','layout']:[])]);
+    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','dayStartMinutes','actions','layout','presentation']:[])]);
     if (!catalog.tables.some(t => t.id === table)) throw new Error('Saved-view target is absent from the catalog.');
-    const { version, widths, timeZone, dayStartMinutes, actions: _actions, layout: _layout, ...query } = value;
+    const { version, widths, timeZone, dayStartMinutes, actions: _actions, layout: _layout, presentation, ...query } = value;
     view = { table, ...query } as View;
     validateView(view, catalog.properties);
     const filters=[...(view.filters ?? []),...(view.groups ?? []).flatMap(g=>g.filters)];
@@ -77,6 +104,7 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
     if (view.columns && new Set(view.columns).size !== view.columns.length) throw new Error('Duplicate saved-view columns.');
     referenced = [...(view.columns ?? []), ...filters.map(f => f.column), ...(view.sort ?? []).map(s => s.column)];
     referenced.push(...validateRowActions(value,catalog,table));
+    referenced.push(...presentationColumns(presentation,catalog,table));
     if (widths !== undefined) {
       object(widths);
       for (const [column, width] of Object.entries(widths)) {
