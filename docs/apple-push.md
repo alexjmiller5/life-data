@@ -1,5 +1,14 @@
 # Apple push notifications
 
+An operator can explicitly test delivery with
+`POST /v1/notifications/test/<lowercase-v4-uuid>`. This inserts one fixed,
+clearly labeled synthetic event in the normal feed and delivery path. Retrying
+the same UUID does not insert another event. It does not manufacture usage
+thresholds or change any existing event's read state; ordinary API usage is
+metered normally. After delivery settles, `DELETE` on the same exact path
+removes only that test event and its delivery receipts. Both methods require
+admin scope; ordinary full-scope app sessions cannot manufacture events.
+
 The hub owns the APNs sender and auth-store registration/delivery records. Native
 clients never hold an Apple key, team identifier, topic or environment. The
 client's existing authenticated device session resolves its principal. Explicit

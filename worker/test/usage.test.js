@@ -64,6 +64,40 @@ async function seedUsage(env, values, now = new Date()) {
   ).bind(start, values.rows_read ?? 0, values.rows_written ?? 0, values.requests ?? 0, now.toISOString()).run();
 }
 
+test("operator delivery test uses the feed, deduplicates retries, and deletes only its own event", async () => {
+  const env = environment();
+  await ensureUsage(env.AUTH_DB);
+  await notify(env.AUTH_DB, {id: "real", producer: "usage", type: "usage.threshold",
+    severity: "warning", title: "Real event", body: "Unchanged"});
+  const path = "/v1/notifications/test/00000000-0000-4000-8000-000000000001";
+  const full = await addToken(env, "consumer", "full");
+  expect((await call(env, path, {method: "POST", token: full})).status).toBe(403);
+  expect((await call(env, path, {method: "DELETE", token: full})).status).toBe(403);
+  expect((await call(env, path, {method: "POST", token: null})).status).toBe(403);
+  const first = await call(env, path, {method: "POST"});
+  expect(first.status).toBe(201);
+  const created = await first.json();
+  expect(created.id).toBe("notification-test:00000000-0000-4000-8000-000000000001");
+  expect((await call(env, path, {method: "POST"})).status).toBe(200);
+  const feed = await (await call(env, "/v1/notifications")).json();
+  expect(feed.notifications).toHaveLength(2);
+  expect(feed.notifications[1]).toMatchObject({id: created.id, producer: "delivery-test",
+    type: "notification.test", title: "Life notification test", read_at: null, data: {}});
+  expect((await call(env, path, {method: "DELETE"})).status).toBe(200);
+  expect((await call(env, path, {method: "DELETE"})).status).toBe(200);
+  const after = await (await call(env, "/v1/notifications")).json();
+  expect(after.notifications).toHaveLength(1);
+  expect(after.notifications[0]).toMatchObject({id: "real", read_at: null});
+  await notify(env.AUTH_DB, {id: created.id, producer: "usage", type: "usage.threshold",
+    severity: "warning", title: "Unrelated producer", body: "Keep"});
+  await call(env, path, {method: "DELETE"});
+  expect(await env.AUTH_DB.prepare("SELECT producer FROM _notifications WHERE id=?")
+    .bind(created.id).first()).toEqual({producer: "usage"});
+  expect((await call(env, "/v1/notifications/test/real", {method: "DELETE"})).status).toBe(404);
+  expect((await call(env, path + "/extra", {method: "POST"})).status).toBe(404);
+  expect((await call(env, path, {method: "PUT"})).status).toBe(404);
+});
+
 // --- the period window -------------------------------------------------------
 
 test("period runs from the anchor day to the same day next month, UTC", () => {

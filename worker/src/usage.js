@@ -16,7 +16,7 @@
 // {allowance, cap, alert_at}) and USAGE_PERIOD_ANCHOR_DAY override them.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ensureAuthReady } from "./auth.js";
-import {pushRegistrationRoute,deliverPush} from './apple-push.js';
+import {pushRegistrationRoute,deliverPush,ensurePush} from './apple-push.js';
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -466,6 +466,25 @@ async function ownRoute(request, url, env, tenant) {
   if (!tenant) return json({ error: "forbidden" }, 403);
   const may = (scopes) => scopes.some((s) => tenant.scopes.includes(s));
   const { pathname } = url, method = request.method;
+  const deliveryTest = /^\/v1\/notifications\/test\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(pathname);
+  if (deliveryTest && (method === "POST" || method === "DELETE")) {
+    if (!may(["admin"])) return json({ error: "insufficient scope" }, 403);
+    const id = `notification-test:${deliveryTest[1]}`;
+    await ensureUsage(env.AUTH_DB);
+    if (method === "POST") {
+      const created = await notify(env.AUTH_DB, {id, producer: "delivery-test", type: "notification.test",
+        severity: "info", title: "Life notification test",
+        body: "Synthetic delivery check. No usage thresholds or read state were changed."});
+      return json({id}, created ? 201 : 200);
+    }
+    await ensurePush(env.AUTH_DB);
+    await env.AUTH_DB.batch([
+      env.AUTH_DB.prepare(`DELETE FROM _push_deliveries WHERE event_id IN
+        (SELECT id FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test')`).bind(id),
+      env.AUTH_DB.prepare("DELETE FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test'").bind(id),
+    ]);
+    return json({id});
+  }
   if (pathname === "/v1/usage" && method === "GET") {
     return may(READ_SCOPES) ? json(await usageReport(env, new Date())) : json({ error: "insufficient scope" }, 403);
   }
