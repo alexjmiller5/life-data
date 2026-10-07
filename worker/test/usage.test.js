@@ -73,11 +73,23 @@ test("operator delivery test uses the feed, deduplicates retries, and deletes on
   const full = await addToken(env, "consumer", "full");
   expect((await call(env, path, {method: "POST", token: full})).status).toBe(403);
   expect((await call(env, path, {method: "DELETE", token: full})).status).toBe(403);
+  expect((await call(env, path, {token: full})).status).toBe(403);
   expect((await call(env, path, {method: "POST", token: null})).status).toBe(403);
   const first = await call(env, path, {method: "POST"});
   expect(first.status).toBe(201);
   const created = await first.json();
   expect(created.id).toBe("notification-test:00000000-0000-4000-8000-000000000001");
+  const status = await call(env, path);
+  expect(status.status).toBe(200);
+  expect(await status.json()).toEqual({id: created.id, deliveries: []});
+  await env.AUTH_DB.prepare(`INSERT INTO _push_registrations
+    (token_hash,app_profile,installation_id,revision,state,device_token,activated_after_seq,delivery_cursor,updated_at)
+    VALUES ('private-hash','fixture-app','installation','revision','active','private-token',0,0,'2026-01-01')`).run();
+  await env.AUTH_DB.prepare(`INSERT INTO _push_deliveries
+    (installation_id,event_id,revision,outcome,attempts,next_attempt) VALUES ('installation',?,'revision','accepted',1,0)`)
+    .bind(created.id).run();
+  expect(await (await call(env, path)).json()).toEqual({id: created.id,
+    deliveries: [{appProfile: "fixture-app", outcome: "accepted", attempts: 1}]});
   expect((await call(env, path, {method: "POST"})).status).toBe(200);
   const feed = await (await call(env, "/v1/notifications")).json();
   expect(feed.notifications).toHaveLength(2);
@@ -85,6 +97,8 @@ test("operator delivery test uses the feed, deduplicates retries, and deletes on
     type: "notification.test", title: "Life notification test", read_at: null, data: {}});
   expect((await call(env, path, {method: "DELETE"})).status).toBe(200);
   expect((await call(env, path, {method: "DELETE"})).status).toBe(200);
+  expect((await call(env, path)).status).toBe(404);
+  expect((await env.AUTH_DB.prepare("SELECT * FROM _push_deliveries WHERE event_id=?").bind(created.id).all()).results).toEqual([]);
   const after = await (await call(env, "/v1/notifications")).json();
   expect(after.notifications).toHaveLength(1);
   expect(after.notifications[0]).toMatchObject({id: "real", read_at: null});
