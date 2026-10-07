@@ -57,7 +57,8 @@ explicit destinations win. Provisioning is operator-owned, never implicit in rea
   The `date_or_datetime` TEXT property preserves either existing date-only or
   UTC-millisecond precision. Relative queries use the host calendar context;
   callers never truncate instants or turn all-day dates into midnight values.
-- `core/src/source-links.ts` resolves supported Notion URLs through live,
+- `core/src/source-links.ts` resolves explicit `table/id` identities against live
+  catalog tables and exact row IDs, and supported Notion URLs through live,
   whole-record `imported_from` provenance. It never infers a destination from
   coincidental row IDs. Missing mappings stay external; ambiguous mappings fail.
   Hosts re-read the returned destination through their usual navigation guards.

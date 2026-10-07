@@ -13,6 +13,18 @@ function notionPage(url: string): string | undefined {
 
 export async function resolveSourceLink(db: SqlDriver, args: SourceLinkArgs): Promise<SourceLinkResult> {
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.url !== 'string' || Object.keys(args).some(key => key !== 'url')) throw Error('Invalid source link');
+  // An explicit local identity is not a URL or a provenance inference. Keep
+  // the row ID byte-exact; never decode escapes or normalize case/Unicode.
+  const direct = args.url.length <= 4096
+    ? /^([A-Za-z_][A-Za-z0-9_]*)\/([^\s/\\?#\u0000-\u001f\u007f]+)$/.exec(args.url)
+    : null;
+  if (direct) return db.transaction(async () => {
+    const [, table, row] = direct;
+    const catalog = await readCatalog(db);
+    if (!catalog.tables.some(candidate => candidate.id === table)) return {};
+    const records = await db.all(`SELECT id FROM ${qident(table)} WHERE id COLLATE BINARY = ? LIMIT 1`, [row]);
+    return records[0]?.id === row ? {destination:{table,row}} : {};
+  });
   const page = notionPage(args.url);
   if (!page) return {};
   return db.transaction(async () => {
