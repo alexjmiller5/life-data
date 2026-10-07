@@ -633,3 +633,27 @@ history, search indexes, sync cursors or pending edits. The ordinary core status
 initialization may create missing internal state tables. Catalog/query failures
 remain errors for the requested group. Pagination is bounded but is not a stable
 snapshot across separate requests when another client edits records.
+
+
+## Transferable read plans
+
+`prepareReadPlan` prepares version 1 title-list or capped-count SQL for an ordinary
+catalogued table, optionally using a selected saved view and its expected revision.
+It uses the same `view.ts` compiler as eager reads. Calendar bindings are tagged at
+their emission sites; literal values equal to today remain literal. The host supplies
+stable opaque workspace/replica identities and resolves the saved timezone/day-start
+policy at extension read time. Lists select only ID and configured display column,
+at most 20 rows. Count probes at most 10,001 IDs; a value above 10,000 is a lower
+bound rendered as `10,000+`. Nonempty FTS is rejected because read-only snapshots
+cannot drain the indexing queue.
+
+Guards contain exact ordered rows from schema, relevant catalog, selected view and
+stored hub identity reads. These are collision-free structural fingerprints, not
+cryptographic assertions. A trusted host must pair the plan with a coherent backup,
+verify workspace/replica identity and policy, and compare all guards using exact
+scalar/UTF-8 equality in the same read transaction as execution. The extension must
+reject unknown versions, enforce one read-only statement per query, impose a query
+work/cancellation budget, and bound decoded results. Metadata is limited to 256 KiB
+of JSON code units. Core does not publish snapshots, claim replica completeness,
+execute extension queries, or authorize untrusted SQL. Failed validation is not an
+empty result; the host owns explicit unavailable/stale presentation and revocation.

@@ -6,6 +6,7 @@ import {unavailableGovernance,type GovernanceAPI} from './governance-service.ts'
 import type { SqlDriver } from './driver.ts';
 import type { ServiceHub } from './services.ts';
 import { readCatalog } from './catalog.ts';
+import { prepareReadPlan } from './read-plan.ts';
 import { referenceSources, referencedBy } from './references.ts';
 import { resolveSourceLink } from './source-links.ts';
 import { allowed } from './validate.ts';
@@ -60,6 +61,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
     },
     rows: view => readRows(db, view),
+    prepareReadPlan: args => prepareReadPlan(db, args),
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),
     resolveSourceLink: args => resolveSourceLink(db, args),
