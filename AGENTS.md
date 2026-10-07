@@ -17,6 +17,20 @@ CLI.
   definitions, seed data) or source-specific importers to this codebase.
 - New capabilities and bug fixes = **dev work**: happens here, TDD, generic.
 
+Saved-view v2 presentation metadata selects table, Calendar, Gallery or select-grouped
+Board rendering. The canonical validator checks referenced live catalog properties.
+`calendarRows` and `boardRows` are pure shared presentation operations over loaded
+rows; they do not bypass query pagination or write records. Calendar hosts provide
+civil-day bounds through the existing timezone/day-boundary contract. Date-only
+range ends are inclusive and timed range ends exclusive. Unknown Board select
+values remain visible after configured options, followed by the empty column.
+
+Per-table preferred-view IDs use the canonical `view-defaults/v1` manifest and
+`getViewDefault`/`setViewDefault` operations. Writes require the displayed revision
+and use normal validation/history/Undo; unavailable pointers fall back visibly
+without rewriting user views. Plain table navigation applies the preference;
+explicit destinations win. Provisioning is operator-owned, never implicit in reads.
+
 ## Layout
 
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.
@@ -73,6 +87,13 @@ CLI.
   a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
+- `core/schema/sidebar-pins.json` owns durable table-pin storage. The contract
+  generator packages its byte-exact Python resource; do not edit that copy.
+  `life table provision sidebar-pins` installs logged DDL/catalog metadata and
+  refuses foreign collisions. Pin operations use ordinary validated writes,
+  deterministic identities, revision guards and tombstones; reorder is locally
+  atomic, while sync retains ordinary row-level LWW semantics. Recognized pins
+  follow table renames through copy-plus-tombstone rekeying.
 - `core/src/undo.ts` owns a bounded volatile stack of 100 undo receipts per `createCoreHandlers`.
   Capture is inside the existing write transaction; receipts publish only
   after COMMIT. Inverses use the same writer and captured revision/shape.
@@ -886,3 +907,20 @@ Media Center's poller or native clients does not mutate service infrastructure.
 The contract and bounds are in `docs/scoped-enrollment.md`; portable fixtures
 are in `tests/fixtures/hub-capture-contract.json`. No adapter is enabled by source
 alone. The pure receipt/capability policy is `core/src/capture.ts`.
+
+Singleton creation policies can use `occurrenceType: "none"` and the generic
+`prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
+recurring policy encodings and revisions remain unchanged. Prefixes and
+source registries are deployment state, never consumer-specific constants.
+
+## Apple push
+
+`worker/src/apple-push.js` owns optional native registration and APNs delivery.
+The three exact auth-store registration routes are usage-cap exempt. Native
+authority comes from explicit Access-verified app-profile approval, never token
+names or caller-supplied principals. Revisions guard rotation and revocation;
+opaque session/installation bindings never expose token hashes. Push acceptance,
+OS presentation and shared read state remain separate. Deployment/event identity
+uses the 43-byte base64url SHA-256 JSON tuple in `docs/apple-push.md`; delivery
+receipts also bind the installation. Configure the dedicated provider key and
+profiles through the owning project's service ENV, never client settings.

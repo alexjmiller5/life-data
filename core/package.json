@@ -7,6 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema/saved-views.json": "./schema/saved-views.json",
+    "./schema/view-defaults.json": "./schema/view-defaults.json",
+    "./schema/sidebar-pins.json": "./schema/sidebar-pins.json",
     "./enrollment": "./src/enrollment.ts",
     "./creation": "./src/creation.ts",
     "./consumer-config": "./src/consumer-config.ts",

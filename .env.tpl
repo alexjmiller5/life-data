@@ -1,8 +1,8 @@
 # life-data — secrets manifest (committed; values live in 1Password).
 # Local dev / admin scripts: op run --env-file=.env.tpl -- <cmd>
 #
-# Every field here is minted by scripts/provision.py — bootstrap never
-# prompts for a value.
+# Cloudflare credentials are minted by scripts/provision.py. Apple push keys
+# are provisioned for this service through the Apple Developer portal.
 #
 # Refs are BY NAME: op-project-bootstrap parses this file to create the vault
 # and items, so IDs cannot exist yet. See the global AGENTS.md exception.
@@ -14,3 +14,6 @@
 
 CLOUDFLARE_API_TOKEN=op://Life Data/Life Data CI Cloudflare Token/api-token
 CLOUDFLARE_ACCOUNT_ID=op://Life Data/Life Data CI Cloudflare Token/account-id
+
+APNS_CONFIG=op://Life Data/Life Data ENV/APNS_CONFIG
+APNS_PRIVATE_KEY=op://Life Data/Life Data ENV/APNS_PRIVATE_KEY

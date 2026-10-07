@@ -7,6 +7,7 @@
 // knows how the caller was authenticated.
 
 import { pushChecked, queryBudget } from "./write.js";
+import {pushConfiguration,pushCapability,pushRegistrationRoute,handlePushRegistration} from './apple-push.js';
 import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
 import {captureGateway,captureCapability} from './capture-gateway.js';
 import {rowsQuery} from './rows-query.js';
@@ -533,6 +534,10 @@ async function handleSession(request, tenant, env) {
     const capabilities=sessionCapabilities(tenant.scopes);
     const captures=captureCapability(env,tenant.scopes);
     if(captures)capabilities.captures=captures;
+    const profiles=!tenant.admin && pushConfiguration(env)?.profiles;
+    if(profiles)capabilities.push_profiles=profiles.map(({id,platform})=>({id,platform}));
+    const push=await pushCapability(env,tenant);
+    if(push)capabilities.push_registration=push;
     const rowCreation=await creationCapability(env,tenant.scopes);
     if(rowCreation)capabilities.rowCreation=rowCreation;
     if(governanceConfiguration(env) && tenant.governance && (tenant.governance.propose||tenant.governance.approve)){
@@ -834,6 +839,7 @@ async function handle(request, env, ctx, url) {
   }
 
   const tenant = await authenticate(request, env, ctx);
+  if(pushRegistrationRoute(request))return handlePushRegistration(request,tenant,env);
   const governance=governanceOperation(request);
   if (governance) {
     if (!tenant) return governanceFailure(governance,401,'permission_denied');
