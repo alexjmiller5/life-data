@@ -23,3 +23,6 @@ export * from './governance-service.ts';
 export {isGovernanceCapability} from './governance-wire.ts';
 
 export * from './resolve-derived.ts';
+
+export * from './calendar-rows.ts';
+export * from './board-rows.ts';

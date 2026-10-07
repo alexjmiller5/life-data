@@ -3,9 +3,9 @@ name: Core contract
 on:
   push:
     branches-ignore: [main]
-    paths: ["core/**", "worker/**", "src/life_data/**", "tests/**", "scripts/generate-core-contract.ts", ".github/workflows/check-core.yml"]
+    paths: ["src/**", "tests/**", "core/**", "worker/**", "scripts/generate-core-contract.ts", ".github/workflows/check-core.yml"]
   pull_request:
-    paths: ["core/**", "worker/**", "src/life_data/**", "tests/**", "scripts/generate-core-contract.ts", ".github/workflows/check-core.yml"]
+    paths: ["src/**", "tests/**", "core/**", "worker/**", "scripts/generate-core-contract.ts", ".github/workflows/check-core.yml"]
 
 permissions:
   contents: read
@@ -19,8 +19,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - run: uv sync && uv run pytest -q && uv run ruff check .
       - working-directory: core
         run: bun install --frozen-lockfile && bun test && bun run check
-      - run: uv run pytest tests/test_sidebar_pins.py tests/test_saved_views.py -q
       - working-directory: worker
         run: bun test

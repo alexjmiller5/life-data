@@ -17,6 +17,14 @@ CLI.
   definitions, seed data) or source-specific importers to this codebase.
 - New capabilities and bug fixes = **dev work**: happens here, TDD, generic.
 
+Saved-view v2 presentation metadata selects table, Calendar, Gallery or select-grouped
+Board rendering. The canonical validator checks referenced live catalog properties.
+`calendarRows` and `boardRows` are pure shared presentation operations over loaded
+rows; they do not bypass query pagination or write records. Calendar hosts provide
+civil-day bounds through the existing timezone/day-boundary contract. Date-only
+range ends are inclusive and timed range ends exclusive. Unknown Board select
+values remain visible after configured options, followed by the empty column.
+
 ## Layout
 
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.
@@ -855,3 +863,8 @@ and explicit ACK receipts. Consumers need the subscription grant plus read acces
 to every source. Live auth is rechecked before release; GET never advances ACK.
 Empty retired subscriptions honor the requested wait. Admin selects immutable
 sources at creation and can pause/resume or permanently retire recording.
+
+Singleton creation policies can use `occurrenceType: "none"` and the generic
+`prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
+recurring policy encodings and revisions remain unchanged. Prefixes and
+source registries are deployment state, never consumer-specific constants.

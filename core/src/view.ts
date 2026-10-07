@@ -27,7 +27,7 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
 /** Saved definitions validate without a host clock; executing a relative query requires one. */
 export function validateView(view: View, properties: Property[]): void { compile(view, properties, false); }
 
-function calendarContext(value: CalendarContext | undefined): CalendarContext | undefined {
+export function validateCalendarContext(value: CalendarContext | undefined): CalendarContext | undefined {
   if (value === undefined) return undefined;
   checkObject(value, ['today','start','end'], 'calendar');
   if (typeof value.today !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.today)
@@ -69,7 +69,7 @@ function compile(view: View, properties: Property[], requireCalendar: boolean): 
     params.push(typeof value === "boolean" ? Number(value) : value as string | number | null);
     return "?";
   };
-  const calendar=calendarContext(view.calendar);
+  const calendar=validateCalendarContext(view.calendar);
   if ((view.groups?.length ?? 0)>16 || (view.sort?.length ?? 0)>16) throw new Error('View exceeds group or sort limit');
   let filterCount=0;
   const where = [`${column("deleted_at")} IS ${view.trash ? "NOT " : ""}NULL`];

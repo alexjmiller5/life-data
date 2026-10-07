@@ -1,3 +1,5 @@
+import { boardRows } from './board-rows.ts';
+import { calendarRows } from './calendar-rows.ts';
 import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
 import {unavailableGovernance,type GovernanceAPI} from './governance-service.ts';
 import type { SqlDriver } from './driver.ts';
@@ -60,6 +62,8 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),
     resolveSourceLink: args => resolveSourceLink(db, args),
+    calendarRows,
+    boardRows,
     resolveDerived: ({ endpoint, ...args }) => resolveDerived(db, hub(endpoint), args),
     remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),

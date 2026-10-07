@@ -21,14 +21,19 @@ export async function creationPolicies(env) {
   if(!object(values) || Object.keys(values).length>64)return [];
   const out=[];
   for(const [id,v] of Object.entries(values)) {
-    if(!policyId(id) || !keys(v,['namespace','sourceKind','occurrenceType','table','columns','origin'])
-      || typeof v.namespace!=='string' || !uuid.test(v.namespace) || !text(v.sourceKind) || !['integer','string'].includes(v.occurrenceType)
+    const singleton=v?.occurrenceType==='none';
+    const fields=['namespace','sourceKind','occurrenceType','table','columns','origin'];
+    if(singleton)fields.push('identity');
+    if(!policyId(id) || !keys(v,fields)
+      || typeof v.namespace!=='string' || !uuid.test(v.namespace) || !text(v.sourceKind) || !['integer','string','none'].includes(v.occurrenceType)
+      || (singleton && (!keys(v.identity,['encoding','prefix']) || v.identity.encoding!=='prefix-source-v1' || !text(v.identity.prefix)))
       || !ordinary(v.table) || !Array.isArray(v.columns) || !v.columns.length || v.columns.length>64
       || v.columns.some(c=>!identifier(c)||forbidden.has(c.toLowerCase())) || new Set(v.columns).size!==v.columns.length
       || !keys(v.origin,['kind','table','relation']) || !(typeof v.origin.kind==='string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v.origin.kind))
       || (v.origin.table!==null && !ordinary(v.origin.table)) || !text(v.origin.relation))return [];
     const config={namespace:v.namespace,sourceKind:v.sourceKind,occurrenceType:v.occurrenceType,table:v.table,
       columns:[...v.columns].sort(),origin:{kind:v.origin.kind,table:v.origin.table,relation:v.origin.relation}};
+    if(singleton)config.identity={encoding:v.identity.encoding,prefix:v.identity.prefix};
     out.push({id,revision:await sha256hex(JSON.stringify(config)),config});
   }
   return out;
@@ -41,7 +46,9 @@ export async function creationCapability(env,scopes) {
 }
 export async function creationId(policy,sourceId,occurrenceKey) {
   const namespace=Uint8Array.from(policy.namespace.replaceAll('-','').match(/../g).map(b=>parseInt(b,16)));
-  const name=bytes(JSON.stringify(['v1',policy.sourceKind,sourceId,occurrenceKey]));
+  const name=bytes(policy.occurrenceType==='none'
+    ? policy.identity.prefix+sourceId
+    : JSON.stringify(['v1',policy.sourceKind,sourceId,occurrenceKey]));
   const data=new Uint8Array(namespace.length+name.length);data.set(namespace);data.set(name,namespace.length);
   const hash=new Uint8Array(await crypto.subtle.digest('SHA-1',data)).slice(0,16);
   hash[6]=(hash[6]&15)|80;hash[8]=(hash[8]&63)|128;
@@ -90,14 +97,17 @@ export async function handleCreation(request,tenant,env) {
     const all=new Uint8Array(size);let offset=0;for(const chunk of chunks){all.set(chunk,offset);offset+=chunk.length;}
     raw=new TextDecoder('utf-8',{fatal:true}).decode(all);body=JSON.parse(raw);
   }catch{return reply('invalid_creation',400);}
-  if(!keys(body,['policy','sourceId','occurrenceKey','target','updatedAt','values']) || !keys(body.policy,['id','revision']))return reply('invalid_creation',400);
+  if(!object(body) || !keys(body.policy,['id','revision']))return reply('invalid_creation',400);
   const policy=(await creationPolicies(env)).find(p=>p.id===body.policy.id && p.revision===body.policy.revision && tenant.scopes.includes(creationGrant(p)));
   if(!policy)return reply('permission_denied',403);
   const p=policy.config;
+  const fields=['policy','sourceId','target','updatedAt','values'];
+  if(p.occurrenceType!=='none')fields.push('occurrenceKey');
+  if(!keys(body,fields))return reply('invalid_creation',400);
   if(!text(body.sourceId) || !keys(body.target,['kind','id']) || !['generated','adopted'].includes(body.target.kind)
     || !text(body.target.id) || !object(body.values) || Object.keys(body.values).some(c=>!p.columns.includes(c))
     || Object.values(body.values).some(v=>(v!==null && !['string','number','boolean'].includes(typeof v)) || (typeof v==='number' && !Number.isFinite(v)))
-    || (p.occurrenceType==='integer'?!Number.isSafeInteger(body.occurrenceKey):!text(body.occurrenceKey)))return reply('invalid_creation',400);
+    || (p.occurrenceType!=='none' && (p.occurrenceType==='integer'?!Number.isSafeInteger(body.occurrenceKey):!text(body.occurrenceKey))))return reply('invalid_creation',400);
   if(body.target.kind==='generated' && body.target.id!==await creationId(p,body.sourceId,body.occurrenceKey))return reply('invalid_creation',400);
   const db=queryBudget(tenant.db,750),view=checkedReads(db),id=body.target.id;
   try {
