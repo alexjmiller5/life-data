@@ -57,7 +57,8 @@ explicit destinations win. Provisioning is operator-owned, never implicit in rea
   The `date_or_datetime` TEXT property preserves either existing date-only or
   UTC-millisecond precision. Relative queries use the host calendar context;
   callers never truncate instants or turn all-day dates into midnight values.
-- `core/src/source-links.ts` resolves supported Notion URLs through live,
+- `core/src/source-links.ts` resolves explicit `table/id` identities against live
+  catalog tables and exact row IDs, and supported Notion URLs through live,
   whole-record `imported_from` provenance. It never infers a destination from
   coincidental row IDs. Missing mappings stay external; ambiguous mappings fail.
   Hosts re-read the returned destination through their usual navigation guards.
@@ -190,6 +191,12 @@ explicit destinations win. Provisioning is operator-owned, never implicit in rea
   date label belongs to the interval's start; source timestamps stay intact.
   Multi-select order uses the first selected
   option; unknown/empty values trail known ones. Version 1 remains supported.
+- `core/src/catalog-edit.ts` owns explicit property/rule edits and their atomic
+  `catalog_log` entries. It shares storage/coverage guards with record writes,
+  preserves displayed revisions and compiles rule SQL through the driver.
+  Only an explicit new-property request adds a nullable logged column;
+  catalog editing never rewrites existing record values or provisions missing
+  engine storage. Ordinary record writes still reject catalog tables.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.
@@ -939,6 +946,13 @@ Singleton creation policies can use `occurrenceType: "none"` and the generic
 recurring policy encodings and revisions remain unchanged. Prefixes and
 source registries are deployment state, never consumer-specific constants.
 
+
+Transferable extension queries use canonical `prepareReadPlan` and the same view
+compiler. Emit typed calendar slots at binding sites, never infer them from values
+or SQL text. Exact ordered schema/catalog/view/hub guard rows must be checked by
+read-only consumers in the query transaction; host workspace/replica identity,
+coherent publication, policy, work budget and stale presentation remain mandatory.
+Plans reject nonempty FTS; list/count limits are 20/10,001 respectively.
 ## Apple push
 
 `worker/src/apple-push.js` owns optional native registration and APNs delivery.

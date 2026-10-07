@@ -52,3 +52,29 @@ test('a workspace without source mappings still supports ordinary Markdown links
   const db=await local();await db.run('DROP TABLE provenance');
   expect(await resolve(db,`https://notion.so/${source}`)).toEqual({});
 });
+
+
+test('explicit table/record links resolve locally without provenance, preserving exact identity', async () => {
+  const db = await local();
+  await db.run('DROP TABLE provenance');
+  expect(await resolve(db, 'items/local-id')).toEqual({destination:{table:'items',row:'local-id'}});
+  await db.run("INSERT INTO items(id,name) VALUES ('MiXeD-雪','Unicode identity')");
+  expect(await resolve(db, 'items/MiXeD-雪')).toEqual({destination:{table:'items',row:'MiXeD-雪'}});
+  expect(await resolve(db, 'items/mixed-雪')).toEqual({});
+  await db.run("UPDATE items SET deleted_at='deleted' WHERE id='local-id'");
+  expect(await resolve(db, 'items/local-id')).toEqual({destination:{table:'items',row:'local-id'}});
+});
+test('explicit links require a current catalog table and existing exact record', async () => {
+  const db = await local();
+  for (const link of ['items/missing','Items/local-id','sqlite_master/items','items/local-id/extra','items/','/items/local-id','items/local-id?x=y','items/local-id#x','items/ local-id','items\\local-id',"items;DROP TABLE items/local-id"])
+    expect(await resolve(db, link)).toEqual({});
+  await db.run("UPDATE catalog_tables SET deleted_at='deleted' WHERE id='items'");
+  expect(await resolve(db, 'items/local-id')).toEqual({});
+});
+
+test('record links never discard trailing line terminators from the input identity', async () => {
+  const db = await local();
+  for (const suffix of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    expect(await resolve(db, `items/local-id${suffix}`)).toEqual({});
+  }
+});

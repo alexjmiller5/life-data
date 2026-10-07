@@ -16,6 +16,21 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   together. Pass `expectedUpdatedAt` in write options from the opened record
   to reject stale edits. Components must not write raw SQL. `isReadOnlyTable`
   recognizes built-in system tables and catalog entries with `kind: system`.
+- `saveCatalogProperty` and `saveCatalogRule` are explicit metadata editors.
+  They require the displayed `expectedUpdatedAt` (null for a new identity),
+  an ordinary user table, complete catalog storage, supported trigger/FK
+  topology and trusted metadata coverage on bound replicas. A property edit
+  may explicitly add a nullable physical column using its canonical storage
+  type; the DDL, metadata and `catalog_log` entry commit together. Existing
+  record values are never rewritten or retroactively repaired. Options retain
+  their descriptions. Enforced rule SQL must compile with portable
+  before/changed/now contexts. Invalid prior metadata can be repaired without
+  allowing ordinary record writes to bypass validation. Missing engine tables
+  are not provisioned implicitly. Changes use normal schema/row sync and
+  pending receipts; catalog changes do not create record Undo receipts.
+  Hosts must reload catalog and editing availability after a successful edit
+  and preserve any unrelated drafts. Adding a column invalidates old schema
+  coverage until the normal sync completes.
 - Each `createCoreHandlers` instance holds up to 100 volatile undo receipts for
   successful human record writes, row actions and saved-view changes. `undoStatus({})` returns `{ action: null }`
   or an action with `receiptId`, `table`, `rowId`, and `kind` (create, edit,
@@ -633,3 +648,27 @@ history, search indexes, sync cursors or pending edits. The ordinary core status
 initialization may create missing internal state tables. Catalog/query failures
 remain errors for the requested group. Pagination is bounded but is not a stable
 snapshot across separate requests when another client edits records.
+
+
+## Transferable read plans
+
+`prepareReadPlan` prepares version 1 title-list or capped-count SQL for an ordinary
+catalogued table, optionally using a selected saved view and its expected revision.
+It uses the same `view.ts` compiler as eager reads. Calendar bindings are tagged at
+their emission sites; literal values equal to today remain literal. The host supplies
+stable opaque workspace/replica identities and resolves the saved timezone/day-start
+policy at extension read time. Lists select only ID and configured display column,
+at most 20 rows. Count probes at most 10,001 IDs; a value above 10,000 is a lower
+bound rendered as `10,000+`. Nonempty FTS is rejected because read-only snapshots
+cannot drain the indexing queue.
+
+Guards contain exact ordered rows from schema, relevant catalog, selected view and
+stored hub identity reads. These are collision-free structural fingerprints, not
+cryptographic assertions. A trusted host must pair the plan with a coherent backup,
+verify workspace/replica identity and policy, and compare all guards using exact
+scalar/UTF-8 equality in the same read transaction as execution. The extension must
+reject unknown versions, enforce one read-only statement per query, impose a query
+work/cancellation budget, and bound decoded results. Metadata is limited to 256 KiB
+of JSON code units. Core does not publish snapshots, claim replica completeness,
+execute extension queries, or authorize untrusted SQL. Failed validation is not an
+empty result; the host owns explicit unavailable/stale presentation and revocation.

@@ -6,7 +6,10 @@ clearly labeled synthetic event in the normal feed and delivery path. Retrying
 the same UUID does not insert another event. It does not manufacture usage
 thresholds or change any existing event's read state; ordinary API usage is
 metered normally. After delivery settles, `DELETE` on the same exact path
-removes only that test event and its delivery receipts. Both methods require
+removes only that test event and its delivery receipts. `GET` on that path
+reports per-app-profile provider outcomes and attempt counts without device
+tokens, session hashes or installation bindings. Accepted means APNs accepted
+the request; it does not prove an OS banner appeared. All three methods require
 admin scope; ordinary full-scope app sessions cannot manufacture events.
 
 The hub owns the APNs sender and auth-store registration/delivery records. Native
