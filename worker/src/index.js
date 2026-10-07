@@ -8,6 +8,7 @@
 
 import { pushChecked, queryBudget } from "./write.js";
 import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
+import {captureGateway,captureCapability} from './capture-gateway.js';
 import {rowsQuery} from './rows-query.js';
 import {consumerConfig, catalogProjection} from './consumer-config.js';
 import { patchChecked } from "./patch.js";
@@ -530,6 +531,8 @@ const json = (obj, status = 200) =>
 async function handleSession(request, tenant, env) {
   if (request.method === "GET") {
     const capabilities=sessionCapabilities(tenant.scopes);
+    const captures=captureCapability(env,tenant.scopes);
+    if(captures)capabilities.captures=captures;
     const rowCreation=await creationCapability(env,tenant.scopes);
     if(rowCreation)capabilities.rowCreation=rowCreation;
     if(governanceConfiguration(env) && tenant.governance && (tenant.governance.propose||tenant.governance.approve)){
@@ -843,6 +846,7 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
+  if (url.pathname.startsWith('/v1/captures/')) return captureGateway(request,tenant,env);
   if (url.pathname === '/v1/rows/query') return rowsQuery(request,tenant,env);
   if (url.pathname === '/v1/consumer/config') return consumerConfig(request,tenant,env);
   if (url.pathname === '/v1/catalog/projection') return catalogProjection(request,tenant);

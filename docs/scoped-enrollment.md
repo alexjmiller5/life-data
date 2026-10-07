@@ -158,3 +158,34 @@ restart after relevant changes and never infer complete coverage from a page.
 Indexes are installation schema, provisioned through the normal logged schema
 contract. For null-last ordering, use matching expression indexes where needed;
 the synthetic scale test verifies the query plan against a 250,000-row catalog.
+
+## Capture adapters
+
+An optional `CAPTURE_ADAPTERS` service secret configures fixed HTTPS adapters.
+Each entry has `url`, a dedicated `credential`, and `fields` mapping logical
+edit names to arrays of required `tables:patch:TABLE:COLUMN` grants. Every
+configured grant must be present before submit, because resolution can infer
+edits from input text. No endpoint, workspace or credential comes from callers.
+The adapter owner separately limits its gateway credential to categories and
+logical fields; changing a name does not change a credential's authority.
+
+The caller needs `captures:submit:ADAPTER` or `captures:read:ADAPTER`.
+`GET /v1/session` advertises only configured, usable adapters in
+`capabilities.captures = {protocol:"receipt-v1",adapters:[{id,read,submit}]}`.
+Hosts use `life-core/capture` to check capability and validate receipts.
+Enrolled callers with changed profile bindings or grants receive 409 before
+submission. Revoked tokens are denied by ordinary authentication.
+
+`POST /v1/captures/ADAPTER` submits `{request_id,input,intent,fields?}`.
+The request ID is a canonical lowercase UUID; input has exactly one `text` or
+HTTP(S) `url`; intent is `save` or `record_consumption`. The same UUID must be
+retained for retries. `GET /v1/captures/ADAPTER/REQUEST_ID` reads the same caller's
+receipt. Request and response bodies are bounded to 64 KiB, upstream calls to
+15 seconds, and redirects are refused. Device tokens never leave Life Data.
+
+A 202 `received` or `processing` receipt is acceptance only. A `saved` receipt
+includes the resolved `{kind,id}` after verified commit. `needs_review`,
+`failed` and `uncertain` never imply success. A transport failure has unknown
+acceptance; query or resubmit the same UUID, never silently create a new one.
+The adapter owns receipt persistence, deduplication and mutation reconciliation;
+Life Data adds no queue, receipt database or schedule.

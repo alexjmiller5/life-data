@@ -229,3 +229,12 @@ test('scoped enrollment accepts 256 distinct grants including metadata without b
   expect(()=>core.validateDeviceSession({...session,scopes:invalid},{id:'library',scopes:invalid})).toThrow();
  }
 });
+
+test('capture enrollment accepts only explicit adapter submit and receipt grants',()=>{
+ const scopes=['captures:submit:media','captures:read:media'];
+ const data={...profiledSession,scopes,enrollmentProfile:{id:'media',revision:'b'.repeat(64)}};
+ expect(core.validateDeviceSession(data,{id:'media',scopes}).scopes).toEqual(scopes);
+ for(const scope of ['captures:*:media','captures:submit:*','captures:submit:media/other','captures:admin:media']){
+  expect(()=>core.validateDeviceSession({...data,scopes:[scope]},{id:'media',scopes:[scope]})).toThrow();
+ }
+});

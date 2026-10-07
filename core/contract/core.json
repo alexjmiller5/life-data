@@ -3669,6 +3669,86 @@
         "rows",
         "next_cursor"
       ]
+    },
+    "CaptureInput": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "CaptureItem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "CaptureRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/CaptureInput"
+        },
+        "intent": {
+          "type": "string",
+          "enum": [
+            "save",
+            "record_consumption"
+          ]
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "request_id",
+        "input",
+        "intent"
+      ]
+    },
+    "CaptureReceipt": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "received",
+            "processing",
+            "saved",
+            "needs_review",
+            "failed",
+            "uncertain"
+          ]
+        },
+        "item": {
+          "$ref": "#/$defs/CaptureItem"
+        }
+      },
+      "required": [
+        "request_id",
+        "state"
+      ]
     }
   },
   "operations": {

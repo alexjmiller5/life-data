@@ -36,7 +36,6 @@ export function normalizeRowsQuery(body:unknown):NormalizedRowsQuery {
    ||!identifier(o.column)||!['asc','desc'].includes(o.direction as string))||new Set(order.map(o=>o.column)).size!==order.length)return bad();
  if(order.some((o,i)=>o.column==='id'&&i!==order.length-1))return bad();
  const sorted=order.map(o=>({column:o.column as string,direction:o.direction as 'asc'|'desc'}));
- if(!sorted.some(o=>o.column==='id'))sorted.push({column:'id',direction:'asc'});
  if(body.cursor!==undefined&&(typeof body.cursor!=='string'||!body.cursor.length||body.cursor.length>32768))return bad();
  return {table:body.table,columns:[...body.columns].sort(),...(body.filter===undefined?{}:{filter:filter(body.filter)}),order:sorted,limit,...(body.cursor===undefined?{}:{cursor:body.cursor as string})};
 }

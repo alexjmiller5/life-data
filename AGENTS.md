@@ -871,3 +871,18 @@ and explicit ACK receipts. Consumers need the subscription grant plus read acces
 to every source. Live auth is rechecked before release; GET never advances ACK.
 Empty retired subscriptions honor the requested wait. Admin selects immutable
 sources at creation and can pause/resume or permanently retire recording.
+
+## Capture service interface
+
+`worker/src/capture-gateway.js` is a stateless supported consumer API. Synapse
+owns the media resolver, category/field restrictions, durable receipts and
+serialized writes. Life Data holds its own independently minted Synapse gateway
+credential in `CAPTURE_ADAPTERS`, never in a native client. Consumers hold only
+their scoped Life Data session. The gateway delegates an opaque credential-bound
+subject; receipt namespaces belong to gateway-client plus subject plus UUID.
+Replacing either credential changes that receipt namespace. Revoking the gateway
+stops captures but leaves ordinary catalog reads and edits available. Deploying
+Media Center's poller or native clients does not mutate service infrastructure.
+The contract and bounds are in `docs/scoped-enrollment.md`; portable fixtures
+are in `tests/fixtures/hub-capture-contract.json`. No adapter is enabled by source
+alone. The pure receipt/capability policy is `core/src/capture.ts`.

@@ -22,6 +22,7 @@ export async function rowsQuery(request,tenant,env){
   while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>65536){await reader.cancel();return reply({error:'request too large'},413);}chunks.push(value);}
   const data=new Uint8Array(size);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
   query=normalizeRowsQuery(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(data)));
+  if(!query.order.some(o=>o.column==='id'))query.order.push({column:'id',direction:'asc'});
  }catch{return reply({error:'invalid row query'},400);}
  const referenced=new Set([...query.columns,'id',...query.order.map(o=>o.column)]);
  function columns(node){if(!node)return;if(node.and||node.or)(node.and??node.or).forEach(columns);else referenced.add(node.column);}
