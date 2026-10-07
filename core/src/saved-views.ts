@@ -1,4 +1,4 @@
-import type { Catalog, DeleteViewArgs, ListViewsArgs, SaveViewArgs, SavedViewDefinition, SavedViewList, SavedViewRecord, View } from './contract.generated.ts';
+import type { Catalog, ResolveViewDefinitionArgs, ResolvedViewDefinition, DeleteViewArgs, ListViewsArgs, SaveViewArgs, SavedViewDefinition, SavedViewList, SavedViewRecord, View } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
@@ -144,6 +144,19 @@ async function record(db: SqlDriver, catalog: Catalog, row: Row): Promise<SavedV
     result.unavailable = error.message;
   }
   return result;
+}
+
+/** Validate ephemeral UI configuration using the same compiler as stored views.
+ * No saved-view storage, history or write reservation is required. */
+export async function resolveViewDefinition(db: SqlDriver, args: ResolveViewDefinitionArgs): Promise<ResolvedViewDefinition> {
+  args = snapshot(args);
+  object(args, ['table', 'definition']);
+  if (typeof args.table !== 'string') throw new Error('Invalid view target.');
+  qident(args.table);
+  return db.transaction(async () => ({
+    definition: args.definition,
+    view: await definitionView(db, await readCatalog(db), args.table, args.definition),
+  }));
 }
 
 /** Internal action lookup; the caller holds the writer transaction. */

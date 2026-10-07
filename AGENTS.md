@@ -964,3 +964,5 @@ OS presentation and shared read state remain separate. Deployment/event identity
 uses the 43-byte base64url SHA-256 JSON tuple in `docs/apple-push.md`; delivery
 receipts also bind the installation. Configure the dedicated provider key and
 profiles through the owning project's service ENV, never client settings.
+
+Transient UI definitions are validated by `resolveViewDefinition` through the saved-view compiler. This read operation copies finite JSON before awaiting catalog/schema reads and never provisions views or writes saved configuration, history or pending edits. Hosts supply current calendar bounds and keep stored action revisions separate from ephemeral display/query configuration.
