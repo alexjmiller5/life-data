@@ -866,6 +866,67 @@ def _has_shared_views(conn) -> bool:
     )
 
 
+def _has_view_defaults(conn) -> bool:
+    """Recognize the canonical optional preference store, without adopting collisions."""
+    schema = conn.execute(
+        "SELECT sql FROM main.sqlite_master WHERE (type='table' AND name='view_defaults') "
+        "OR (type='trigger' AND name='view_defaults_updated_at') ORDER BY type"
+    ).fetchall()
+    expected = _pkg().table_ddl("view_defaults", ["tbl:ref!", "view_id:ref"])
+    if [re.sub(r"\s+", " ", row["sql"]).strip() for row in schema] != [
+        re.sub(r"\s+", " ", sql).strip() for sql in expected
+    ]:
+        return False
+    table = conn.execute(
+        "SELECT kind,display FROM catalog_tables WHERE id='view_defaults' AND deleted_at IS NULL"
+    ).fetchone()
+    props = conn.execute(
+        "SELECT * FROM catalog_properties WHERE tbl='view_defaults' AND deleted_at IS NULL"
+    ).fetchall()
+    if not table or dict(table) != {"kind": "table", "display": "tbl"} or len(props) != 2:
+        return False
+    by_col = {p["col"]: p for p in props}
+    if set(by_col) != {"tbl", "view_id"}:
+        return False
+    return all(
+        p["id"] == f"view_defaults.{col}" and p["type"] == "ref" and p["ref_table"] == target
+        for col, target in (("tbl", "catalog_tables"), ("view_id", "views"))
+        for p in [by_col[col]]
+    ) and (
+        by_col["tbl"]["required"] == 1
+        and by_col["view_id"]["source"] == "life-core"
+        and by_col["view_id"]["source_ref"] == "view-defaults/v1"
+    )
+
+
+def _rename_view_default(conn, old: str, new: str) -> None:
+    if not _has_view_defaults(conn):
+        return
+    old_id, new_id = ("default:v1:" + value.encode("ascii").hex() for value in (old, new))
+    rows = conn.execute("SELECT * FROM view_defaults WHERE tbl=? OR id=?", (old, old_id)).fetchall()
+    if not rows:
+        return
+    if len(rows) != 1 or rows[0]["id"] != old_id or rows[0]["tbl"] != old:
+        raise ValueError("Stored view default is invalid; rename was not applied")
+    row = dict(rows[0])
+    stamp = conn.execute(
+        f"SELECT max({_pkg().NOW}, strftime('%Y-%m-%dT%H:%M:%fZ',?,'+0.001 seconds'))",
+        (row["updated_at"],),
+    ).fetchone()[0]
+    if stamp is None:
+        raise ValueError("Stored view default revision is invalid")
+    row.update(id=new_id, tbl=new, updated_at=stamp, hub_at=None)
+    cols = list(row)
+    conn.execute(
+        f"INSERT INTO view_defaults ({', '.join(qi(c) for c in cols)}) "
+        f"VALUES ({', '.join('?' for _ in cols)})",
+        list(row.values()),
+    )
+    conn.execute(
+        "UPDATE view_defaults SET deleted_at=?,updated_at=? WHERE id=?", (stamp, stamp, old_id)
+    )
+
+
 def rename_refs(conn, old: str, new: str) -> None:
     """Point every catalog, provenance and history reference at the new name.
     Runs inside the rename's transaction; the caller has already renamed the
@@ -901,6 +962,7 @@ def rename_refs(conn, old: str, new: str) -> None:
             "strftime('%Y-%m-%dT%H:%M:%fZ',updated_at,'+0.001 seconds')) WHERE tbl = ?",
             (new, old),
         )
+    _rename_view_default(conn, old, new)
     conn.execute(
         "UPDATE catalog_rules SET tbl = ? WHERE tbl = ? AND deleted_at IS NULL", (new, old)
     )

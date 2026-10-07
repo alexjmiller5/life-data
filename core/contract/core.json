@@ -3629,6 +3629,105 @@
       "required": [
         "columns"
       ]
+    },
+    "GetViewDefaultArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "SetViewDefaultArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "viewId",
+        "expectedUpdatedAt"
+      ]
+    },
+    "ViewDefault": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavedViewRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "viewId",
+        "updated_at",
+        "view",
+        "unavailable"
+      ]
     }
   },
   "operations": {
@@ -3991,6 +4090,22 @@
         "$ref": "#/$defs/BoardRowsResult"
       },
       "description": "Group already loaded rows by a select property, preserving supplied option order and unknown stored values. No writes."
+    },
+    "getViewDefault": {
+      "args": {
+        "$ref": "#/$defs/GetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
+    },
+    "setViewDefault": {
+      "args": {
+        "$ref": "#/$defs/SetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
     }
   }
 }

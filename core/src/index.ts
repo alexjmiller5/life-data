@@ -25,3 +25,5 @@ export * from './resolve-derived.ts';
 
 export * from './calendar-rows.ts';
 export * from './board-rows.ts';
+
+export {getViewDefault,setViewDefault} from './view-defaults.ts';

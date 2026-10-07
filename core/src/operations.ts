@@ -1,3 +1,4 @@
+import {getViewDefault,setViewDefault} from './view-defaults.ts';
 import { boardRows } from './board-rows.ts';
 import { calendarRows } from './calendar-rows.ts';
 import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
@@ -68,8 +69,10 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
     listViews: args => listViews(db, args),
-    saveView: args => writes.viewMutation(args, (input, capture) => saveView(db, input, { origin }, capture)),
-    deleteView: args => writes.viewMutation(args, (input, capture) => deleteView(db, input, { origin }, capture)),
+    getViewDefault: args => getViewDefault(db,args),
+    setViewDefault: args => writes.capturedMutation('view_defaults',args,(input,capture)=>setViewDefault(db,input,{origin},capture)),
+    saveView: args => writes.capturedMutation('views', args, (input, capture) => saveView(db, input, { origin }, capture)),
+    deleteView: args => writes.capturedMutation('views', args, (input, capture) => deleteView(db, input, { origin }, capture)),
     options: args => readOptions(db, args),
     write: writes.write,
     runRowAction: writes.runRowAction,
