@@ -780,6 +780,12 @@ deleted - everything downstream is rebuildable from landing) plus a
 `{stream, ingested_at, record}` into the Pipelines stream binding (`EVENTS`).
 The tee must NEVER fail the append - landing is the source of truth.
 
+Exact `streams:append:<name>` and `streams:read:<name>` grants are independent.
+Append grants authorize only append; read grants authorize tail and bounded
+`records` pages, never manifest, arbitrary files, SQL, tables, batch or replay.
+`docs/scoped-streams.md` defines cursor and byte limits. Separate landing pages
+are not source-time incrementals, a snapshot or per-person latest state.
+
 Managed platform (all open beta, Workers Paid): Pipelines stream
 `life_events` (explicit schema: stream string, ingested_at string, record
 json) → pipeline `life_pipeline` (SQL passthrough) → Iceberg sink →
