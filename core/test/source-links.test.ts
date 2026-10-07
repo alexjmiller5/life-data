@@ -71,3 +71,10 @@ test('explicit links require a current catalog table and existing exact record',
   await db.run("UPDATE catalog_tables SET deleted_at='deleted' WHERE id='items'");
   expect(await resolve(db, 'items/local-id')).toEqual({});
 });
+
+test('record links never discard trailing line terminators from the input identity', async () => {
+  const db = await local();
+  for (const suffix of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+    expect(await resolve(db, `items/local-id${suffix}`)).toEqual({});
+  }
+});
