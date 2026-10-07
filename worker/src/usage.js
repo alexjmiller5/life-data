@@ -16,6 +16,7 @@
 // {allowance, cap, alert_at}) and USAGE_PERIOD_ANCHOR_DAY override them.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ensureAuthReady } from "./auth.js";
+import {pushRegistrationRoute,deliverPush,ensurePush} from './apple-push.js';
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -270,7 +271,7 @@ async function flush(env, meter, now) {
 
 // Runs `fn` under a fresh meter with metered bindings, then flushes once the
 // response and everything it handed to waitUntil have settled.
-async function measure(env, ctx, fn) {
+async function measure(env, ctx, fn, deliverNotifications) {
   const meter = new Meter();
   const pending = [];
   const mctx = new Proxy(ctx ?? {}, {
@@ -292,6 +293,8 @@ async function measure(env, ctx, fn) {
     const done = (async () => {
       while (pending.length) await Promise.allSettled(pending.splice(0));
       await flush(env, meter, new Date());
+      try { await deliverNotifications?.(env); }
+      catch { console.log(JSON.stringify({push_delivery_error:true})); }
     })().catch((e) => console.log(JSON.stringify({ usage_flush_error: String(e) })));
     ctx?.waitUntil?.(done);
   }
@@ -463,6 +466,25 @@ async function ownRoute(request, url, env, tenant) {
   if (!tenant) return json({ error: "forbidden" }, 403);
   const may = (scopes) => scopes.some((s) => tenant.scopes.includes(s));
   const { pathname } = url, method = request.method;
+  const deliveryTest = /^\/v1\/notifications\/test\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(pathname);
+  if (deliveryTest && (method === "POST" || method === "DELETE")) {
+    if (!may(["admin"])) return json({ error: "insufficient scope" }, 403);
+    const id = `notification-test:${deliveryTest[1]}`;
+    await ensureUsage(env.AUTH_DB);
+    if (method === "POST") {
+      const created = await notify(env.AUTH_DB, {id, producer: "delivery-test", type: "notification.test",
+        severity: "info", title: "Life notification test",
+        body: "Synthetic delivery check. No usage thresholds or read state were changed."});
+      return json({id}, created ? 201 : 200);
+    }
+    await ensurePush(env.AUTH_DB);
+    await env.AUTH_DB.batch([
+      env.AUTH_DB.prepare(`DELETE FROM _push_deliveries WHERE event_id IN
+        (SELECT id FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test')`).bind(id),
+      env.AUTH_DB.prepare("DELETE FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test'").bind(id),
+    ]);
+    return json({id});
+  }
   if (pathname === "/v1/usage" && method === "GET") {
     return may(READ_SCOPES) ? json(await usageReport(env, new Date())) : json({ error: "insufficient scope" }, 403);
   }
@@ -475,7 +497,7 @@ async function ownRoute(request, url, env, tenant) {
   return json({ error: "not found" }, 404);
 }
 
-export function withUsage(hub, { authenticate, sweepCron }) {
+export function withUsage(hub, { authenticate, sweepCron, deliverNotifications = deliverPush }) {
   return {
     // Handlers added to the hub later (queue, email, ...) pass through
     // unmetered until they are wrapped here, instead of being dropped.
@@ -509,7 +531,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           }
           // Not gated on the route's scope check: a finer-grained check added
           // later (e.g. one that reads the request body) must not bypass the cap.
-          if (tenant && !UNCAPPED_ROUTE.test(url.pathname)) {
+          if (tenant && !UNCAPPED_ROUTE.test(url.pathname) && !pushRegistrationRoute(request)) {
             const cap = await capState(env, new Date());
             if (cap) {
               const capped=capResponse(cap,READ_SCOPES.some(s=>tenant.scopes.includes(s)));
@@ -522,7 +544,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           return cors(request, env, json({ error: String(e) }, 500));
         }
         return hub.fetch(request, menv, mctx);
-      });
+      }, deliverNotifications);
     },
 
     async scheduled(event, env, ctx) {
@@ -535,7 +557,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           return;
         }
         return hub.scheduled(event, menv, mctx);
-      });
+      }, deliverNotifications);
     },
   };
 }

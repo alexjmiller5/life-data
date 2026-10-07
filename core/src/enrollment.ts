@@ -6,6 +6,7 @@ import type {
 
 import {isGovernanceCapability,object} from './governance-wire.ts';
 import {validEnrollmentScopes} from './enrollment-scopes.ts';
+import {pushRegistrationCapability,pushEnrollmentProfiles} from './push-registration.ts';
 
 /** Hosts own clocks, cancellation, cryptography, HTTP and credential storage. */
 export const ENROLLMENT_POLICY: Readonly<EnrollmentPolicy> = Object.freeze({
@@ -87,8 +88,11 @@ export function validateDeviceSession(data: unknown, expectedProfile?: Enrollmen
       || Object.hasOwn(caps,'governance')) throw new Error('device approval profile does not match');
   }
   const governance=object(data.capabilities)&&isGovernanceCapability(data.capabilities.governance)?data.capabilities.governance:undefined;
+  const pushProfiles=record(data.capabilities)?pushEnrollmentProfiles(data.capabilities.push_profiles):undefined;
+  const push=record(data.capabilities)?pushRegistrationCapability(data.capabilities.push_registration):undefined;
   return { name: data.name, scopes: [...data.scopes], replica: replicaEligibility(data, data.scopes),
-    ...(enrollmentProfile?{enrollmentProfile}:{}), ...(governance?{governance:JSON.parse(JSON.stringify(governance))}: {}) };
+    ...(enrollmentProfile?{enrollmentProfile}:{}), ...(governance?{governance:JSON.parse(JSON.stringify(governance))}: {}),
+    ...(push?{pushRegistration:push}:{}),...(pushProfiles?{pushProfiles}:{}) };
 }
 
 function validateReply(reply: SessionReply): void {

@@ -25,5 +25,11 @@ export {isGovernanceCapability} from './governance-wire.ts';
 
 export * from './resolve-derived.ts';
 
+export {parseChangesetApproval} from './changeset-service.ts';
+export type {ChangesetApprovalScope} from './changeset-service.ts';
+
+export * from './changeset-client.ts';
 export * from './calendar-rows.ts';
 export * from './board-rows.ts';
+
+export {getViewDefault,setViewDefault} from './view-defaults.ts';

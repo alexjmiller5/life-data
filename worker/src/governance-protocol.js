@@ -1,6 +1,7 @@
 // The exact protocol boundary is shared by routing, authentication and usage.
 import {governanceOperations} from '../../core/src/governance-wire.ts';
-const operations=Object.fromEntries(Object.entries(governanceOperations).map(([name,op])=>[op.route,{name,...op}]));
+import {changesetOperations} from './changeset-governance.js';
+const operations={...Object.fromEntries(Object.entries(governanceOperations).map(([name,op])=>[op.route,{name,...op}])),...changesetOperations};
 
 export function governanceOperation(request) {
   return request.method==='POST' ? operations[new URL(request.url).pathname] ?? null : null;

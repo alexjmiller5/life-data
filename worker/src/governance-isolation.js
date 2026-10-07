@@ -5,6 +5,7 @@ import {ScopeDenied} from './scopes.js';
 import {trustedEvidenceTrigger,EVIDENCE_DDL} from './governance-evidence.js';
 import {PROPOSAL_DDL} from './governance-proposals.js';
 import {RECEIPTS_DDL} from './governance-store.js';
+import {CHANGESET_DDL} from './changeset-store.js';
 const reserved=value=>typeof value==='string' && /_governance_/i.test(value);
 const deny=()=>{throw new ScopeDenied('insufficient scope');};
 const normalized=sql=>sql.replace(/IF NOT EXISTS /g,'').replace(/\s+/g,' ').trim();
@@ -31,7 +32,7 @@ export async function assertGenericState(view){
   const schemas=await continuitySchemas(view);
   for(const object of objects){
     if(!reserved(object.sql))continue;
-    if([...EVIDENCE_DDL,...PROPOSAL_DDL,RECEIPTS_DDL].some(sql=>normalized(sql)===normalized(object.sql)))continue;
+    if([...EVIDENCE_DDL,...PROPOSAL_DDL,...CHANGESET_DDL,RECEIPTS_DDL].some(sql=>normalized(sql)===normalized(object.sql)))continue;
     if(trustedEvidenceTrigger(object) || trustedContinuityTrigger(object,schemas.get(object.tbl_name) ?? []))continue;
     deny();
   }

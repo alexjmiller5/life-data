@@ -4,6 +4,7 @@
 import { qident } from "./validate.js";
 import { redactReceipts } from './governance-store.js';
 import {ScopeDenied} from './scopes.js';
+import {purgeChangesets} from './changeset-store.js';
 
 export const PURGES = "purges";
 
@@ -51,8 +52,10 @@ export async function applyPurges(db, markers) {
   const hasReceipts=await exists(db,'_governance_receipts');
   const hasProposals=await exists(db,'_governance_proposals');
   const hasInvalidations=await exists(db,'_governance_invalidations');
+  const hasChangesets=await exists(db,'_governance_changesets');
   const stmts = [];
   for (const { tbl, row_id, col, purged_at } of live) {
+    if(hasChangesets)stmts.push(...purgeChangesets(db,tbl,row_id));
     if(hasInvalidations)stmts.push(db.prepare(`INSERT INTO _governance_invalidations(tbl,row_id,version) VALUES (?,?,?)
       ON CONFLICT(tbl,row_id) DO UPDATE SET version=excluded.version`).bind(tbl,row_id,crypto.randomUUID()));
     if(hasProposals){

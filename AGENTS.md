@@ -25,6 +25,12 @@ civil-day bounds through the existing timezone/day-boundary contract. Date-only
 range ends are inclusive and timed range ends exclusive. Unknown Board select
 values remain visible after configured options, followed by the empty column.
 
+Per-table preferred-view IDs use the canonical `view-defaults/v1` manifest and
+`getViewDefault`/`setViewDefault` operations. Writes require the displayed revision
+and use normal validation/history/Undo; unavailable pointers fall back visibly
+without rewriting user views. Plain table navigation applies the preference;
+explicit destinations win. Provisioning is operator-owned, never implicit in reads.
+
 ## Layout
 
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.
@@ -113,6 +119,26 @@ values remain visible after configured options, followed by the empty column.
   authenticated approval authority remains in the separate auth store.
   Preview performs a rollback-only validation probe and never initializes,
   meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/changeset.js` prepares bounded trusted-service create/patch/soft-delete
+  sets with explicit authorization, absence/revision guards and one transactional
+  receipt read. Callers supply complete displayed dependency/membership reads.
+  `prepareChecked(..., {finalState:true})` returns `checks` that MUST execute after
+  every table's mutation and before cleanup; use `commitChangeset` for composition.
+  Catalog invariants receive full native before/final sets, while ordinary writes
+  retain per-mutation validation.
+- `worker/src/changeset-governance.js` exposes the separate
+  `bounded-changeset-proposals-v1` capability under `/v1/governance/changesets`.
+  Configured broad-read agents can preview/propose; only authenticated USER actors
+  with current broad read/write and approval authority can approve. Operators and
+  narrow grants do not gain authority. Frozen proposals, principal-bound previews,
+  explicit expected read membership, complete mutated-table continuity guards and
+  original-key positive/negative receipts protect one atomic final-state result.
+  Previews never persist domain/auth usage/proposals/history or outbound effects.
+  Limits are advertised and reject wholly, never chunk. Provenance is insert-only.
+  Purges redact dependent proposals/receipts while retaining retry exclusion.
+  Generated DTOs and `parseChangesetApproval` validate whole-set client receipts;
+  hosts still need actual USER enrollment and a durable captured-scope journal.
+  Existing single-row governance and its clients retain their own protocol.
 - `worker/src/write.js` exposes `prepareChecked` for trusted service composition.
   It prepares table approval/history setup, mutations and cleanup without running
   a batch. All shared read guards must execute before every plan setup, and all
@@ -808,6 +834,29 @@ Credentials have separate owners:
 - Pipeline sink storage credentials may derive from a provisioning token. Check
   that dependency before rotating it; routine app sign-in needs no provider key.
 
+## Bounded consumer queries
+
+`worker/src/rows-query.js` owns `/v1/rows/query`, advertised as
+`row_query: bounded-v1`. The pure `life-core/query` entry owns request validation.
+Projected, predicate and sort columns require read grants. Cursors bind request,
+schema/catalog shape and profile revision, with native SQLite collation and
+null-last ordering. Text identities and safe scalar sort values are supported.
+Pages are separate reads, never snapshot or full-catalog coverage. Runtime
+schemas own query indexes; no consumer table names belong in service code.
+
+## Consumer configuration
+
+`worker/src/consumer-config.js` serves profile-bound configuration at
+`GET /v1/consumer/config` and column-authorized static metadata at
+`POST /v1/catalog/projection`. Config is installation-owned state inside
+`ENROLLMENT_PROFILES`, included in the canonical profile revision. Changed
+bindings require reenrollment; config-less legacy hashes remain stable.
+Canonical config checks export from `life-core/consumer-config`; generated
+Swift/TypeScript DTOs come from `core/contract/core.json`. Profiles admit up to
+256 distinct column grants. Metadata grants require matching row read grants;
+projection never executes or discloses dynamic option SQL. These endpoints
+confer no replica, arbitrary SQL or general catalog authority.
+
 ## File service
 
 `PUT/GET/HEAD /v1/files/<key>` serves retained originals through the hub's
@@ -864,6 +913,21 @@ to every source. Live auth is rechecked before release; GET never advances ACK.
 Empty retired subscriptions honor the requested wait. Admin selects immutable
 sources at creation and can pause/resume or permanently retire recording.
 
+## Capture service interface
+
+`worker/src/capture-gateway.js` is a stateless supported consumer API. Synapse
+owns the media resolver, category/field restrictions, durable receipts and
+serialized writes. Life Data holds its own independently minted Synapse gateway
+credential in `CAPTURE_ADAPTERS`, never in a native client. Consumers hold only
+their scoped Life Data session. The gateway delegates an opaque credential-bound
+subject; receipt namespaces belong to gateway-client plus subject plus UUID.
+Replacing either credential changes that receipt namespace. Revoking the gateway
+stops captures but leaves ordinary catalog reads and edits available. Deploying
+Media Center's poller or native clients does not mutate service infrastructure.
+The contract and bounds are in `docs/scoped-enrollment.md`; portable fixtures
+are in `tests/fixtures/hub-capture-contract.json`. No adapter is enabled by source
+alone. The pure receipt/capability policy is `core/src/capture.ts`.
+
 Singleton creation policies can use `occurrenceType: "none"` and the generic
 `prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
 recurring policy encodings and revisions remain unchanged. Prefixes and
@@ -876,3 +940,14 @@ or SQL text. Exact ordered schema/catalog/view/hub guard rows must be checked by
 read-only consumers in the query transaction; host workspace/replica identity,
 coherent publication, policy, work budget and stale presentation remain mandatory.
 Plans reject nonempty FTS; list/count limits are 20/10,001 respectively.
+## Apple push
+
+`worker/src/apple-push.js` owns optional native registration and APNs delivery.
+The three exact auth-store registration routes are usage-cap exempt. Native
+authority comes from explicit Access-verified app-profile approval, never token
+names or caller-supplied principals. Revisions guard rotation and revocation;
+opaque session/installation bindings never expose token hashes. Push acceptance,
+OS presentation and shared read state remain separate. Deployment/event identity
+uses the 43-byte base64url SHA-256 JSON tuple in `docs/apple-push.md`; delivery
+receipts also bind the installation. Configure the dedicated provider key and
+profiles through the owning project's service ENV, never client settings.

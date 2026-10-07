@@ -125,12 +125,12 @@ export function createWriteSession(db: SqlDriver, origin: string) {
     });
   };
   const undoStatus: CoreHandlers['undoStatus'] = () => queued(async () => ({ action: history.length ? { ...history.at(-1)!.action } : null }));
-  async function viewMutation<A, T>(input: A, operation: (args: A, capture: (value: WriteCapture) => void) => Promise<T>): Promise<T> {
+  async function capturedMutation<A, T>(table: string, input: A, operation: (args: A, capture: (value: WriteCapture) => void) => Promise<T>): Promise<T> {
     const args = snapshot(input);
     return queued(async () => {
       let capture: WriteCapture | undefined;
       const result = await operation(args, value => { capture = value; });
-      if (capture) publish('views', capture);
+      if (capture) publish(table, capture);
       return result;
     });
   }
@@ -140,5 +140,5 @@ export function createWriteSession(db: SqlDriver, origin: string) {
     const args=snapshot(input);
     return queued(()=>operation(args));
   }
-  return { write, runRowAction, undo, undoStatus, viewMutation, sidebarMutation };
+  return { write, runRowAction, undo, undoStatus, capturedMutation, sidebarMutation };
 }
