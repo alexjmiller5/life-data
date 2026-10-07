@@ -143,7 +143,10 @@ reads never provision either store or rewrite saved definitions.
   explicit expected read membership, complete mutated-table continuity guards and
   original-key positive/negative receipts protect one atomic final-state result.
   Previews never persist domain/auth usage/proposals/history or outbound effects.
-  Limits are advertised and reject wholly, never chunk. Provenance is insert-only.
+  Limits are advertised and reject wholly, never chunk. Capacity and writer-budget
+  refusals return HTTP 422 validation_failed; configuration/service outages remain
+  unavailable. Preview capacity is also bounded by its sealed before/after payload,
+  so request bytes alone do not guarantee acceptance. Provenance is insert-only.
   Purges redact dependent proposals/receipts while retaining retry exclusion.
   Generated DTOs and `parseChangesetApproval` validate whole-set client receipts;
   hosts still need actual USER enrollment and a durable captured-scope journal.
