@@ -48,6 +48,16 @@ export function authorizeRowRead(scopes, body) {
       && !Array.isArray(body.where) && Object.keys(body.where).every(granted)));
 }
 
+// Revision-guarded existing-row edits only, never push/insert or lifecycle edits.
+export function authorizeRowPatch(scopes, body) {
+  if (!body || !ordinaryName(body.table) || !body.values || typeof body.values !== 'object'
+    || Array.isArray(body.values) || !Object.keys(body.values).length) return false;
+  const read = c => scopes.includes(`tables:read:${body.table}:${c}`);
+  return ['id','updated_at','hub_at'].every(read) && Object.keys(body.values).every(c =>
+    identifier(c) && !['id','created_at','updated_at','hub_at','deleted_at'].includes(c)
+    && read(c) && scopes.includes(`tables:patch:${body.table}:${c}`));
+}
+
 // Exact server-owned DDL only. A familiar trigger name does not establish trust.
 export function timestampTrigger(trigger) {
   const table=trigger.tbl_name;
@@ -76,10 +86,14 @@ const localRules = [
   new RegExp(`^${rowRule} AND NOT EXISTS \\(SELECT 1 FROM json_each\\(coalesce\\(${ruleColumn},'\\[\\]'\\)\\) WHERE value = ${ruleLiteral}\\)(?![\\s\\S])`),
 ];
 const uniqueRule = new RegExp(String.raw`^SELECT c\.id FROM changed c JOIN ${ruleColumn} b ON b\.${ruleColumn} = c\.\2 AND b\.id != c\.id AND b\.deleted_at IS NULL WHERE c\.deleted_at IS NULL AND c\.\2 IS NOT NULL(?![\s\S])`);
-function scopedInvariant(rule, table, columns) {
+// A live-row patch cannot change deleted_at. Admit only this complete deletion
+// guard shape, which is false for every eligible changed row, not arbitrary SQL.
+const incomingDeletionRule = /^SELECT ([A-Za-z_][A-Za-z0-9_]*)\.id FROM changed \1 WHERE \1\.deleted_at IS NOT NULL AND EXISTS \(SELECT 1 FROM ([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z_][A-Za-z0-9_]*), json_each\(\3\.([A-Za-z_][A-Za-z0-9_]*)\) ([A-Za-z_][A-Za-z0-9_]*) WHERE \3\.deleted_at IS NULL AND \5\.value = \1\.id\)(?![\s\S])/;
+function scopedInvariant(rule, table, columns, livePatch) {
   if (rule.scope !== 'table' || rule.tbl !== table || rule.enforce !== 1 || typeof rule.sql !== 'string') return false;
   const names = new Set(columns.map(c => c.name));
   if (!names.has('id') || !names.has('deleted_at')) return false;
+  if (livePatch && incomingDeletionRule.test(rule.sql)) return true;
   for (const pattern of localRules) {
     const match = pattern.exec(rule.sql);
     if (match) return match.slice(1).every(col => names.has(col));
@@ -109,7 +123,10 @@ export function scopedOrigin(view,rowIds) {
 export function scopedTable(view,table,write=false,rowIds=null) {
   return inspectTable(view,table,write,rowIds,false);
 }
-async function inspectTable(view, table, write, rowIds, origin) {
+export function scopedPatchTable(view,table,write,rowIds) {
+  return inspectTable(view,table,write,rowIds,false,true);
+}
+async function inspectTable(view, table, write, rowIds, origin, livePatch=false) {
   if (!ordinaryName(table) && !(origin && table === 'provenance')) deny();
   if (write && (!Array.isArray(rowIds) || rowIds.some(id=>typeof id !== 'string' || !id.trim()))) deny();
   const schema=await view.prepare("SELECT name,type,sql FROM sqlite_master WHERE name=?").bind(table).first();
@@ -150,7 +167,7 @@ async function inspectTable(view, table, write, rowIds, origin) {
   for (const prop of props) if (prop.ref_table) await scopedTable(view,prop.ref_table);
   if (await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_rules'").first()) {
     const {results:rules}=await view.prepare("SELECT * FROM catalog_rules WHERE deleted_at IS NULL AND kind='invariant' AND enforce != 0 AND (tbl=? OR scope='estate') ORDER BY id").bind(table).all();
-    for (const rule of rules) if (!scopedInvariant(rule,table,columns) && !(origin && await originInvariant(view,rule))) deny();
+    for (const rule of rules) if (!scopedInvariant(rule,table,columns,livePatch) && !(origin && await originInvariant(view,rule))) deny();
   }
   return columns;
 }

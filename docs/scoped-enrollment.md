@@ -2,7 +2,8 @@
 
 A consumer holds its own generated credential and a user-provided service URL.
 The host owns URL validation, cryptography, browser launch, polling deadlines,
-cancellation and secure storage. Profile enrollment is read-only and does not
+cancellation and secure storage. Profile enrollment supports projected reads
+and explicitly granted, revision-checked field edits. It does not
 participate in replica synchronization or governance proposal/approval.
 
 ## Service configuration
@@ -10,10 +11,13 @@ participate in replica synchronization or governance proposal/approval.
 `ENROLLMENT_PROFILES` is optional, service-owned JSON keyed by a public profile
 ID. Each value has only `label` and `scopes`. IDs match
 `[a-z][a-z0-9-]{0,63}`. Labels follow the existing enrollment label policy.
-A profile has 1-64 distinct `tables:read:<table>:<column>` grants; each table
-must include its `id` column. Internal, catalog, history, provenance and purge
-tables are not eligible. Full, admin, whole-table, file and write grants are
-not accepted by this enrollment slice. Applications choose a public profile
+A profile has 1-64 distinct `tables:read:<table>:<column>` or
+`tables:patch:<table>:<column>` grants; each table must include its `id` read.
+Patch grants require reads for the same column plus `updated_at` and `hub_at`.
+Identity, creation/update timestamps, hub revisions and deletion fields cannot
+be patched. Internal, catalog, history, provenance and purge tables are not
+eligible. Full, admin, whole-table, file and general write grants are not
+accepted by this enrollment slice. Applications choose a public profile
 ID and exact expected grants; customers enter only the service URL.
 
 Profile values are installation state, never personal schema in source.
@@ -79,3 +83,23 @@ checked-read transaction still apply. Broad and exact-table callers retain
 existing behavior. Column grants do not authorize schema, options, files,
 subscriptions, writes or derived values in other columns. This is not a
 create-only Tasks writer contract.
+
+## Conditional field edits
+
+`tables:patch:<table>:<column>` authorizes only `POST /v1/rows/patch` with
+`{table,id,values,expected_revision:{updated_at,hub_at}}`. Every `values` key
+needs its own patch and read grants. The complete supplied revision must match
+an existing live row. The ordinary catalog validation, history, atomic write
+and receipt `{id,revision:{updated_at,hub_at}}` are unchanged. Missing, deleted
+or stale rows return 409; never retry them automatically. A lost response is
+uncertain, not evidence of failure. Read the current row before another edit.
+
+These grants never authorize push, insert, lifecycle edits, caller history,
+schema, replica synchronization or governance. Catalog invariants remain
+enforced. The checked patch path additionally recognizes the exact incoming
+multi-reference deletion guard template, whose deletion predicate cannot hold
+for a live-row patch; arbitrary SQL and lookalike suffixes are still denied.
+Writable browser approval shows the complete grants as read/update access.
+Canonical enrollment validation requires `conditional_patch: revision-v1`
+as well as the exact profile/scope receipt. Existing reader profiles and
+accepted credentials keep their original grants until explicit reenrollment.

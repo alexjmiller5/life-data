@@ -545,8 +545,11 @@ Subscriptions advertise `durable-pull-v1`; conditional row edits advertise
 falling back to an unconditional write.
 
 Profile enrollment and projected reads are specified in `docs/scoped-enrollment.md`.
-Optional service-owned `ENROLLMENT_PROFILES` contains only exact read-column
-grants; requested unknown profiles never fall back to full. Auth storage binds
+Optional service-owned `ENROLLMENT_PROFILES` contains exact read-column grants
+and optional `tables:patch:<table>:<column>` grants for revision-checked live-row
+edits. Patch grants require same-column and id/updated_at/hub_at reads, exclude
+lifecycle fields, and never authorize push/insert or caller-supplied history.
+Requested unknown profiles never fall back to full. Auth storage binds
 the approved profile revision and scopes to the fingerprint atomically. Profile
 tokens get no governance authority. Core owns the optional profile expectation
 and receipt DTOs and the pure `life-core/enrollment` entry; hosts own JSC,

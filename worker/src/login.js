@@ -204,7 +204,7 @@ export async function handleLogin(request, env, ctx, url) {
     }
     const profile=Object.hasOwn(values,'profile') ? await enrollmentProfile(env,values.profile) : null;
     if (Object.hasOwn(values,'profile') && !profile) return json({error:'enrollment profile unavailable'},403);
-    const profileFields=profile ? `<p>Application: <strong>${escapeHtml(profile.label)}</strong></p><p>Read-only access:</p><ul>${profile.scopes.map(s=>`<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul><input type="hidden" name="profile" value="${escapeHtml(profile.id)}"><input type="hidden" name="profileRevision" value="${profile.revision}">` : '';
+    const profileFields=profile ? `<p>Application: <strong>${escapeHtml(profile.label)}</strong></p><p>${profile.scopes.some(s=>s.startsWith('tables:patch:'))?'Read and update access (listed fields only):':'Read-only access:'}</p><ul>${profile.scopes.map(s=>`<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul><input type="hidden" name="profile" value="${escapeHtml(profile.id)}"><input type="hidden" name="profileRevision" value="${profile.revision}">` : '';
     return page(
       "Approve Life device",
       `<p><strong>${escapeHtml(identity.email)}</strong>, approve this device:</p><p><code>${escapeHtml(values.name)}</code></p><p>Approval code: <code>${escapeHtml(values.key.slice(0, 8))}</code></p><p>This approval link does not expire. Approve it only while your device is waiting to sign in.</p><form method="post" action="/login"><input type="hidden" name="key" value="${escapeHtml(values.key)}"><input type="hidden" name="name" value="${escapeHtml(values.name)}">${profileFields}<button type="submit">Approve device</button></form>`,

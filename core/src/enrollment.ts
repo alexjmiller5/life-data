@@ -5,6 +5,7 @@ import type {
 } from './contract.generated.ts';
 
 import {isGovernanceCapability,object} from './governance-wire.ts';
+import {validEnrollmentScopes} from './enrollment-scopes.ts';
 
 /** Hosts own clocks, cancellation, cryptography, HTTP and credential storage. */
 export const ENROLLMENT_POLICY: Readonly<EnrollmentPolicy> = Object.freeze({
@@ -18,13 +19,7 @@ const fingerprint = (v: unknown): v is string => typeof v === 'string'
 const profileId = (v: unknown): v is string => typeof v === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(v);
 
 function validateProfileExpectation(p: EnrollmentProfileExpectation): void {
-  if (!record(p) || !profileId(p.id) || !Array.isArray(p.scopes) || !p.scopes.length
-    || p.scopes.length > 64 || new Set(p.scopes).size !== p.scopes.length) throw new Error('invalid enrollment profile expectation');
-  for (const scope of p.scopes) {
-    const parts=typeof scope === 'string' ? /^tables:read:([A-Za-z][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)$/.exec(scope) : null;
-    if (!parts || /^(?:sqlite_|catalog_)/i.test(parts[1]!) || /^(?:history|provenance|purges)$/i.test(parts[1]!)
-      || !p.scopes.includes(`tables:read:${parts[1]}:id`)) throw new Error('invalid enrollment profile expectation');
-  }
+  if (!record(p) || !profileId(p.id) || !validEnrollmentScopes(p.scopes)) throw new Error('invalid enrollment profile expectation');
 }
 
 /** Append this relative path only to the host's validated/canonical endpoint.
@@ -88,6 +83,7 @@ export function validateDeviceSession(data: unknown, expectedProfile?: Enrollmen
     if (enrollmentProfile?.id !== expectedProfile.id || data.scopes.length !== expectedProfile.scopes.length
       || new Set(data.scopes).size !== data.scopes.length || !data.scopes.every(s=>expectedProfile.scopes.includes(s))
       || !record(caps) || caps.row_api !== 'v1' || caps.schema !== 'none' || caps.replica_sync !== false
+      || (expectedProfile.scopes.some(s=>s.startsWith('tables:patch:')) && caps.conditional_patch !== 'revision-v1')
       || Object.hasOwn(caps,'governance')) throw new Error('device approval profile does not match');
   }
   const governance=object(data.capabilities)&&isGovernanceCapability(data.capabilities.governance)?data.capabilities.governance:undefined;
