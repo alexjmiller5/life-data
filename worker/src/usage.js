@@ -16,6 +16,7 @@
 // {allowance, cap, alert_at}) and USAGE_PERIOD_ANCHOR_DAY override them.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ensureAuthReady } from "./auth.js";
+import {pushRegistrationRoute,deliverPush} from './apple-push.js';
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -270,7 +271,7 @@ async function flush(env, meter, now) {
 
 // Runs `fn` under a fresh meter with metered bindings, then flushes once the
 // response and everything it handed to waitUntil have settled.
-async function measure(env, ctx, fn) {
+async function measure(env, ctx, fn, deliverNotifications) {
   const meter = new Meter();
   const pending = [];
   const mctx = new Proxy(ctx ?? {}, {
@@ -292,6 +293,8 @@ async function measure(env, ctx, fn) {
     const done = (async () => {
       while (pending.length) await Promise.allSettled(pending.splice(0));
       await flush(env, meter, new Date());
+      try { await deliverNotifications?.(env); }
+      catch { console.log(JSON.stringify({push_delivery_error:true})); }
     })().catch((e) => console.log(JSON.stringify({ usage_flush_error: String(e) })));
     ctx?.waitUntil?.(done);
   }
@@ -475,7 +478,7 @@ async function ownRoute(request, url, env, tenant) {
   return json({ error: "not found" }, 404);
 }
 
-export function withUsage(hub, { authenticate, sweepCron }) {
+export function withUsage(hub, { authenticate, sweepCron, deliverNotifications = deliverPush }) {
   return {
     // Handlers added to the hub later (queue, email, ...) pass through
     // unmetered until they are wrapped here, instead of being dropped.
@@ -509,7 +512,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           }
           // Not gated on the route's scope check: a finer-grained check added
           // later (e.g. one that reads the request body) must not bypass the cap.
-          if (tenant && !UNCAPPED_ROUTE.test(url.pathname)) {
+          if (tenant && !UNCAPPED_ROUTE.test(url.pathname) && !pushRegistrationRoute(request)) {
             const cap = await capState(env, new Date());
             if (cap) {
               const capped=capResponse(cap,READ_SCOPES.some(s=>tenant.scopes.includes(s)));
@@ -522,7 +525,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           return cors(request, env, json({ error: String(e) }, 500));
         }
         return hub.fetch(request, menv, mctx);
-      });
+      }, deliverNotifications);
     },
 
     async scheduled(event, env, ctx) {
@@ -535,7 +538,7 @@ export function withUsage(hub, { authenticate, sweepCron }) {
           return;
         }
         return hub.scheduled(event, menv, mctx);
-      });
+      }, deliverNotifications);
     },
   };
 }
