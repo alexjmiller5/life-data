@@ -270,3 +270,15 @@ test('provider refusal diagnostic reports only allowlisted status and reason',as
     expect(warn.mock.calls).toEqual([['APNs delivery refused',403,'Other']]);
   }finally{warn.mockRestore();}
 });
+
+test('transport diagnostics classify supported failures without arbitrary error details',async()=>{
+  const env=await providerEnvironment();await notify(env.AUTH_DB,event());
+  const warn=spyOn(console,'warn').mockImplementation(()=>{});
+  try{
+    await push.deliverPush(env,async()=>{throw Error('Network connection lost.');});
+    expect(warn.mock.calls).toEqual([['APNs transport failed','Network connection lost.']]);
+    warn.mockClear();
+    await push.deliverPush(env,async()=>{throw Error('secret-device-token');},Date.now()+60000);
+    expect(warn.mock.calls).toEqual([['APNs transport failed','Other']]);
+  }finally{warn.mockRestore();}
+});

@@ -230,7 +230,7 @@ export async function deliverPush(env,send=fetch,now=Date.now()){
           .bind(claimed.installation_id,claimed.revision,lease).first();
         if(!current)break;
         try{
-          if(!jwt || !collapse)throw Error();
+          if(!jwt || !collapse)throw Error('Provider token unavailable');
           const response=await send(`https://${profile.environment==='sandbox'?'api.sandbox.push.apple.com':'api.push.apple.com'}/3/device/${claimed.device_token}`,{
             method:'POST',redirect:'error',signal:AbortSignal.timeout(10000),
             headers:{authorization:`bearer ${jwt}`,'content-type':'application/json','apns-topic':profile.topic,
@@ -249,7 +249,13 @@ export async function deliverPush(env,send=fetch,now=Date.now()){
               outcome='permanent';
             }
           }
-        }catch{console.warn('APNs transport failed');}
+        }catch(error){
+          const safeError=['Network connection lost.','Illegal invocation','The operation was aborted',
+            'The operation timed out','Cannot perform I/O on behalf of a different request',
+            'Provider token unavailable','Parse Error: Expected HTTP/'].find(message=>
+              typeof error?.message==='string' && error.message.includes(message))??'Other';
+          console.warn('APNs transport failed',safeError);
+        }
       }
       const attempts=event.attempts+1;
       const retryAt=outcome==='retry'?now+Math.min(3600000,30000*2**Math.min(attempts-1,7)):0;
