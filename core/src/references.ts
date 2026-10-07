@@ -77,7 +77,7 @@ export async function referencedBy(
 ): Promise<ReferencedByPage> {
   checkArgs(
     args,
-    ["table", "rowId", "sourceTable", "column", "limit", "offset", "calendar"],
+    ["table", "rowId", "sourceTable", "column", "limit", "offset", "calendar", "expectedViewUpdatedAt"],
     ["table", "rowId", "sourceTable", "column"],
   );
   const limit = args.limit === undefined ? 20 : args.limit,
@@ -100,6 +100,7 @@ export async function referencedBy(
     if (!source) throw Error("Reference source is not in the catalog");
     // Preferences are read in this same transaction; table defaults do not affect links.
     const preference=await getRelatedViewDefault({all:db.all.bind(db),run:db.run.bind(db),transaction:body=>body()}, {table:source.table});
+    if(args.expectedViewUpdatedAt!==undefined && args.expectedViewUpdatedAt!==preference.view?.updated_at)throw Error('The related-record view changed; refresh relationships before retrying.');
     const view={...(preference.view?.view ?? {table:source.table}),columns:undefined,trash:false,limit:limit+1,offset,calendar:args.calendar};
     const query=compileReferenceView(view,catalog.properties,{table:args.table,rowId:args.rowId,column:source.column,type:source.type});
     if(view.search)await prepareSearch(db,catalog);

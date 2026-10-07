@@ -1759,6 +1759,9 @@
         },
         "calendar": {
           "$ref": "#/$defs/CalendarContext"
+        },
+        "expectedViewUpdatedAt": {
+          "type": "string"
         }
       },
       "required": [

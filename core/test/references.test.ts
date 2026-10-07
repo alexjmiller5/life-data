@@ -73,6 +73,7 @@ test('related views filter before pagination, preserve sorting and full rows wit
  await db.run("INSERT INTO entries(id,title,owner,updated_at) VALUES ('e','History','TARGET',?)",[T0]);
  const view=await core.saveView(db,{table:'entries',name:'Related',definition:{version:1,columns:['id'],filters:[{column:'title',op:'ne',value:'Excluded'}],sort:[{column:'title',direction:'desc'}]}});
  await core.setRelatedViewDefault(db,{table:'entries',viewId:view.id,expectedUpdatedAt:null});
+ await expect(call(db,'referencedBy',{...args,expectedViewUpdatedAt:'1999-01-01T00:00:00.000Z'})).rejects.toThrow(/view changed/i);
  const first=await call(db,'referencedBy',{...args,limit:1});
  expect(ids(first)).toEqual(['e']);expect(first.rows[0].record.owner).toBe('TARGET');expect(first.nextOffset).toBe(1);
  const second=await call(db,'referencedBy',{...args,limit:1,offset:1});
