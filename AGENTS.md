@@ -848,3 +848,8 @@ and explicit ACK receipts. Consumers need the subscription grant plus read acces
 to every source. Live auth is rechecked before release; GET never advances ACK.
 Empty retired subscriptions honor the requested wait. Admin selects immutable
 sources at creation and can pause/resume or permanently retire recording.
+
+Singleton creation policies can use `occurrenceType: "none"` and the generic
+`prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
+recurring policy encodings and revisions remain unchanged. Prefixes and
+source registries are deployment state, never consumer-specific constants.
