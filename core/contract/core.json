@@ -4059,6 +4059,71 @@
         "active",
         "revoked"
       ]
+    },
+    "SaveCatalogPropertyArgs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields": {
+          "$ref": "#/$defs/Row"
+        },
+        "addColumn": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table",
+        "column",
+        "expectedUpdatedAt",
+        "fields"
+      ]
+    },
+    "SaveCatalogRuleArgs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields": {
+          "$ref": "#/$defs/Row"
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "expectedUpdatedAt",
+        "fields"
+      ]
     }
   },
   "operations": {
@@ -4469,6 +4534,24 @@
       "result": {
         "$ref": "#/$defs/ViewDefault"
       }
+    },
+    "saveCatalogProperty": {
+      "args": {
+        "$ref": "#/$defs/SaveCatalogPropertyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Property"
+      },
+      "description": "Explicit catalog mutation with the displayed revision; commits metadata and catalog_log together. Ordinary record writes remain read-only for catalog tables."
+    },
+    "saveCatalogRule": {
+      "args": {
+        "$ref": "#/$defs/SaveCatalogRuleArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/Row"
+      },
+      "description": "Explicit catalog mutation with the displayed revision; commits metadata and catalog_log together. Ordinary record writes remain read-only for catalog tables."
     }
   }
 }

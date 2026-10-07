@@ -1,3 +1,4 @@
+import {saveCatalogProperty,saveCatalogRule} from './catalog-edit.ts';
 import {getViewDefault,setViewDefault} from './view-defaults.ts';
 import { boardRows } from './board-rows.ts';
 import { calendarRows } from './calendar-rows.ts';
@@ -59,6 +60,8 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
       const catalog = await readCatalog(db);
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
     },
+    saveCatalogProperty: args => saveCatalogProperty(db,args),
+    saveCatalogRule: args => saveCatalogRule(db,args),
     rows: view => readRows(db, view),
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),

@@ -84,7 +84,7 @@ async function prepareInvariants(db: SqlDriver, table: string, props: Property[]
     await db.run('DROP TABLE temp._core_write_before');
   }
 }
-async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
+export async function prepareWriteStorage(db: SqlDriver, table: string, fail: Fail) {
   const quote = (name: string): string => {
     try { return qident(name); } catch { return fail(name, 'identifier', 'Invalid SQL identifier.'); }
   };
@@ -131,6 +131,10 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   if (['id', 'created_at', 'updated_at', 'deleted_at'].some(c => !cols.includes(c))) {
     fail('', 'schema', 'This table lacks the sync columns required for editing.');
   }
+  return cols;
+}
+async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
+  const cols = await prepareWriteStorage(db, table, fail);
   const props = (await db.all('SELECT * FROM main.catalog_properties WHERE tbl=? AND deleted_at IS NULL ORDER BY sort,col', [table])).map(row => {
     try { return decodeProperty(row); }
     catch { return fail(String(row.col ?? ''), 'catalog', 'Invalid catalog property; repair options/inputs before writing.'); }
@@ -154,15 +158,20 @@ async function prepareWrite(db: SqlDriver, table: string, fail: Fail) {
   }
   // A partial catalog can omit rules entirely. Enforce its trust before authorizing a write, including for tables with no current invariant. Standalone
   // local workspaces remain editable without replication certificates.
+  await assertCatalogCoverage(db, fail);
+  await unusedWriteContext(db, fail);
+  await prepareInvariants(db, table, props, rules, fail);
+  return { cols, props, rules };
+}
+
+export async function assertCatalogCoverage(db: SqlDriver, fail: Fail): Promise<void> {
+  const exists = async (name: string) => (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", [name])).length > 0;
   const bound=await exists('_core_state') && (await db.all("SELECT value FROM main._core_state WHERE key='hub'"))[0]?.value
     || await exists('_sync_state') && (await db.all("SELECT value FROM main._sync_state WHERE key='hub_url'"))[0]?.value;
   if(bound) {
     const problem=await coverageProblem(db,[]);
     if(problem) fail('', 'coverage', problem);
   }
-  await unusedWriteContext(db, fail);
-  await prepareInvariants(db, table, props, rules, fail);
-  return { cols, props, rules };
 }
 
 const storageViolation = (table: string, rowId: string | null): WriteViolation => ({ tbl: table, row_id: rowId, col: '', rule: 'storage', message: 'Local write failed; transaction rolled back. Check the schema, catalog SQL and database constraints.' });

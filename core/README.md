@@ -16,6 +16,21 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   together. Pass `expectedUpdatedAt` in write options from the opened record
   to reject stale edits. Components must not write raw SQL. `isReadOnlyTable`
   recognizes built-in system tables and catalog entries with `kind: system`.
+- `saveCatalogProperty` and `saveCatalogRule` are explicit metadata editors.
+  They require the displayed `expectedUpdatedAt` (null for a new identity),
+  an ordinary user table, complete catalog storage, supported trigger/FK
+  topology and trusted metadata coverage on bound replicas. A property edit
+  may explicitly add a nullable physical column using its canonical storage
+  type; the DDL, metadata and `catalog_log` entry commit together. Existing
+  record values are never rewritten or retroactively repaired. Options retain
+  their descriptions. Enforced rule SQL must compile with portable
+  before/changed/now contexts. Invalid prior metadata can be repaired without
+  allowing ordinary record writes to bypass validation. Missing engine tables
+  are not provisioned implicitly. Changes use normal schema/row sync and
+  pending receipts; catalog changes do not create record Undo receipts.
+  Hosts must reload catalog and editing availability after a successful edit
+  and preserve any unrelated drafts. Adding a column invalidates old schema
+  coverage until the normal sync completes.
 - Each `createCoreHandlers` instance holds up to 100 volatile undo receipts for
   successful human record writes, row actions and saved-view changes. `undoStatus({})` returns `{ action: null }`
   or an action with `receiptId`, `table`, `rowId`, and `kind` (create, edit,
