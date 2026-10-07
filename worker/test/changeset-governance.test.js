@@ -267,3 +267,34 @@ test('canonical client consumes the actual service proposal, preview and approva
   const result=await user.approveProposal(args,p);expect(result.kind).toBe('success');
   expect(await user.approveProposal(args,p)).toEqual(result);
 });
+
+test('an oversized actual preview binding is a validation refusal, not a retryable service outage',async()=>{
+  const f=await fixture(),before=f.snapshot();
+  const request={operations:[{kind:'patch',table:'buckets',id:'b',expected_revision:revision,values:{note:'x'.repeat(20000)}}],reads:[]};
+  const r=await f.call(prefix+'preview',request,f.agent);
+  expect(r.status).toBe(422);expect(r.body).toMatchObject({kind:'error',code:'validation_failed',resolution:'unresolved'});
+  expect(r.pending).toEqual([]);expect(f.snapshot()).toEqual(before);
+});
+
+test('a catalog query beyond the write budget refuses preview without mutation or outage classification',async()=>{
+  const f=await fixture();
+  const query='SELECT id FROM changed WHERE 0'+' '.repeat(100000);
+  f.env.DB.db.query('INSERT INTO catalog_rules VALUES(?,?,?,?,?,?,NULL)').run('over-budget','buckets','invariant',1,'table',query);
+  const before=f.snapshot(),r=await f.call(prefix+'preview',input,f.agent);
+  expect(r.status).toBe(422);expect(r.body.code).toBe('validation_failed');
+  expect(f.snapshot()).toEqual(before);expect(r.pending).toEqual([]);
+});
+
+test('canonical client receives the capacity refusal while missing service configuration remains unavailable',async()=>{
+  const {createChangesetAPI}=await import('../../core/src/changeset-client.ts');
+  const f=await fixture();
+  const session=await (await hub.fetch(new Request('https://hub.test/v1/session',{headers:{Authorization:'Bearer '+f.agent}}),f.env,{waitUntil(){}})).json();
+  const client=createChangesetAPI(session.capabilities.changesets,async(route,body)=>{
+    const r=await f.call(route.slice(4),body,f.agent);return {status:r.status,data:r.body};
+  });
+  const request={operations:[{kind:'patch',table:'buckets',id:'b',expected_revision:revision,values:{note:'x'.repeat(20000)}}],reads:[]};
+  expect(await client.preview(request)).toMatchObject({kind:'error',code:'validation_failed',resolution:'unresolved'});
+  delete f.env.GOVERNANCE_PREVIEW_KEY;
+  const before=f.snapshot(),r=await f.call(prefix+'preview',input,f.agent);
+  expect(r.status).toBe(503);expect(r.body).toEqual({kind:'unavailable'});expect(f.snapshot()).toEqual(before);
+});

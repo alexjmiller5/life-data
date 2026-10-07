@@ -184,7 +184,7 @@ export async function handleChangesetGovernance(request,tenant,env,operation){
     return reply(result);
   }catch(e){
     if(identity){const existing=await replay(db,identity);if(existing)return existing;}
-    const message=String(e),conflict=/revision_conflict|life_write_conflict|integer overflow/.test(message),invalid=/validation_failed|life_invariant_|life_property_|invalid_changeset|life_outbox_event_size/.test(message);
+    const message=String(e),conflict=/revision_conflict|life_write_conflict|integer overflow/.test(message),invalid=/validation_failed|life_invariant_|life_property_|invalid_changeset|life_outbox_event_size|changeset_capacity|life_write_budget/.test(message);
     if(identity && (conflict||invalid))return settle(db,identity,targets,conflict?409:422,conflict?'revision_changed':'validation_failed');
     if(e instanceof ScopeDenied)return reply(operation.read?{kind:'unavailable'}:error('unavailable'),operation.read?200:404);
     return reply(error(conflict?'revision_changed':invalid?'validation_failed':'unavailable'),conflict?409:invalid?422:503);
