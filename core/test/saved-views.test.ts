@@ -431,3 +431,36 @@ test('an imported presentation whose property disappears stays visibly unavailab
   expect(unavailable.definition).toBeNull();
   expect(unavailable.unavailable).toMatch(/presentation/i);
 });
+
+
+test('transient definitions use the saved-view compiler without provisioning or writing views', async () => {
+  const db = await local(false);
+  await db.run("INSERT INTO items(id,name,qty) VALUES ('first','First',1),('second','Second',2)");
+  const before = await db.all("SELECT name,sql FROM sqlite_master ORDER BY name");
+  const resolved = await core.resolveViewDefinition(db, { table: 'items', definition });
+  expect(resolved.definition).toEqual(definition);
+  expect(resolved.view).toEqual({ table: 'items', columns: definition.columns, filters: definition.filters, sort: definition.sort });
+  expect((await core.readRows(db, resolved.view)).map(row => row.record)).toEqual([{ name: 'Second', qty: 2 }]);
+  expect(await db.all("SELECT name,sql FROM sqlite_master ORDER BY name")).toEqual(before);
+  expect(await db.all('SELECT * FROM history')).toEqual([]);
+  expect((await core.syncStatus(db)).pendingUiEdits).toBe(0);
+});
+
+test('transient definitions reject invalid columns, versions and executable metadata', async () => {
+  const db = await local(false);
+  for (const invalid of [{ version: 3 }, { version: 2, columns: ['missing'] }, { version: 2, sql: 'SELECT 1' }]) {
+    await expect(core.resolveViewDefinition(db, { table: 'items', definition: invalid as core.SavedViewDefinition })).rejects.toThrow();
+  }
+  let getterCalls = 0;
+  const args = { table: 'items', get definition() { getterCalls++; return definition; } };
+  await expect(core.resolveViewDefinition(db, args)).rejects.toThrow();
+  expect(getterCalls).toBe(0);
+});
+
+test('transient configuration is captured before asynchronous catalog reads', async () => {
+  const db = await local(false);
+  const input: core.SavedViewDefinition = { version: 2, columns: ['name'] };
+  const pending = core.resolveViewDefinition(db, { table: 'items', definition: input });
+  input.columns!.push('missing');
+  expect((await pending).definition.columns).toEqual(['name']);
+});

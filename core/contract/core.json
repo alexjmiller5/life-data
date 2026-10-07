@@ -5202,6 +5202,38 @@
         "expectedUpdatedAt",
         "fields"
       ]
+    },
+    "ResolveViewDefinitionArgs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "definition": {
+          "$ref": "#/$defs/SavedViewDefinition"
+        }
+      },
+      "required": [
+        "table",
+        "definition"
+      ]
+    },
+    "ResolvedViewDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/SavedViewDefinition"
+        },
+        "view": {
+          "$ref": "#/$defs/View"
+        }
+      },
+      "required": [
+        "definition",
+        "view"
+      ]
     }
   },
   "operations": {
@@ -5639,6 +5671,14 @@
         "$ref": "#/$defs/Row"
       },
       "description": "Explicit catalog mutation with the displayed revision; commits metadata and catalog_log together. Ordinary record writes remain read-only for catalog tables."
+    },
+    "resolveViewDefinition": {
+      "args": {
+        "$ref": "#/$defs/ResolveViewDefinitionArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ResolvedViewDefinition"
+      }
     }
   }
 }
