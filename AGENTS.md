@@ -17,6 +17,20 @@ CLI.
   definitions, seed data) or source-specific importers to this codebase.
 - New capabilities and bug fixes = **dev work**: happens here, TDD, generic.
 
+Saved-view v2 presentation metadata selects table, Calendar, Gallery or select-grouped
+Board rendering. The canonical validator checks referenced live catalog properties.
+`calendarRows` and `boardRows` are pure shared presentation operations over loaded
+rows; they do not bypass query pagination or write records. Calendar hosts provide
+civil-day bounds through the existing timezone/day-boundary contract. Date-only
+range ends are inclusive and timed range ends exclusive. Unknown Board select
+values remain visible after configured options, followed by the empty column.
+
+Per-table preferred-view IDs use the canonical `view-defaults/v1` manifest and
+`getViewDefault`/`setViewDefault` operations. Writes require the displayed revision
+and use normal validation/history/Undo; unavailable pointers fall back visibly
+without rewriting user views. Plain table navigation applies the preference;
+explicit destinations win. Provisioning is operator-owned, never implicit in reads.
+
 ## Layout
 
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.
@@ -73,9 +87,20 @@ CLI.
   a service or a writer. Edit the contract,
   never generated files. `createCoreHandlers` keeps local dispatch behavior in
   TypeScript; hosts inject credentials, transport, locking and storage.
-- `core/src/undo.ts` owns one volatile undo slot per `createCoreHandlers`.
+- `core/schema/sidebar-pins.json` owns durable table-pin storage. The contract
+  generator packages its byte-exact Python resource; do not edit that copy.
+  `life table provision sidebar-pins` installs logged DDL/catalog metadata and
+  refuses foreign collisions. Pin operations use ordinary validated writes,
+  deterministic identities, revision guards and tombstones; reorder is locally
+  atomic, while sync retains ordinary row-level LWW semantics. Recognized pins
+  follow table renames through copy-plus-tombstone rekeying.
+- `core/src/undo.ts` owns a bounded volatile stack of 100 undo receipts per `createCoreHandlers`.
   Capture is inside the existing write transaction; receipts publish only
   after COMMIT. Inverses use the same writer and captured revision/shape.
+  Only the top receipt can be undone. Undo advances an earlier same-row receipt
+  only when its full captured state exactly matches the state being restored;
+  external writes never become a local baseline. Saved views use captured writes
+  and revalidate their definition on restoration. No-op writes preserve the stack.
   Session mutations/status are queued; host-wide serialization still applies.
   Dispose handlers with the workspace. No undo persistence, history replay,
   redo or autosave grouping. Hosts preserve newer drafts and pause autosave
@@ -646,6 +671,15 @@ selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals -
 it never computes a derived value itself. Requires a hub token with
 `tables:write` (or `full`/admin).
 
+Manual record Resolve uses `POST /v1/derive/resolve` with exactly one `ids`
+entry, `col` and required `expectedUpdatedAt`. The separate route makes older
+hubs fail closed. It shares broad table-write authorization; narrow table/column
+writers cannot invoke external derivations. The displayed row revision must
+match the guarded provider snapshot before HTTP; existing read guards reject
+provider-time changes. Core `resolveDerived` requires a bound replica, a live
+saved derived property and matching local/hub revisions, and never writes local
+values from its receipt. Hosts retain drafts, sync normally and re-read the row.
+
 Endpoint requests have a 60-second abort timeout. Non-2xx failures retain
 `id`, `col`, `error` and integer `status`. Diagnostics use only sanitized
 string `JSON.error` from bodies up to 16 KiB, capped at 512 characters;
@@ -835,6 +869,11 @@ and explicit ACK receipts. Consumers need the subscription grant plus read acces
 to every source. Live auth is rechecked before release; GET never advances ACK.
 Empty retired subscriptions honor the requested wait. Admin selects immutable
 sources at creation and can pause/resume or permanently retire recording.
+
+Singleton creation policies can use `occurrenceType: "none"` and the generic
+`prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
+recurring policy encodings and revisions remain unchanged. Prefixes and
+source registries are deployment state, never consumer-specific constants.
 
 ## Apple push
 

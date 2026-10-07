@@ -6,6 +6,19 @@ from life_data import connect, create_table, execute_sql, init, main
 from life_data.catalog import ValidationError, check, rm_property, set_property, set_rule
 
 
+def test_first_command_can_create_documented_table_in_empty_data_directory(tmp_path, monkeypatch):
+    directory = tmp_path / "new" / "data"
+    monkeypatch.setenv("LIFE_DATA_DIR", str(directory))
+    assert (
+        main(["table", "create", "items", "name:text", "--description", "name=Display name."]) == 0
+    )
+    path = directory / "life.db"
+    assert execute_sql(
+        path, "SELECT description FROM catalog_properties WHERE id='items.name'"
+    ) == [{"description": "Display name."}]
+    assert len(execute_sql(path, "SELECT ddl FROM _schema_log WHERE ddl LIKE '%\"items\"%'")) == 2
+
+
 @pytest.fixture
 def db(tmp_path):
     path = init(tmp_path / "life.db")

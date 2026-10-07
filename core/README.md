@@ -16,8 +16,8 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   together. Pass `expectedUpdatedAt` in write options from the opened record
   to reject stale edits. Components must not write raw SQL. `isReadOnlyTable`
   recognizes built-in system tables and catalog entries with `kind: system`.
-- Each `createCoreHandlers` instance holds one volatile undo receipt for its
-  last successful record `write`. `undoStatus({})` returns `{ action: null }`
+- Each `createCoreHandlers` instance holds up to 100 volatile undo receipts for
+  successful human record writes, row actions and saved-view changes. `undoStatus({})` returns `{ action: null }`
   or an action with `receiptId`, `table`, `rowId`, and `kind` (create, edit,
   trash, restore). `undo({ receiptId })` returns the row from a fresh validated
   inverse write: create becomes trash, edit restores changed fields, trash
@@ -26,9 +26,11 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   Capture occurs inside the existing writer transaction; publication follows
   COMMIT. Undo requires the captured revision, table shape and stored values
   (ignoring `hub_at` bookkeeping), and rechecks every normal writer guard.
-  Failure retains the receipt. Success consumes it, with no redo. New successful
-  record writes replace it; timestamp-only writes and successful saved-view
-  mutations clear it. Direct `writeRow` callers do not acquire a UI session.
+  Failure retains the receipt. Success exposes the previous action, with no redo.
+  Only the newest handle is accepted. Earlier same-row receipts advance to the
+  inverse revision only with an exact preimage match; external changes conflict.
+  Timestamp-only writes preserve undo. Saved-view restoration revalidates its
+  definition against the current catalog. Direct `writeRow` callers do not acquire a UI session.
   Closing/replacing a workspace must discard its handler instance; reopening
   starts empty even when history survives. No undo data is stored or synced.
   The session queues writes, undo, saved-view mutations and undoStatus through
@@ -479,6 +481,23 @@ schema and catalog collisions before any creation, and never adopt or repair
 them automatically. Ordinary synced replicas still receive existing logged
 DDL only. Core exports no provisioning operation, and the manifest contains
 no actual view definitions or default selection.
+
+Per-table preferred views use the optional ordinary synced `view_defaults` table.
+`schema/view-defaults.json` defines its exact operator-provisioned schema and
+catalog marker (`view_defaults.view_id`, `life-core`, `view-defaults/v1`).
+`getViewDefault({table})` is read-only. `setViewDefault` accepts a saved-view ID
+(or null to clear) plus the displayed `expectedUpdatedAt` revision (null for
+first creation), validates a live same-table view, and writes through the
+ordinary history, invariant, outbox and Undo path. IDs are deterministic:
+`default:v1:` followed by the table name's lowercase ASCII hex. Preferences
+therefore sync without client-generated competing identities. Table renames
+rekey recognized preference rows with a synced tombstone and monotonic revision;
+invalid storage is never adopted. Rename invariant failure rolls back the whole
+rename. Invalid, deleted or wrong-table targets return a visible fallback reason
+without modifying either the preference or any saved view. Hosts apply this
+preference only for plain table navigation; an explicit view/record destination
+wins. Absent configuration uses the catalog-generated view. Operators include
+both preference and saved-view tables in the client's permitted sync scope.
 
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases

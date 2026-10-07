@@ -673,3 +673,37 @@ for (const [failure, abortTimeout, marker] of [
     expect(snapshot()).toEqual(before);
   } finally { timeout.mockRestore(); }
 });
+
+test('manual Resolve refuses a stale displayed revision before invoking its provider', async () => {
+  const db = await fresh();
+  const {calls,fetchImpl} = stub({body:{title:'Fresh Title',genres:[]}});
+  const before = await db.prepare("SELECT * FROM movies WHERE id='78'").first();
+  const result = await deriveRows(db,ENV,'movies',['78'],{col:'title',expectedUpdatedAt:'2026-01-01T00:00:00.000Z',fetchImpl});
+  expect(calls).toHaveLength(0);
+  expect(result.derived).toBe(0);
+  expect(result.failed[0].error).toContain('changed');
+  expect(await db.prepare("SELECT * FROM movies WHERE id='78'").first()).toEqual(before);
+  expect((await db.prepare('SELECT * FROM provenance').all()).results).toHaveLength(0);
+});
+
+test('manual Resolve accepts the displayed revision and records derived provenance', async () => {
+  const db = await fresh();
+  const {calls,fetchImpl} = stub({body:{title:'Fresh Title',genres:[]}});
+  const result=await deriveRows(db,ENV,'movies',['78'],{col:'title',expectedUpdatedAt:'2026-09-04T00:00:00.000Z',fetchImpl});
+  expect(result).toEqual({derived:1,failed:[]});
+  expect(calls).toHaveLength(1);
+  expect((await db.prepare("SELECT title FROM movies WHERE id='78'").first()).title).toBe('Fresh Title');
+  expect((await db.prepare("SELECT * FROM provenance WHERE to_ref='78' AND rel='derived_from'").all()).results.length).toBeGreaterThan(0);
+});
+
+test('manual Resolve route requires an explicit single-row revision and rejects draft values', async () => {
+  const untouched={prepare(){throw Error('Invalid requests must not touch the database');}};
+  for(const body of [null,{}, {table:'movies',ids:['78'],col:'title'}, {table:'movies',ids:['78','79'],col:'title',expectedUpdatedAt:'2026-09-04T00:00:00.000Z'}, {table:'movies',ids:['78'],col:'title',expectedUpdatedAt:'2026-09-04T00:00:00.000Z',values:{title:'draft'}}]) {
+    const response=await ROUTES['/v1/derive/resolve'](body,untouched,ENV);
+    expect(response.status).toBe(400);
+  }
+  const db=await fresh();
+  const result=await ROUTES['/v1/derive/resolve']({table:'movies',ids:['78'],col:'title',expectedUpdatedAt:'2026-01-01T00:00:00.000Z'},db,ENV);
+  expect(result.derived).toBe(0);
+  expect(result.failed[0].error).toContain('changed');
+});

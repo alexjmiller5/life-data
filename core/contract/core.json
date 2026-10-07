@@ -1064,6 +1064,9 @@
           "items": {
             "$ref": "#/$defs/ViewLayoutItem"
           }
+        },
+        "presentation": {
+          "$ref": "#/$defs/ViewPresentation"
         }
       },
       "required": [
@@ -3340,7 +3343,6 @@
       "required": [
         "policy",
         "sourceId",
-        "occurrenceKey",
         "target",
         "updatedAt",
         "values"
@@ -3412,6 +3414,485 @@
       "type": [
         "string",
         "integer"
+      ]
+    },
+    "ResolveDerivedArgs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "table",
+        "id",
+        "column",
+        "expectedUpdatedAt"
+      ],
+      "description": "Resolve one saved derived property on the bound hub, requiring the displayed row revision. Never accepts draft values or locally computes metadata."
+    },
+    "DerivationFailure": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "col": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "retry_after": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "col",
+        "error"
+      ]
+    },
+    "ResolveDerivedResult": {
+      "type": "object",
+      "properties": {
+        "derived": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DerivationFailure"
+          }
+        }
+      },
+      "required": [
+        "derived",
+        "failed"
+      ]
+    },
+    "ViewPresentation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "table",
+            "calendar",
+            "gallery",
+            "board"
+          ]
+        },
+        "dateColumn": {
+          "type": "string"
+        },
+        "endDateColumn": {
+          "type": "string"
+        },
+        "coverColumn": {
+          "type": "string"
+        },
+        "groupColumn": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "description": "Version 2 display settings, independent of SQL projection. Calendar uses a start date and optional inclusive end-date column. Board groups by a select property. Gallery uses an optional cover property."
+    },
+    "CalendarRowsArgs": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "dateColumn": {
+          "type": "string"
+        },
+        "endDateColumn": {
+          "type": "string"
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarContext"
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "dateColumn",
+        "days"
+      ]
+    },
+    "CalendarDayRows": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "date",
+        "rowIds"
+      ]
+    },
+    "CalendarRowsResult": {
+      "type": "object",
+      "properties": {
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CalendarDayRows"
+          }
+        },
+        "undated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "days",
+        "undated"
+      ]
+    },
+    "BoardRowsArgs": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          }
+        },
+        "column": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "rows",
+        "column",
+        "options"
+      ]
+    },
+    "BoardColumnRows": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "value",
+        "rowIds"
+      ]
+    },
+    "BoardRowsResult": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BoardColumnRows"
+          }
+        }
+      },
+      "required": [
+        "columns"
+      ]
+    },
+    "SidebarPinList": {
+      "type": "object",
+      "properties": {
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPin"
+          }
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pins",
+        "unavailable"
+      ]
+    },
+    "SidebarPin": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tbl": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "tbl",
+        "position",
+        "updated_at",
+        "deleted_at",
+        "unavailable"
+      ]
+    },
+    "PinTableArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "expectedUpdatedAt"
+      ]
+    },
+    "UnpinTableArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedUpdatedAt"
+      ]
+    },
+    "PinRevision": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "updated_at"
+      ]
+    },
+    "MoveTablePinArgs": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "expected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PinRevision"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "direction",
+        "expected"
+      ]
+    },
+    "GetViewDefaultArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ]
+    },
+    "SetViewDefaultArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectedUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "viewId",
+        "expectedUpdatedAt"
+      ]
+    },
+    "ViewDefault": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SavedViewRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "viewId",
+        "updated_at",
+        "view",
+        "unavailable"
       ]
     },
     "PushAppProfile": {
@@ -3913,6 +4394,81 @@
         "$ref": "#/$defs/ProposalMutationResult"
       },
       "description": "Calls only an explicitly injected, capability-validated governance adapter. Unconfigured handlers remain unavailable; no local writer fallback."
+    },
+    "resolveDerived": {
+      "args": {
+        "$ref": "#/$defs/ResolveDerivedArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ResolveDerivedResult"
+      },
+      "description": "Request hub-owned derivation for an unchanged saved row. Hosts retain drafts, then sync and re-read the record; this operation never writes replica values."
+    },
+    "calendarRows": {
+      "args": {
+        "$ref": "#/$defs/CalendarRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/CalendarRowsResult"
+      },
+      "description": "Lay out already loaded rows using host-supplied civil-day bounds. All-day end dates are inclusive; timed ends exclusive, with equal start/end treated as an instant. No query, write or timezone engine."
+    },
+    "boardRows": {
+      "args": {
+        "$ref": "#/$defs/BoardRowsArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/BoardRowsResult"
+      },
+      "description": "Group already loaded rows by a select property, preserving supplied option order and unknown stored values. No writes."
+    },
+    "pinTable": {
+      "args": {
+        "$ref": "#/$defs/PinTableArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "listSidebarPins": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "unpinTable": {
+      "args": {
+        "$ref": "#/$defs/UnpinTableArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "moveTablePin": {
+      "args": {
+        "$ref": "#/$defs/MoveTablePinArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SidebarPinList"
+      }
+    },
+    "getViewDefault": {
+      "args": {
+        "$ref": "#/$defs/GetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
+    },
+    "setViewDefault": {
+      "args": {
+        "$ref": "#/$defs/SetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
     }
   }
 }

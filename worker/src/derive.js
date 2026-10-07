@@ -103,7 +103,7 @@ async function derivationProps(db, table) {
   return { typeOf, byName };
 }
 
-export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names = null, col = null } = {}) {
+export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names = null, col = null, expectedUpdatedAt } = {}) {
   db = queryBudget(db, 900);
   const t = ident(table);
   const derivations = loadDerivations(env);
@@ -132,6 +132,9 @@ export async function deriveRows(db, env, table, ids, { fetchImpl = fetch, names
         for (const [key, read] of catalogView.reads) view.reads.set(key, read);
         await view.prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('table','trigger') AND name NOT LIKE '_cf_%' AND name NOT GLOB '_life_write_*' ORDER BY name").all();
         const row = await view.prepare(`SELECT * FROM ${qident(t)} WHERE id = ? AND deleted_at IS NULL`).bind(id).first();
+        if (expectedUpdatedAt !== undefined && (!row || row.id !== id || row.updated_at !== expectedUpdatedAt)) {
+          throw new Error("Row changed; sync and reopen it before resolving.");
+        }
         if (!row) break;
         const target = derivations.get(name);
         if (!target) {

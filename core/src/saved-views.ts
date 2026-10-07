@@ -3,7 +3,7 @@ import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { compileView, validateView } from './view.ts';
-import { writeRow } from './write.ts';
+import { commitWrite, type WriteCapture } from './write.ts';
 import { validateRowActions } from './row-actions.ts';
 import storage from '../schema/saved-views.json';
 
@@ -55,6 +55,33 @@ function snapshot<T>(value: T): T {
   return copy(value) as T;
 }
 
+function presentationColumns(value: unknown, catalog: Catalog, table: string): string[] {
+  if (value === undefined) return [];
+  object(value);
+  const keys: Record<string,string[]> = {
+    table: ['kind'], calendar: ['kind','dateColumn','endDateColumn'],
+    gallery: ['kind','coverColumn'], board: ['kind','groupColumn'],
+  };
+  if (typeof value.kind !== 'string' || !Object.hasOwn(keys,value.kind)) throw new Error('Invalid view presentation kind.');
+  object(value,keys[value.kind]);
+  const config = value;
+  const columns: string[] = [];
+  function property(key: string, types: string[], required: boolean) {
+    const column = config[key];
+    if (column === undefined && !required) return;
+    const p = catalog.properties.find(p => p.tbl === table && p.col === column && !p.deprecated);
+    if (typeof column !== 'string' || !p || !types.includes(p.type ?? '')) throw new Error('View presentation property is unavailable or has the wrong type.');
+    columns.push(column);
+  }
+  if (value.kind === 'calendar') {
+    property('dateColumn',['date','datetime','date_or_datetime'],true);
+    property('endDateColumn',['date','datetime','date_or_datetime'],false);
+  }
+  if (value.kind === 'gallery') property('coverColumn',['text','url','json'],false);
+  if (value.kind === 'board') property('groupColumn',['select'],true);
+  return columns;
+}
+
 class UnavailableView extends Error {}
 
 async function definitionView(db: SqlDriver, catalog: Catalog, table: string, value: unknown): Promise<View> {
@@ -63,9 +90,9 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
   try {
     object(value);
     if (value.version !== 1 && value.version !== 2) throw new Error('Unsupported saved-view definition version.');
-    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','dayStartMinutes','actions','layout']:[])]);
+    object(value, ['version', 'columns', 'filters', 'sort', 'search', 'trash', 'widths', ...(value.version===2?['groups','timeZone','dayStartMinutes','actions','layout','presentation']:[])]);
     if (!catalog.tables.some(t => t.id === table)) throw new Error('Saved-view target is absent from the catalog.');
-    const { version, widths, timeZone, dayStartMinutes, actions: _actions, layout: _layout, ...query } = value;
+    const { version, widths, timeZone, dayStartMinutes, actions: _actions, layout: _layout, presentation, ...query } = value;
     view = { table, ...query } as View;
     validateView(view, catalog.properties);
     const filters=[...(view.filters ?? []),...(view.groups ?? []).flatMap(g=>g.filters)];
@@ -77,6 +104,7 @@ async function definitionView(db: SqlDriver, catalog: Catalog, table: string, va
     if (view.columns && new Set(view.columns).size !== view.columns.length) throw new Error('Duplicate saved-view columns.');
     referenced = [...(view.columns ?? []), ...filters.map(f => f.column), ...(view.sort ?? []).map(s => s.column)];
     referenced.push(...validateRowActions(value,catalog,table));
+    referenced.push(...presentationColumns(presentation,catalog,table));
     if (widths !== undefined) {
       object(widths);
       for (const [column, width] of Object.entries(widths)) {
@@ -152,7 +180,7 @@ function inTransaction(db: SqlDriver): SqlDriver {
   return { all: db.all.bind(db), run: db.run.bind(db), transaction: body => body() };
 }
 
-export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { origin?: string } = {}): Promise<SavedViewRecord> {
+export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { origin?: string } = {}, capture?: (value: WriteCapture) => void): Promise<SavedViewRecord> {
   args = snapshot(args); options = snapshot(options);
   object(args, ['table', 'name', 'definition', 'id', 'expectedUpdatedAt']);
   if (typeof args.table !== 'string' || typeof args.name !== 'string' || !args.name.trim()) throw new Error('Invalid saved-view name or table.');
@@ -162,15 +190,16 @@ export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { ori
     const problem = await storageProblem(db, catalog);
     if (problem) throw new Error(problem);
     await definitionView(db, catalog, args.table, args.definition);
-    const row = await writeRow(inTransaction(db), 'views', {
+    const result = await commitWrite(inTransaction(db), 'views', {
       ...(args.id === undefined ? {} : { id: args.id }), name: args.name, tbl: args.table, definition: args.definition,
-    }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt });
-    return record(db, catalog, row);
+    }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt }, !!capture);
+    if (result.capture) capture?.(result.capture);
+    return record(db, catalog, result.row);
   });
 }
 
 /** Tombstone through writeRow without requiring a readable definition. */
-export async function deleteView(db: SqlDriver, args: DeleteViewArgs, options: { origin?: string } = {}): Promise<SavedViewRecord> {
+export async function deleteView(db: SqlDriver, args: DeleteViewArgs, options: { origin?: string } = {}, capture?: (value: WriteCapture) => void): Promise<SavedViewRecord> {
   args = snapshot(args); options = snapshot(options);
   object(args, ['id', 'expectedUpdatedAt']);
   if (typeof args.id !== 'string' || !args.id) throw new Error('Invalid saved-view id.');
@@ -179,7 +208,21 @@ export async function deleteView(db: SqlDriver, args: DeleteViewArgs, options: {
     const catalog = await readCatalog(db);
     const problem = await storageProblem(db, catalog);
     if (problem) throw new Error(problem);
-    const row = await writeRow(inTransaction(db), 'views', { id: args.id, deleted_at: true }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt });
-    return record(db, catalog, row);
+    const result = await commitWrite(inTransaction(db), 'views', { id: args.id, deleted_at: true }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt }, !!capture);
+    if (result.capture) capture?.(result.capture);
+    return record(db, catalog, result.row);
   });
+}
+
+/** Revalidate a saved-view inverse inside the same transaction as its write. */
+export async function validateViewUndo(db: SqlDriver, before: Row, patch: Row): Promise<void> {
+  const catalog = await readCatalog(db);
+  const problem = await storageProblem(db, catalog);
+  if (problem) throw new Error(problem);
+  if (patch.deleted_at === true) return;
+  const next = {...before, ...patch};
+  if (next.deleted_at != null) return;
+  if (typeof next.name !== 'string' || !next.name.trim() || typeof next.tbl !== 'string') throw new Error('Invalid saved view.');
+  const definition = typeof next.definition === 'string' ? JSON.parse(next.definition) : next.definition;
+  await definitionView(db, catalog, next.tbl, definition);
 }

@@ -12,6 +12,7 @@ export * from './contract.generated.ts';
 export * from './operations.ts';
 export * from './search.ts';
 export * from './saved-views.ts';
+export * from './sidebar-pins.ts';
 export * from './remote.ts';
 export * from './enrollment.ts';
 
@@ -20,3 +21,10 @@ export * from './governance.ts';
 
 export * from './governance-service.ts';
 export {isGovernanceCapability} from './governance-wire.ts';
+
+export * from './resolve-derived.ts';
+
+export * from './calendar-rows.ts';
+export * from './board-rows.ts';
+
+export {getViewDefault,setViewDefault} from './view-defaults.ts';

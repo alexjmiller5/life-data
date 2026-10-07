@@ -475,3 +475,14 @@ write grants are independent. A table scope grants no file access. The
 legacy `/v1/archive/<key>` read route uses the same file read grants;
 `full` and `admin` retain whole-archive access. Clients need only the hub
 URL and their scoped bearer token, never storage-provider credentials.
+
+### Synced sidebar table pins
+
+`life table provision sidebar-pins` installs the shared navigation table through
+normal logged schema and catalog writes. Run `life sync` to deliver it to enrolled
+replicas. Repeating provisioning verifies the existing table without modifying it;
+an unrelated same-name table is preserved and reported as a collision. No pin
+choices are seeded. The UI stores pin order as ordinary rows with history and
+soft deletion, so successfully synced pins recover on a fresh replica.
+`life table rename OLD NEW` retargets recognized pins and preserves their order.
+Concurrent offline reorderings use the usual row-level last-write-wins behavior.
