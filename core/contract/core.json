@@ -351,6 +351,12 @@
         },
         "id": {
           "type": "string"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

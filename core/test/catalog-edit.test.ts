@@ -21,7 +21,7 @@ test('property edit preserves identity, persists option descriptions, logs once 
  const db=await fixture();
  const args={table:'items',column:'name',expectedUpdatedAt:T0,fields:{type:'select',label:'Stage',options:[{v:'Draft',d:'Work in progress'},{v:'Ready',d:'Reviewed'}]}};
  const row=await edit.saveCatalogProperty(db,args);
- expect(row.id).toBe('items.name');expect(row.options).toEqual(args.fields.options);
+ expect(row.id).toBe('items.name');expect(row.updated_at).toBeString();expect(row.options).toEqual(args.fields.options);
  const log=await db.all('SELECT * FROM catalog_log');expect(log).toHaveLength(1);expect(log[0]).toMatchObject({tbl:'catalog_properties',row_id:'items.name',action:'set'});
  expect(JSON.parse(String(log[0].payload))).toMatchObject(args.fields);
  expect(await db.all('SELECT name FROM items')).toEqual([{name:'Existing'}]);
