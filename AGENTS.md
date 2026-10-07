@@ -25,6 +25,12 @@ civil-day bounds through the existing timezone/day-boundary contract. Date-only
 range ends are inclusive and timed range ends exclusive. Unknown Board select
 values remain visible after configured options, followed by the empty column.
 
+Per-table preferred-view IDs use the canonical `view-defaults/v1` manifest and
+`getViewDefault`/`setViewDefault` operations. Writes require the displayed revision
+and use normal validation/history/Undo; unavailable pointers fall back visibly
+without rewriting user views. Plain table navigation applies the preference;
+explicit destinations win. Provisioning is operator-owned, never implicit in reads.
+
 ## Layout
 
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.
