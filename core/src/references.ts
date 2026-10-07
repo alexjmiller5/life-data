@@ -8,8 +8,9 @@ import type {
 import type { SqlDriver } from "./driver.ts";
 import { readCatalog } from "./catalog.ts";
 import { syncStatus } from "./status.ts";
-import { qident } from "./validate.ts";
-import { displayName } from "./view.ts";
+import { getRelatedViewDefault } from "./view-defaults.ts";
+import { prepareSearch } from "./search.ts";
+import { displayName,compileReferenceView } from "./view.ts";
 
 function checkArgs(
   value: unknown,
@@ -76,7 +77,7 @@ export async function referencedBy(
 ): Promise<ReferencedByPage> {
   checkArgs(
     args,
-    ["table", "rowId", "sourceTable", "column", "limit", "offset"],
+    ["table", "rowId", "sourceTable", "column", "limit", "offset", "calendar", "expectedViewUpdatedAt"],
     ["table", "rowId", "sourceTable", "column"],
   );
   const limit = args.limit === undefined ? 20 : args.limit,
@@ -97,30 +98,19 @@ export async function referencedBy(
         entry.table === args.sourceTable && entry.column === args.column,
     );
     if (!source) throw Error("Reference source is not in the catalog");
-    const s = qident("_reference_source"),
-      t = qident("_reference_target"),
-      v = qident("_reference_value");
-    const col = `${s}.${qident(source.column)}`,
-      id = `${t}."id"`;
-    const array = `CASE WHEN json_valid(${col}) THEN CASE WHEN json_type(${col})='array' THEN ${col} END END`;
-    // Unary + removes RHS column affinity without converting its value.
-    // Keep the target column bare so its own affinity/collation controls identity.
-    const matches =
-      source.type === "ref"
-        ? `${id} IS +${col}`
-        : `EXISTS (SELECT 1 FROM json_each(${array}) AS ${v} WHERE ${id} IS +${v}."value")`;
-    const rows = await db.all(
-      `SELECT ${s}.* FROM ${qident(source.table)} AS ${s}
-   WHERE ${s}."deleted_at" IS NULL AND EXISTS (
-    SELECT 1 FROM ${qident(args.table)} AS ${t} WHERE ${id} IS ? AND ${matches}
-   ) ORDER BY ${s}."id" ASC LIMIT ? OFFSET ?`,
-      [args.rowId, limit + 1, offset],
-    );
+    // Preferences are read in this same transaction; table defaults do not affect links.
+    const preference=await getRelatedViewDefault({all:db.all.bind(db),run:db.run.bind(db),transaction:body=>body()}, {table:source.table});
+    if(args.expectedViewUpdatedAt!==undefined && args.expectedViewUpdatedAt!==preference.view?.updated_at)throw Error('The related-record view changed; refresh relationships before retrying.');
+    const view={...(preference.view?.view ?? {table:source.table}),columns:undefined,trash:false,limit:limit+1,offset,calendar:args.calendar};
+    const query=compileReferenceView(view,catalog.properties,{table:args.table,rowId:args.rowId,column:source.column,type:source.type});
+    if(view.search)await prepareSearch(db,catalog);
+    const rows=await db.all(query.sql,query.params);
     const display = catalog.tables.find(
       (table) => table.id === source.table,
     )?.display;
     return {
       source,
+      ...(preference.unavailable && !/provision/i.test(preference.unavailable)?{viewUnavailable:preference.unavailable}:{}),
       rows: rows.slice(0, limit).map((record) => ({
         record,
         label: displayName(

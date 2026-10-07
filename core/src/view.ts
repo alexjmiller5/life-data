@@ -28,6 +28,16 @@ export function compileView(view: View, properties: Property[]): { sql: string; 
   })};
 }
 
+type IncomingReference = {table:string; rowId:string; column:string; type:'ref'|'multi_ref'};
+/** The same view compiler with a catalog-checked incoming relation predicate. */
+export function compileReferenceView(view:View,properties:Property[],reference:IncomingReference) {
+  const result=compile(view,properties,true,101,reference);
+  return {sql:result.sql,params:result.parameters.map(p=>{
+    if(p.kind!=='literal')throw Error('Unbound calendar parameter');
+    return p.value;
+  })};
+}
+
 /** Same compiler, tagged at binding sites. The caller supplies explicit title/id
  * projection and validates the saved definition before count drops its ordering. */
 export function compileReadQuery(view: View, properties: Property[], kind: ReadPlanKind): {sql:string; parameters:ReadPlanParameter[]} {
@@ -51,7 +61,7 @@ export function validateCalendarContext(value: CalendarContext | undefined): Cal
   return value;
 }
 
-function compile(view: View, properties: Property[], requireCalendar: boolean | 'plan', maximum=200): { sql: string; parameters: ReadPlanParameter[] } {
+function compile(view: View, properties: Property[], requireCalendar: boolean | 'plan', maximum=200, reference?:IncomingReference): { sql: string; parameters: ReadPlanParameter[] } {
   checkObject(view, ["table", "columns", "filters", "sort", "limit", "offset", "trash", "search", "groups", "calendar"], "view");
   if (typeof view.table !== "string") throw new Error("Invalid table");
   const table = qident(view.table);
@@ -93,6 +103,12 @@ function compile(view: View, properties: Property[], requireCalendar: boolean | 
   if ((view.groups?.length ?? 0)>16 || (view.sort?.length ?? 0)>16) throw new Error('View exceeds group or sort limit');
   let filterCount=0;
   const where = [`${column("deleted_at")} IS ${view.trash ? "NOT " : ""}NULL`];
+  if(reference){
+    const target=qident('_reference_target'),value=qident('_reference_value'),col=column(reference.column),id=`${target}."id"`;
+    const array=`CASE WHEN json_valid(${col}) THEN CASE WHEN json_type(${col})='array' THEN ${col} END END`;
+    const matches=reference.type==='ref'?`${id} IS +${col}`:`EXISTS (SELECT 1 FROM json_each(${array}) AS ${value} WHERE ${id} IS +${value}."value")`;
+    where.push(`EXISTS (SELECT 1 FROM ${qident(reference.table)} AS ${target} WHERE ${id} IS ${bind(reference.rowId)} AND ${matches})`);
+  }
   const filterSQL = (filter: Filter): string => {
     if (++filterCount>128) throw new Error('View exceeds filter limit');
     checkObject(filter, ["column", "op", "value", "relative"], "filter");

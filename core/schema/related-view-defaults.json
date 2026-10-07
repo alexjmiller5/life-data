@@ -1,0 +1,32 @@
+{
+  "ddl": [
+    "CREATE TABLE \"related_view_defaults\" (\n    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),\n    \"tbl\" TEXT,\n    \"view_id\" TEXT,\n    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n    deleted_at TEXT,\n    hub_at TEXT\n)",
+    "CREATE TRIGGER \"related_view_defaults_updated_at\" AFTER UPDATE ON \"related_view_defaults\" FOR EACH ROW\nWHEN NEW.updated_at = OLD.updated_at\nBEGIN\n    UPDATE \"related_view_defaults\" SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid;\nEND"
+  ],
+  "table": {
+    "id": "related_view_defaults",
+    "kind": "table",
+    "display": "tbl"
+  },
+  "properties": [
+    {
+      "id": "related_view_defaults.tbl",
+      "tbl": "related_view_defaults",
+      "col": "tbl",
+      "type": "ref",
+      "required": 1,
+      "ref_table": "catalog_tables",
+      "sort": 10
+    },
+    {
+      "id": "related_view_defaults.view_id",
+      "tbl": "related_view_defaults",
+      "col": "view_id",
+      "type": "ref",
+      "ref_table": "views",
+      "sort": 20,
+      "source": "life-core",
+      "source_ref": "related-view-defaults/v1"
+    }
+  ]
+}

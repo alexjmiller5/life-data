@@ -1,5 +1,5 @@
 import {saveCatalogProperty,saveCatalogRule} from './catalog-edit.ts';
-import {getViewDefault,setViewDefault} from './view-defaults.ts';
+import {getViewDefault,setViewDefault,getRelatedViewDefault,setRelatedViewDefault} from './view-defaults.ts';
 import { boardRows } from './board-rows.ts';
 import { calendarRows } from './calendar-rows.ts';
 import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
@@ -76,6 +76,8 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     search: args => search(db, args),
     listViews: args => listViews(db, args),
     resolveViewDefinition: args => resolveViewDefinition(db, args),
+    getRelatedViewDefault: args => getRelatedViewDefault(db,args),
+    setRelatedViewDefault: args => writes.capturedMutation('related_view_defaults',args,(input,capture)=>setRelatedViewDefault(db,input,{origin},capture)),
     getViewDefault: args => getViewDefault(db,args),
     setViewDefault: args => writes.capturedMutation('view_defaults',args,(input,capture)=>setViewDefault(db,input,{origin},capture)),
     saveView: args => writes.capturedMutation('views', args, (input, capture) => saveView(db, input, { origin }, capture)),

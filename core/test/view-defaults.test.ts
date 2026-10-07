@@ -95,3 +95,26 @@ test('ordinary history and Undo preserve the prior default selection',async()=>{
  await handlers.undo({receiptId:action!.receiptId});
  expect((await handlers.getViewDefault({table:'items'})).view).toBeNull();
 });
+
+test('related-record preferences have independent storage, revision guards and Undo',async()=>{
+ const {db,view}=await fixture();
+ const handlers:any=core.createCoreHandlers(db,()=>{throw Error('No network allowed');});
+ expect(typeof handlers.getRelatedViewDefault).toBe('function');
+ const absent=await handlers.getRelatedViewDefault({table:'items'});
+ expect(absent.view).toBeNull();expect(absent.unavailable).toMatch(/provision/i);
+ const storage=await Bun.file(new URL('../schema/related-view-defaults.json',import.meta.url)).json();
+ for(const ddl of storage.ddl)await db.run(ddl);
+ await db.run('INSERT INTO catalog_tables(id,kind,display) VALUES (?,?,?)',[storage.table.id,storage.table.kind,storage.table.display]);
+ for(const p of storage.properties){const keys=Object.keys(p);await db.run(`INSERT INTO catalog_properties(${keys.join(',')}) VALUES (${keys.map(()=>'?')})`,Object.values(p));}
+ const ordinary=await handlers.setViewDefault({table:'items',viewId:view.id,expectedUpdatedAt:null});
+ const linked=await core.saveView(db,{table:'items',name:'Related',definition:{version:1,filters:[{column:'name',op:'ne',value:'Excluded'}]}});
+ const related=await handlers.setRelatedViewDefault({table:'items',viewId:linked.id,expectedUpdatedAt:null});
+ expect(related.view.id).toBe(linked.id);
+ expect(await handlers.getViewDefault({table:'items'})).toEqual(ordinary);
+ await expect(handlers.setRelatedViewDefault({table:'items',viewId:null,expectedUpdatedAt:null})).rejects.toThrow(/changed/i);
+ const action=(await handlers.undoStatus({})).action;
+ expect(action.table).toBe('related_view_defaults');
+ await handlers.undo({receiptId:action.receiptId});
+ expect((await handlers.getRelatedViewDefault({table:'items'})).view).toBeNull();
+ expect(await handlers.getViewDefault({table:'items'})).toEqual(ordinary);
+});
