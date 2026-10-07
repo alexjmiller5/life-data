@@ -21,7 +21,7 @@ import { readRejections } from './rejections.ts';
 import { prepareSearch, search } from './search.ts';
 import { readRemoteRows, readRemoteRow } from './remote.ts';
 import { resolveDerived } from './resolve-derived.ts';
-import { listViews, saveView, deleteView } from './saved-views.ts';
+import { listViews, saveView, deleteView, resolveViewDefinition } from './saved-views.ts';
 import { listSidebarPins, pinTable, unpinTable, moveTablePin } from './sidebar-pins.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
 
@@ -75,6 +75,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
     listViews: args => listViews(db, args),
+    resolveViewDefinition: args => resolveViewDefinition(db, args),
     getViewDefault: args => getViewDefault(db,args),
     setViewDefault: args => writes.capturedMutation('view_defaults',args,(input,capture)=>setViewDefault(db,input,{origin},capture)),
     saveView: args => writes.capturedMutation('views', args, (input, capture) => saveView(db, input, { origin }, capture)),
