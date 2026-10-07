@@ -467,7 +467,7 @@ async function ownRoute(request, url, env, tenant) {
   const may = (scopes) => scopes.some((s) => tenant.scopes.includes(s));
   const { pathname } = url, method = request.method;
   const deliveryTest = /^\/v1\/notifications\/test\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(pathname);
-  if (deliveryTest && (method === "POST" || method === "DELETE")) {
+  if (deliveryTest && ["GET", "POST", "DELETE"].includes(method)) {
     if (!may(["admin"])) return json({ error: "insufficient scope" }, 403);
     const id = `notification-test:${deliveryTest[1]}`;
     await ensureUsage(env.AUTH_DB);
@@ -478,6 +478,14 @@ async function ownRoute(request, url, env, tenant) {
       return json({id}, created ? 201 : 200);
     }
     await ensurePush(env.AUTH_DB);
+    if (method === "GET") {
+      const event = await env.AUTH_DB.prepare("SELECT id FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test'").bind(id).first();
+      if (!event) return json({error: "not found"}, 404);
+      const {results} = await env.AUTH_DB.prepare(`SELECT r.app_profile AS appProfile,d.outcome,d.attempts
+        FROM _push_deliveries d JOIN _push_registrations r ON r.installation_id=d.installation_id
+        WHERE d.event_id=? ORDER BY r.app_profile,r.installation_id`).bind(id).all();
+      return json({id, deliveries: results});
+    }
     await env.AUTH_DB.batch([
       env.AUTH_DB.prepare(`DELETE FROM _push_deliveries WHERE event_id IN
         (SELECT id FROM _notifications WHERE id=? AND producer='delivery-test' AND type='notification.test')`).bind(id),
