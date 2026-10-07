@@ -189,3 +189,7 @@ lookup or replica. `tests/fixtures/creation-boundary.json` is the shared
 cross-language conformance corpus; Worker tests also exercise Python against
 actual session/created/existing HTTP responses. Hosts still own connection
 identity, secure credentials, bounded transport and same-intent retry policy.
+
+## Singleton source identity
+
+Policies may opt into `occurrenceType: "none"` with `identity: {encoding: "prefix-source-v1", prefix: "<stable application prefix>"}`. UUIDv5 hashes the exact UTF-8 concatenation of the configured prefix and sourceId. The request MUST omit occurrenceKey entirely; null and sentinel values are rejected. This supports existing singleton application identities without renumbering. Recurring policies retain the original JSON-array encoding and unchanged revision hashes. The encoding and prefix participate in the singleton policy revision. Adopted targets remain authoritative and missing targets never fall back to generation.

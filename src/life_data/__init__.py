@@ -205,6 +205,7 @@ def create_table(
     names = {s["col"] for s in _parse_specs(columns)}
     if descriptions.keys() - names or any(not isinstance(v, str) for v in descriptions.values()):
         raise ValueError("descriptions must map declared columns to text")
+    init(path)
     if name not in catalog.ENGINE_TABLES:
         catalog.ensure_catalog(path)
 

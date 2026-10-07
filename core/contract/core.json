@@ -3325,7 +3325,6 @@
       "required": [
         "policy",
         "sourceId",
-        "occurrenceKey",
         "target",
         "updatedAt",
         "values"
