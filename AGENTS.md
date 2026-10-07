@@ -224,8 +224,13 @@ CLI.
   hardcode a path.
 - `life table create` injects sync columns (`id` hex PK, `created_at`,
   `updated_at` + trigger, `deleted_at`) and writes a `catalog_properties` row
-  per column from its typed `col:type[!][(a|b|c)]` syntax, so every table is
-  documented from birth. DDL through `life sql` is recorded verbatim in
+  per column from its typed `col:type[!][(a|b|c)]` syntax. Repeatable
+  `--description COLUMN=TEXT` supplies descriptions in the same transaction
+  as the table, trigger, catalog rows and DDL log. Explicit enforced table
+  invariants on `catalog_properties` check local setters, raw edits and hub
+  pushes; user-specific policies stay in runtime catalog rows. `life check`
+  supplies the full table as `changed` for an estate audit, while mutations
+  supply only actual changed identities. DDL through `life sql` is recorded verbatim in
   `_schema_log`; ordered replay is how schema syncs. Underscore-prefixed
   tables are plumbing - created by `init()`, never logged.
 - Timestamps: ISO 8601 UTC with milliseconds via SQLite

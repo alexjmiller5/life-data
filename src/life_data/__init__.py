@@ -190,7 +190,9 @@ def table_ddl(name: str, columns: list[str]) -> list[str]:
     return [ddl, _trigger_ddl(name)]
 
 
-def create_table(path: Path, name: str, columns: list[str]) -> None:
+def create_table(
+    path: Path, name: str, columns: list[str], *, descriptions: dict[str, str] | None = None
+) -> None:
     """Create a table plus a `catalog_properties` row per column.
 
     Each column is `col:type[!][(a|b|c)]`: `type` is a catalog type (mapped
@@ -199,14 +201,29 @@ def create_table(path: Path, name: str, columns: list[str]) -> None:
     options.
     """
     ddl, trigger = table_ddl(name, columns)
-    execute_sql(path, ddl)
-    execute_sql(path, trigger)
-    if name in catalog.ENGINE_TABLES:
-        return
-    _catalog_columns(path, name, columns)
+    descriptions = descriptions or {}
+    names = {s["col"] for s in _parse_specs(columns)}
+    if descriptions.keys() - names or any(not isinstance(v, str) for v in descriptions.values()):
+        raise ValueError("descriptions must map declared columns to text")
+    if name not in catalog.ENGINE_TABLES:
+        catalog.ensure_catalog(path)
+
+    def run(conn):
+        for statement in (ddl, trigger):
+            conn.execute(statement)
+            conn.execute("INSERT INTO _schema_log (ddl) VALUES (?)", (statement,))
+        if name not in catalog.ENGINE_TABLES:
+            for col, fields in _column_properties(columns):
+                if col in descriptions:
+                    fields["description"] = descriptions[col]
+                catalog._upsert_in(
+                    conn, "catalog_properties", f"{name}.{col}", {"tbl": name, "col": col, **fields}
+                )
+
+    catalog.write(path, run, ddl=True)
 
 
-def _catalog_columns(path: Path, name: str, columns: list[str]) -> None:
+def _column_properties(columns: list[str]):
     for i, s in enumerate(_parse_specs(columns)):
         t = s["type"].lower()
         storage = catalog.STORAGE.get(t, s["type"].upper())
@@ -216,7 +233,7 @@ def _catalog_columns(path: Path, name: str, columns: list[str]) -> None:
             fields["required"] = 1
         if s["opts"] is not None:
             fields["options"] = [{"v": o.strip()} for o in s["opts"].split("|") if o.strip()]
-        catalog.set_property(path, name, s["col"], **fields)
+        yield s["col"], fields
 
 
 def rename_table(path: Path, old: str, new: str) -> None:
@@ -483,7 +500,14 @@ def _ensure_purges(path: Path) -> None:
     if not has_trigger:
         execute_sql(path, trigger)
     if not cataloged:
-        _catalog_columns(path, PURGES, PURGE_COLUMNS)
+        descriptions = {
+            "tbl": "Table containing the row or column history to purge.",
+            "row_id": "Exact primary key of the affected row.",
+            "col": "Column whose history is purged; null means the entire row.",
+            "purged_at": "UTC cutoff: copies at or before this instant are purged.",
+        }
+        for col, fields in _column_properties(PURGE_COLUMNS):
+            catalog.set_property(path, PURGES, col, **fields, description=descriptions[col])
     if not documented:
         catalog.set_table(
             path,
@@ -1461,6 +1485,13 @@ def main(argv: list[str] | None = None) -> int:
     p_create = t_sub.add_parser("create", help="create a table with sync columns")
     p_create.add_argument("name")
     p_create.add_argument("columns", nargs="+", metavar="name:type")
+    p_create.add_argument(
+        "--description",
+        action="append",
+        default=[],
+        metavar="COLUMN=TEXT",
+        help="describe a column in the creation transaction (repeatable)",
+    )
     t_rename = t_sub.add_parser(
         "rename", help="rename a table and every catalog/provenance/history reference to it"
     )
@@ -1658,7 +1689,13 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
             print(json.dumps(hub.token_list(), indent=2))
     elif args.command == "table":
         if args.table_command == "create":
-            create_table(path, args.name, args.columns)
+            descriptions = {}
+            for entry in args.description:
+                col, separator, description = entry.partition("=")
+                if not separator or col in descriptions:
+                    raise ValueError("each description must be a distinct COLUMN=TEXT")
+                descriptions[col] = description
+            create_table(path, args.name, args.columns, descriptions=descriptions)
             print(f"created table {args.name}")
         elif args.table_command == "rename":
             rename_table(path, args.old, args.new)

@@ -340,45 +340,46 @@ def cataloged_tables(conn: sqlite3.Connection) -> list[str]:
 
 def _upsert(path: Path, table: str, row_id: str, fields: dict) -> dict:
     """Upsert one catalog row and log it. JSON-encodes list/dict fields."""
-    pkg = _pkg()
     ensure_catalog(path)
+    return write(path, lambda conn: _upsert_in(conn, table, row_id, fields))
+
+
+def _upsert_in(conn, table: str, row_id: str, fields: dict) -> dict:
+    """Catalog mutation inside its caller's checked transaction."""
     enc = {k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in fields.items()}
-    with pkg.connect(path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        pkg.changes.track(conn)
-        existing = conn.execute(f"SELECT 1 FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
-        if existing:
-            sets = ", ".join([*(f"{qi(k)} = ?" for k in enc), "deleted_at = NULL"])
-            conn.execute(
-                f"UPDATE {qi(table)} SET {sets} WHERE id = ?",
-                [*enc.values(), row_id],
-            )
-        else:
-            if table == "catalog_properties":
-                enc.setdefault("type", "text")  # a bare `--immutable 1` still yields a typed column
-            cols = ["id", *enc]
-            conn.execute(
-                f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "
-                f"VALUES ({', '.join('?' for _ in cols)})",
-                [row_id, *enc.values()],
-            )
+    existing = conn.execute(f"SELECT 1 FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
+    if existing:
+        sets = ", ".join([*(f"{qi(k)} = ?" for k in enc), "deleted_at = NULL"])
         conn.execute(
-            "INSERT INTO catalog_log (tbl, row_id, action, payload) VALUES (?, ?, 'set', ?)",
-            (table, row_id, json.dumps(fields, sort_keys=True)),
+            f"UPDATE {qi(table)} SET {sets} WHERE id = ?",
+            [*enc.values(), row_id],
         )
-        row = conn.execute(f"SELECT * FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
+    else:
+        if table == "catalog_properties":
+            enc.setdefault("type", "text")  # a bare `--immutable 1` still yields a typed column
+        cols = ["id", *enc]
+        conn.execute(
+            f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)})",
+            [row_id, *enc.values()],
+        )
+    conn.execute(
+        "INSERT INTO catalog_log (tbl, row_id, action, payload) VALUES (?, ?, 'set', ?)",
+        (table, row_id, json.dumps(fields, sort_keys=True)),
+    )
+    row = conn.execute(f"SELECT * FROM {qi(table)} WHERE id = ?", (row_id,)).fetchone()
     return _parse(dict(row))
 
 
 def _soft_delete(path: Path, table: str, row_id: str) -> None:
-    with _pkg().connect(path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _pkg().changes.track(conn)
+    def run(conn):
         conn.execute(f"UPDATE {qi(table)} SET deleted_at = updated_at WHERE id = ?", (row_id,))
         conn.execute(
             "INSERT INTO catalog_log (tbl, row_id, action, payload) VALUES (?, ?, 'rm', NULL)",
             (table, row_id),
         )
+
+    write(path, run)
 
 
 def set_property(path: Path, tbl: str, col: str, **fields) -> dict:
@@ -690,7 +691,9 @@ def _validated_tables(conn: sqlite3.Connection) -> list[str]:
             and _table_exists(conn, r["tbl"])
             and _has_sync_cols(conn, r["tbl"])
         }
-    return sorted(named - ENGINE_TABLES)
+    # Catalog properties are editable definitions, so explicit table invariants
+    # must cover their changes too. Other engine-managed rows stay excluded.
+    return sorted(named - (ENGINE_TABLES - {"catalog_properties"}))
 
 
 def write(path: Path, fn, *, ddl: bool = False):
@@ -974,8 +977,9 @@ def _with_context(conn, sql, changed_ids, now, tbl):
         ids = list(changed_ids or [])
         ph = ", ".join("?" for _ in ids) or "NULL"
         conn.execute("DROP TABLE IF EXISTS temp.changed")
+        predicate = "" if changed_ids is None else f" WHERE id IN ({ph})"
         conn.execute(
-            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM main.{qi(tbl)} WHERE id IN ({ph})",
+            f"CREATE TEMP TABLE temp.changed AS SELECT * FROM main.{qi(tbl)}{predicate}",
             ids,
         )
         conn.execute("DROP TABLE IF EXISTS temp.before")
@@ -1143,7 +1147,7 @@ def check(path: Path, as_of: str | None = None) -> list[dict]:
                 )
         for rule in rules(conn, kind="invariant"):
             try:
-                hits = run_invariant(conn, rule, changed_ids=[], now=as_of)
+                hits = run_invariant(conn, rule, changed_ids=None, now=as_of)
             except (sqlite3.Error, ValueError, TypeError) as e:
                 out.append(
                     Violation(
