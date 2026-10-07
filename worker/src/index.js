@@ -9,6 +9,9 @@
 import { pushChecked, queryBudget } from "./write.js";
 import {pushConfiguration,pushCapability,pushRegistrationRoute,handlePushRegistration} from './apple-push.js';
 import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
+import {captureGateway,captureCapability} from './capture-gateway.js';
+import {rowsQuery} from './rows-query.js';
+import {consumerConfig, catalogProjection} from './consumer-config.js';
 import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
@@ -18,6 +21,8 @@ import { governanceOperation, governanceFailure } from './governance-protocol.js
 import { ensureEvidenceStorage } from './governance-evidence.js';
 import {assertGenericBody,assertGenericDDL,assertGenericState} from './governance-isolation.js';
 import {handleGovernance} from './governance.js';
+import {handleChangesetGovernance,canChangeset,changesetGovernanceLimits} from './changeset-governance.js';
+import {ensureChangesetStorage} from './changeset-store.js';
 import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
 import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders } from "./files.js";
@@ -215,6 +220,7 @@ async function ensureReady(db) {
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
   await ensureEvidenceStorage(db);
   await ensureProposalStorage(db);
+  await ensureChangesetStorage(db);
 }
 
 // Does the HUB's own schema have hub_at? Never ask the pushed column list:
@@ -529,6 +535,8 @@ const json = (obj, status = 200) =>
 async function handleSession(request, tenant, env) {
   if (request.method === "GET") {
     const capabilities=sessionCapabilities(tenant.scopes);
+    const captures=captureCapability(env,tenant.scopes);
+    if(captures)capabilities.captures=captures;
     const profiles=!tenant.admin && pushConfiguration(env)?.profiles;
     if(profiles)capabilities.push_profiles=profiles.map(({id,platform})=>({id,platform}));
     const push=await pushCapability(env,tenant);
@@ -539,6 +547,11 @@ async function handleSession(request, tenant, env) {
       capabilities.governance={protocol:'selected-inverse-proposals-v1',principal:tenant.governance.actor,
         deploymentId:env.GOVERNANCE_DEPLOYMENT_ID,sessionId:tenant.governance.actor.principalId,
         authority:{propose:tenant.governance.propose,approve:tenant.governance.approve},limits:governanceLimits};
+    }
+    if(governanceConfiguration(env) && canChangeset(tenant)){
+      capabilities.changesets={protocol:'bounded-changeset-proposals-v1',principal:tenant.governance.actor,
+        deploymentId:env.GOVERNANCE_DEPLOYMENT_ID,sessionId:tenant.governance.actor.principalId,
+        authority:{propose:tenant.governance.propose,approve:!!canChangeset(tenant,true)},limits:changesetGovernanceLimits};
     }
     const response = json({ name: tenant.name, scopes: tenant.scopes, capabilities,
       ...(tenant.enrollmentProfile ? {enrollmentProfile:tenant.enrollmentProfile} : {}) });
@@ -838,8 +851,9 @@ async function handle(request, env, ctx, url) {
   const governance=governanceOperation(request);
   if (governance) {
     if (!tenant) return governanceFailure(governance,401,'permission_denied');
-    if (!tenant.governance || (governance.name==='approveProposal' ? !tenant.governance.approve : governance.read ? !tenant.governance.propose&&!tenant.governance.approve : !tenant.governance.propose))
+    if (!tenant.governance || (governance.name==='approveProposal'||governance.approve ? !tenant.governance.approve : governance.read ? !tenant.governance.propose&&!tenant.governance.approve : !tenant.governance.propose))
       return governanceFailure(governance,governance.read?200:403,'permission_denied');
+    if(governance.changeset)return handleChangesetGovernance(request,tenant,env,governance);
     return handleGovernance(request,tenant,env,governance);
   }
   if (!tenant) {
@@ -847,6 +861,10 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
+  if (url.pathname.startsWith('/v1/captures/')) return captureGateway(request,tenant,env);
+  if (url.pathname === '/v1/rows/query') return rowsQuery(request,tenant,env);
+  if (url.pathname === '/v1/consumer/config') return consumerConfig(request,tenant,env);
+  if (url.pathname === '/v1/catalog/projection') return catalogProjection(request,tenant);
   if (url.pathname === "/v1/rows/create") return handleCreation(request,tenant,env);
   if (url.pathname === "/v1/subscriptions" || url.pathname.startsWith("/v1/subscriptions/")) return handleSubscription(request,tenant);
   if (["/v1/schema/pull", "/v1/schema/push"].includes(url.pathname) && !hasSchemaAccess(tenant.scopes)) {

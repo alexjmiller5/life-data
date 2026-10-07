@@ -10,9 +10,17 @@
     "./schema/view-defaults.json": "./schema/view-defaults.json",
     "./schema/sidebar-pins.json": "./schema/sidebar-pins.json",
     "./enrollment": "./src/enrollment.ts",
-    "./creation": "./src/creation.ts"
+    "./creation": "./src/creation.ts",
+    "./consumer-config": "./src/consumer-config.ts",
+    "./query": "./src/query.ts",
+    "./capture": "./src/capture.ts"
   },
-  "files": ["src", "schema", "contract", "generated"],
+  "files": [
+    "src",
+    "schema",
+    "contract",
+    "generated"
+  ],
   "scripts": {
     "test": "bun test",
     "check": "bun ../scripts/generate-core-contract.ts --check && tsc --noEmit"

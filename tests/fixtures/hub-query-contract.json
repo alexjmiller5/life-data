@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "capability": {
+    "row_query": "bounded-v1"
+  },
+  "request": {
+    "table": "items",
+    "columns": [
+      "id",
+      "title"
+    ],
+    "filter": {
+      "column": "deleted_at",
+      "op": "is_null",
+      "value": true
+    },
+    "order": [
+      {
+        "column": "released",
+        "direction": "desc"
+      }
+    ],
+    "limit": 50
+  },
+  "reply": {
+    "rows": [
+      {
+        "id": "item-1",
+        "title": "Example item"
+      }
+    ],
+    "next_cursor": null
+  },
+  "limits": {
+    "defaultPage": 50,
+    "maxPage": 200,
+    "maxLeaves": 64,
+    "maxDepth": 4,
+    "maxIn": 200,
+    "maxOrder": 3
+  }
+}

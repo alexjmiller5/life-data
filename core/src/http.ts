@@ -1,3 +1,4 @@
+import {changesetRoutes} from './changeset-client.ts';
 import {governanceOperations} from './governance-wire.ts';
 import type {JSONValue} from './contract.generated.ts';
 import type { ServiceHub } from "./services.ts";
@@ -55,10 +56,7 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
     const date = response.headers.get("Date");
     return { data, ...(date ? { date } : {}) };
   }
-  return {
-    endpoint: base,
-    async governancePost(route,body) {
-      if(!Object.values(governanceOperations).some(op=>op.route===route))throw new Error('invalid governance route');
+  async function governanceRequest(route:string,body:unknown){
       const response=await send('POST',route,JSON.stringify(body));
       const contentType=response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase();
       if(contentType!=='application/json')throw new Error('invalid governance response');
@@ -66,6 +64,16 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
       const retry=response.headers.get('Retry-After');
       const seconds=retry!==null && /^[0-9]+$/.test(retry)?Number(retry):undefined;
       return {status:response.status,data,...(seconds!==undefined && Number.isSafeInteger(seconds)?{retryAfterSeconds:seconds}:{})};
+  }
+  return {
+    endpoint: base,
+    async changesetPost(route,body){
+      if(!Object.values(changesetRoutes).includes(route))throw new Error('invalid changeset route');
+      return governanceRequest(route,body);
+    },
+    async governancePost(route,body) {
+      if(!Object.values(governanceOperations).some(op=>op.route===route))throw new Error('invalid governance route');
+      return governanceRequest(route,body);
     },
     async get(route) {
       // Only client-generated service URIs. No arbitrary queries or values can
