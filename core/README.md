@@ -16,8 +16,8 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   together. Pass `expectedUpdatedAt` in write options from the opened record
   to reject stale edits. Components must not write raw SQL. `isReadOnlyTable`
   recognizes built-in system tables and catalog entries with `kind: system`.
-- Each `createCoreHandlers` instance holds one volatile undo receipt for its
-  last successful record `write`. `undoStatus({})` returns `{ action: null }`
+- Each `createCoreHandlers` instance holds up to 100 volatile undo receipts for
+  successful human record writes, row actions and saved-view changes. `undoStatus({})` returns `{ action: null }`
   or an action with `receiptId`, `table`, `rowId`, and `kind` (create, edit,
   trash, restore). `undo({ receiptId })` returns the row from a fresh validated
   inverse write: create becomes trash, edit restores changed fields, trash
@@ -26,9 +26,11 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   Capture occurs inside the existing writer transaction; publication follows
   COMMIT. Undo requires the captured revision, table shape and stored values
   (ignoring `hub_at` bookkeeping), and rechecks every normal writer guard.
-  Failure retains the receipt. Success consumes it, with no redo. New successful
-  record writes replace it; timestamp-only writes and successful saved-view
-  mutations clear it. Direct `writeRow` callers do not acquire a UI session.
+  Failure retains the receipt. Success exposes the previous action, with no redo.
+  Only the newest handle is accepted. Earlier same-row receipts advance to the
+  inverse revision only with an exact preimage match; external changes conflict.
+  Timestamp-only writes preserve undo. Saved-view restoration revalidates its
+  definition against the current catalog. Direct `writeRow` callers do not acquire a UI session.
   Closing/replacing a workspace must discard its handler instance; reopening
   starts empty even when history survives. No undo data is stored or synced.
   The session queues writes, undo, saved-view mutations and undoStatus through

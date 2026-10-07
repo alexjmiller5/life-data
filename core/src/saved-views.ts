@@ -3,7 +3,7 @@ import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { compileView, validateView } from './view.ts';
-import { writeRow } from './write.ts';
+import { commitWrite, type WriteCapture } from './write.ts';
 import { validateRowActions } from './row-actions.ts';
 import storage from '../schema/saved-views.json';
 
@@ -152,7 +152,7 @@ function inTransaction(db: SqlDriver): SqlDriver {
   return { all: db.all.bind(db), run: db.run.bind(db), transaction: body => body() };
 }
 
-export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { origin?: string } = {}): Promise<SavedViewRecord> {
+export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { origin?: string } = {}, capture?: (value: WriteCapture) => void): Promise<SavedViewRecord> {
   args = snapshot(args); options = snapshot(options);
   object(args, ['table', 'name', 'definition', 'id', 'expectedUpdatedAt']);
   if (typeof args.table !== 'string' || typeof args.name !== 'string' || !args.name.trim()) throw new Error('Invalid saved-view name or table.');
@@ -162,15 +162,16 @@ export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { ori
     const problem = await storageProblem(db, catalog);
     if (problem) throw new Error(problem);
     await definitionView(db, catalog, args.table, args.definition);
-    const row = await writeRow(inTransaction(db), 'views', {
+    const result = await commitWrite(inTransaction(db), 'views', {
       ...(args.id === undefined ? {} : { id: args.id }), name: args.name, tbl: args.table, definition: args.definition,
-    }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt });
-    return record(db, catalog, row);
+    }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt }, !!capture);
+    if (result.capture) capture?.(result.capture);
+    return record(db, catalog, result.row);
   });
 }
 
 /** Tombstone through writeRow without requiring a readable definition. */
-export async function deleteView(db: SqlDriver, args: DeleteViewArgs, options: { origin?: string } = {}): Promise<SavedViewRecord> {
+export async function deleteView(db: SqlDriver, args: DeleteViewArgs, options: { origin?: string } = {}, capture?: (value: WriteCapture) => void): Promise<SavedViewRecord> {
   args = snapshot(args); options = snapshot(options);
   object(args, ['id', 'expectedUpdatedAt']);
   if (typeof args.id !== 'string' || !args.id) throw new Error('Invalid saved-view id.');
@@ -179,7 +180,21 @@ export async function deleteView(db: SqlDriver, args: DeleteViewArgs, options: {
     const catalog = await readCatalog(db);
     const problem = await storageProblem(db, catalog);
     if (problem) throw new Error(problem);
-    const row = await writeRow(inTransaction(db), 'views', { id: args.id, deleted_at: true }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt });
-    return record(db, catalog, row);
+    const result = await commitWrite(inTransaction(db), 'views', { id: args.id, deleted_at: true }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt }, !!capture);
+    if (result.capture) capture?.(result.capture);
+    return record(db, catalog, result.row);
   });
+}
+
+/** Revalidate a saved-view inverse inside the same transaction as its write. */
+export async function validateViewUndo(db: SqlDriver, before: Row, patch: Row): Promise<void> {
+  const catalog = await readCatalog(db);
+  const problem = await storageProblem(db, catalog);
+  if (problem) throw new Error(problem);
+  if (patch.deleted_at === true) return;
+  const next = {...before, ...patch};
+  if (next.deleted_at != null) return;
+  if (typeof next.name !== 'string' || !next.name.trim() || typeof next.tbl !== 'string') throw new Error('Invalid saved view.');
+  const definition = typeof next.definition === 'string' ? JSON.parse(next.definition) : next.definition;
+  await definitionView(db, catalog, next.tbl, definition);
 }

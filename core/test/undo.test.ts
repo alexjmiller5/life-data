@@ -99,7 +99,7 @@ test.each([false, true])('restore undo uses a fresh tombstone and reverses combi
   expect(undone.deleted_at).not.toBe(T0);
 });
 
-test('autosaves are separate actions and replaced handles cannot undo a later save', async () => {
+test('autosaves form an ordered undo stack and earlier handles cannot skip a save', async () => {
   const { db, h } = await local();
   const first = await edit(h, { name: 'First save' });
   const previous = await action(h);
@@ -111,16 +111,19 @@ test('autosaves are separate actions and replaced handles cannot undo a later sa
   expect(await state(db)).toEqual(before);
   expect(await action(h)).toEqual(current);
   expect((await h.undo({ receiptId: current.receiptId })).name).toBe('First save');
+  expect(await action(h)).toEqual(previous);
+  expect((await h.undo({ receiptId: previous.receiptId })).name).toBe('Before');
   expect(await h.undoStatus({})).toEqual({ action: null });
 });
 
-test('timestamp-only writes clear the slot even after SQLite affinity normalizes input', async () => {
+test('timestamp-only writes retain human undo after SQLite affinity normalizes input', async () => {
   const { h } = await local();
   const saved = await edit(h);
-  await action(h);
+  const previous = await action(h);
   const same = await edit(h, { name: 'After', qty: '04' });
   expect(String(same.updated_at) > String(saved.updated_at)).toBe(true);
-  expect(await h.undoStatus({})).toEqual({ action: null });
+  expect(await action(h)).toEqual(previous);
+  expect((await h.undo({receiptId: previous.receiptId})).name).toBe('Before');
 });
 
 test('failed writes retain the previous receipt and leave database state unchanged', async () => {
@@ -235,21 +238,26 @@ async function provisionViews(db: TestSql) {
   }
 }
 
-test('only successful saved-view mutations clear the record undo slot', async () => {
-  const { db, h } = await local();
-  await provisionViews(db);
-  await edit(h);
-  const receipt = await action(h);
-  await expect(h.saveView({ table: 'items', name: '', definition: { version: 1 } })).rejects.toThrow();
-  expect(await action(h)).toEqual(receipt);
-  const view = await h.saveView({ table: 'items', name: 'Example', definition: { version: 1 } });
-  expect(await h.undoStatus({})).toEqual({ action: null });
-  await edit(h, { name: 'Another' });
-  const next = await action(h);
-  await expect(h.deleteView({ id: view.id, expectedUpdatedAt: T0 })).rejects.toThrow();
-  expect(await action(h)).toEqual(next);
-  await h.deleteView({ id: view.id, expectedUpdatedAt: view.updated_at! });
-  expect(await h.undoStatus({})).toEqual({ action: null });
+test('saved views join the same undo stack and failed mutations leave it intact', async () => {
+  const {db,h}=await local(); await provisionViews(db); await edit(h);
+  const recordUndo=await action(h);
+  await expect(h.saveView({table:'items',name:'',definition:{version:1}})).rejects.toThrow();
+  expect(await action(h)).toEqual(recordUndo);
+  const view=await h.saveView({table:'items',name:'Example',definition:{version:1}});
+  const created=await action(h); expect(created.table).toBe('views');
+  const updated=await h.saveView({table:'items',id:view.id,expectedUpdatedAt:view.updated_at!,name:'Renamed',definition:{version:1}});
+  const renamed=await action(h);
+  await expect(h.deleteView({id:view.id,expectedUpdatedAt:T0})).rejects.toThrow();
+  expect(await action(h)).toEqual(renamed);
+  await h.deleteView({id:view.id,expectedUpdatedAt:updated.updated_at!});
+  await h.undo({receiptId:(await action(h)).receiptId});
+  expect((await h.listViews({table:'items'})).views[0]!.name).toBe('Renamed');
+  await h.undo({receiptId:renamed.receiptId});
+  expect((await h.listViews({table:'items'})).views[0]!.name).toBe('Example');
+  await h.undo({receiptId:created.receiptId});
+  expect((await h.listViews({table:'items'})).views).toEqual([]);
+  expect(await action(h)).toEqual(recordUndo);
+  expect((await h.undo({receiptId:recordUndo.receiptId})).name).toBe('Before');
 });
 
 function gate() {
@@ -476,4 +484,77 @@ test('invalid receipt getters are never invoked and cannot alter the stored acti
   await rejects(h.undo({ get receiptId() { reads++; return receipt.receiptId; } }), 'input');
   expect(reads).toBe(0);
   expect(await action(h)).toEqual(receipt);
+});
+
+
+test('repeated undo traverses interleaved rows without losing earlier edits', async () => {
+  const { h } = await local();
+  await edit(h, {name:'First'});
+  const first=await action(h);
+  const created=await h.write({table:'items',patch:{name:'Second row',qty:2}});
+  const creation=await action(h);
+  await edit(h, {name:'Last'});
+  await h.undo({receiptId:(await action(h)).receiptId});
+  expect(await action(h)).toEqual(creation);
+  expect((await h.undo({receiptId:creation.receiptId})).deleted_at).not.toBeNull();
+  expect(await action(h)).toEqual(first);
+  expect((await h.undo({receiptId:first.receiptId})).name).toBe('Before');
+  expect(await h.undoStatus({})).toEqual({action:null});
+});
+
+test('undo create-edit-trash-restore keeps every human action reversible', async () => {
+  const { h } = await local();
+  const created=await h.write({table:'items',patch:{name:'New',qty:2}});
+  const ids=[];
+  ids.push((await action(h)).receiptId);
+  for(const patch of [{name:'Edited'},{deleted_at:true},{deleted_at:null}]) {
+    await h.write({table:'items',patch:{id:created.id,...patch}});
+    ids.push((await action(h)).receiptId);
+  }
+  const restored=await h.undo({receiptId:ids.pop()!});
+  expect(restored.deleted_at).not.toBeNull();
+  const trashed=await h.undo({receiptId:ids.pop()!});
+  expect(trashed).toMatchObject({name:'Edited',deleted_at:null});
+  expect((await h.undo({receiptId:ids.pop()!})).name).toBe('New');
+  expect((await h.undo({receiptId:ids.pop()!})).deleted_at).not.toBeNull();
+});
+
+test('older undo cannot adopt an external edit hidden between two local edits', async () => {
+  const {db,h}=await local();
+  await edit(h,{name:'First'});
+  const first=await action(h);
+  await core.writeRow(db,'items',{id:'a',qty:88});
+  await edit(h,{name:'Second'});
+  await h.undo({receiptId:(await action(h)).receiptId});
+  const before=await state(db);
+  await rejects(h.undo({receiptId:first.receiptId}),'conflict');
+  expect(await state(db)).toEqual(before);
+});
+
+test('failed saved-view COMMIT publishes no receipt and preserves preceding undo', async () => {
+  const {db,h}=await local(); await provisionViews(db); await edit(h);
+  const previous=await action(h), transaction=db.transaction.bind(db);
+  db.transaction=body=>transaction(async()=>{await body();throw new Error('COMMIT failed');});
+  await expect(h.saveView({table:'items',name:'Never committed',definition:{version:1}})).rejects.toThrow();
+  db.transaction=transaction;
+  expect(await action(h)).toEqual(previous);
+  expect((await h.listViews({table:'items'})).views).toEqual([]);
+});
+
+test('bounded undo stack retains the newest hundred human changes', async () => {
+  const {h}=await local();
+  for(let i=0;i<103;i++) await edit(h,{name:`Edit ${i}`});
+  for(let i=102;i>=3;i--) expect((await h.undo({receiptId:(await action(h)).receiptId})).name).toBe(`Edit ${i-1}`);
+  expect(await h.undoStatus({})).toEqual({action:null});
+});
+
+test('saved-view undo rejects a now-invalid definition without consuming the action', async () => {
+  const {db,h}=await local(); await provisionViews(db);
+  const view=await h.saveView({table:'items',name:'Filtered',definition:{version:1,filters:[{column:'qty',op:'eq',value:3}]}});
+  await h.deleteView({id:view.id,expectedUpdatedAt:view.updated_at!});
+  const previous=await action(h);
+  await db.run("DELETE FROM catalog_properties WHERE col='qty'");
+  await expect(h.undo({receiptId:previous.receiptId})).rejects.toThrow();
+  expect(await action(h)).toEqual(previous);
+  expect((await db.all('SELECT deleted_at FROM views WHERE id=?',[view.id]))[0]!.deleted_at).not.toBeNull();
 });

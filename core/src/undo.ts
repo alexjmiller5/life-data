@@ -3,6 +3,7 @@ import type { SqlDriver } from './driver.ts';
 import { commitWrite, ValidationError, type WriteCapture } from './write.ts';
 import type { Row } from './validate.ts';
 import { resolveRowAction } from './row-actions.ts';
+import { validateViewUndo } from './saved-views.ts';
 
 const managed = new Set(['id', 'created_at', 'updated_at', 'hub_at', 'deleted_at']);
 type Receipt = { action: UndoAction; inverse: Row; capture: WriteCapture };
@@ -42,17 +43,37 @@ function receipt(table: string, capture: WriteCapture): Receipt | null {
       kind = before.deleted_at == null ? 'trash' : 'restore';
     }
     // Repeated trash and same-value writes change timestamps only. Do not
-    // offer to restore an old timestamp or reach behind this successful write.
+    // offer a timestamp-only action; the stack advances its matching baseline.
     if (Object.keys(inverse).length === 1) return null;
   }
   return { action: { receiptId: capture.receiptId, table, rowId: String(after.id), kind }, inverse, capture };
 }
 
-/** Private to createCoreHandlers. A new instance owns an empty volatile slot.
+/** Private to createCoreHandlers. A new instance owns an empty volatile undo stack.
  * Hosts still serialize all database use; this queue additionally orders direct
  * session mutations and status reads through COMMIT and receipt publication. */
 export function createWriteSession(db: SqlDriver, origin: string) {
-  let current: Receipt | null = null;
+  const history: Receipt[] = [];
+  // A local inverse creates a new revision. Advance only the nearest earlier
+  // receipt for this row when its complete expected state is the state just
+  // restored. Never adopt an intervening external edit or a value cycle.
+  function advance(table: string, before: Row | null, after: Row) {
+    if (!before) return;
+    const previous = [...history].reverse().find(r => r.action.table === table && r.action.rowId === after.id);
+    if (!previous) return;
+    const expected = previous.capture.after;
+    if (Object.keys(expected).length === Object.keys(before).length
+      && Object.keys(expected).every(c => c === 'hub_at' || expected[c] === before[c])) {
+      previous.capture.after = { ...after };
+    }
+  }
+  function publish(table: string, capture: WriteCapture) {
+    const next = receipt(table, capture);
+    if (next) {
+      history.push(next);
+      if (history.length > 100) history.shift();
+    } else advance(table, capture.before, capture.after);
+  }
   let tail = Promise.resolve();
   function queued<T>(body: () => Promise<T>): Promise<T> {
     const result = tail.then(body);
@@ -63,7 +84,7 @@ export function createWriteSession(db: SqlDriver, origin: string) {
     const args = snapshot(input);
     return queued(async () => {
       const result = await commitWrite(db, args.table, args.patch, { origin, expectedUpdatedAt: args.expectedUpdatedAt }, true);
-      current = receipt(args.table, result.capture!);
+      publish(args.table, result.capture!);
       return result.row;
     });
   };
@@ -72,12 +93,20 @@ export function createWriteSession(db: SqlDriver, origin: string) {
     if (!args || typeof args.receiptId !== 'string' || !/^[a-f0-9]{32}$/.test(args.receiptId)
       || Object.keys(args).length !== 1) throw invalid();
     return queued(async () => {
+      const current = history.at(-1);
       if (!current || current.action.receiptId !== args.receiptId) {
         throw new ValidationError([{ tbl: '', row_id: null, col: '', rule: 'conflict', message: 'This saved change is no longer available to undo.' }]);
       }
-      const result = await commitWrite(db, current.action.table, current.inverse,
+      const perform = async (tx: SqlDriver) => commitWrite(tx, current.action.table, current.inverse,
         { origin, expectedUpdatedAt: String(current.capture.after.updated_at) }, false, current.capture);
-      current = null;
+      const result = current.action.table !== 'views' ? await perform(db) : await db.transaction(async () => {
+        await validateViewUndo(db, current.capture.after, current.inverse);
+        const tx: SqlDriver = {all:db.all.bind(db),run:db.run.bind(db),transaction:body=>body(),
+          ...(db.readDependencies ? {readDependencies:db.readDependencies.bind(db)} : {})};
+        return perform(tx);
+      });
+      history.pop();
+      advance(current.action.table, current.capture.before, result.row);
       return result.row;
     });
   };
@@ -91,18 +120,19 @@ export function createWriteSession(db: SqlDriver, origin: string) {
         const result=await commitWrite(tx,write.table,write.patch,{origin,expectedUpdatedAt:write.expectedUpdatedAt},true);
         return {table:write.table,result};
       });
-      current=receipt(committed.table,committed.result.capture!);
+      publish(committed.table,committed.result.capture!);
       return committed.result.row;
     });
   };
-  const undoStatus: CoreHandlers['undoStatus'] = () => queued(async () => ({ action: current ? { ...current.action } : null }));
-  async function otherMutation<A, T>(input: A, operation: (args: A) => Promise<T>): Promise<T> {
+  const undoStatus: CoreHandlers['undoStatus'] = () => queued(async () => ({ action: history.length ? { ...history.at(-1)!.action } : null }));
+  async function viewMutation<A, T>(input: A, operation: (args: A, capture: (value: WriteCapture) => void) => Promise<T>): Promise<T> {
     const args = snapshot(input);
     return queued(async () => {
-      const result = await operation(args);
-      current = null;
+      let capture: WriteCapture | undefined;
+      const result = await operation(args, value => { capture = value; });
+      if (capture) publish('views', capture);
       return result;
     });
   }
-  return { write, runRowAction, undo, undoStatus, otherMutation };
+  return { write, runRowAction, undo, undoStatus, viewMutation };
 }
