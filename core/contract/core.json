@@ -353,9 +353,13 @@
           "type": "string"
         },
         "updated_at": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },

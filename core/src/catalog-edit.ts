@@ -60,7 +60,7 @@ function property(value:Row):void {
   if(!Array.isArray(value.options)||value.options.length>1000)throw Error('Options must be a bounded list.');
   const names=new Set<string>();
   for(const option of value.options){
-   if(!option||typeof option!=='object'||Array.isArray(option)||Object.keys(option).some(k=>!['v','d'].includes(k))||typeof option.v!=='string'||!option.v||option.d!=null&&typeof option.d!=='string'||names.has(option.v))throw Error('Options need distinct values and optional text descriptions.');
+   if(!option||typeof option!=='object'||Array.isArray(option)||Object.keys(option).some(k=>!['v','d','sort'].includes(k))||typeof option.v!=='string'||!option.v||option.d!=null&&typeof option.d!=='string'||option.sort!=null&&(typeof option.sort!=='number'||!Number.isFinite(option.sort))||names.has(option.v))throw Error('Options need distinct values and optional text descriptions.');
    names.add(option.v);
   }
  }
