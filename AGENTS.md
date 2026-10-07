@@ -98,6 +98,14 @@ CLI.
   authenticated approval authority remains in the separate auth store.
   Preview performs a rollback-only validation probe and never initializes,
   meters, schedules or persists work. Proposal versions cannot silently rebase.
+- `worker/src/changeset.js` prepares bounded trusted-service create/patch/soft-delete
+  sets with explicit authorization, absence/revision guards and one transactional
+  receipt read. Callers supply complete displayed dependency/membership reads.
+  `prepareChecked(..., {finalState:true})` returns `checks` that MUST execute after
+  every table's mutation and before cleanup; use `commitChangeset` for composition.
+  Catalog invariants receive full native before/final sets, while ordinary writes
+  retain per-mutation validation. This internal primitive is not an HTTP route,
+  governance approval or an advertised multi-row capability.
 - `worker/src/write.js` exposes `prepareChecked` for trusted service composition.
   It prepares table approval/history setup, mutations and cleanup without running
   a batch. All shared read guards must execute before every plan setup, and all
