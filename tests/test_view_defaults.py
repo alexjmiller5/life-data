@@ -61,6 +61,32 @@ def test_rename_preserves_preference_and_sync_tombstone(db):
     assert rows[1]["tbl"] == "records" and rows[1]["deleted_at"] is None
 
 
+def test_related_preference_survives_table_rename_independently(db):
+    table = "related_view_defaults"
+    create_table(db, table, ["tbl:ref!", "view_id:ref"])
+    catalog.set_table(db, table, kind="table", display="tbl")
+    catalog.set_property(db, table, "tbl", ref_table="catalog_tables")
+    catalog.set_property(
+        db,
+        table,
+        "view_id",
+        ref_table="views",
+        source="life-core",
+        source_ref="related-view-defaults/v1",
+    )
+    client(
+        db,
+        "setRelatedViewDefault",
+        {"table": "items", "viewId": "shared", "expectedUpdatedAt": None},
+    )
+    rename_table(db, "items", "records")
+    result = client(db, "getRelatedViewDefault", {"table": "records"})
+    assert result["viewId"] == "shared"
+    assert result["view"]["view"]["table"] == "records"
+    rows = execute_sql(db, "SELECT tbl,deleted_at FROM related_view_defaults ORDER BY tbl")
+    assert len(rows) == 2 and rows[0]["deleted_at"] is not None and rows[1]["deleted_at"] is None
+
+
 def test_rename_does_not_adopt_colliding_storage(db):
     provision(db)
     client(db, "setViewDefault", {"table": "items", "viewId": "shared", "expectedUpdatedAt": None})

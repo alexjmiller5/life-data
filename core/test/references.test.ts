@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import * as core from "../src/index.ts";
 import { TestSql, schema, T0 } from "./support.ts";
+import views from '../schema/saved-views.json';
+import relatedDefaults from '../schema/related-view-defaults.json';
 const databases: TestSql[] = [];
 afterEach(() => {
   for (const db of databases.splice(0)) db.db.close();
@@ -59,6 +61,34 @@ const args = {
   column: "owner",
 };
 const ids = (page: any) => page.rows.map((row: any) => row.record.id);
+test('related views filter before pagination, preserve sorting and full rows without hiding links by the table default',async()=>{
+ const db=await local();
+ for(const ddl of ['ALTER TABLE catalog_tables ADD COLUMN kind TEXT','ALTER TABLE catalog_properties ADD COLUMN source TEXT','ALTER TABLE catalog_properties ADD COLUMN source_ref TEXT'])await db.run(ddl);
+ for(const storage of [views,relatedDefaults]){
+  for(const ddl of storage.ddl)await db.run(ddl);
+  await db.run('INSERT INTO catalog_tables(id,kind,display) VALUES (?,?,?)',[storage.table.id,storage.table.kind,storage.table.display]);
+  for(const p of storage.properties){const keys=Object.keys(p);await db.run(`INSERT INTO catalog_properties(${keys.join(',')}) VALUES (${keys.map(()=>'?')})`,Object.values(p));}
+ }
+ await db.run("UPDATE entries SET title='Excluded' WHERE id='d'");
+ await db.run("INSERT INTO entries(id,title,owner,updated_at) VALUES ('e','History','TARGET',?)",[T0]);
+ const view=await core.saveView(db,{table:'entries',name:'Related',definition:{version:1,columns:['id'],filters:[{column:'title',op:'ne',value:'Excluded'}],sort:[{column:'title',direction:'desc'}]}});
+ await core.setRelatedViewDefault(db,{table:'entries',viewId:view.id,expectedUpdatedAt:null});
+ const first=await call(db,'referencedBy',{...args,limit:1});
+ expect(ids(first)).toEqual(['e']);expect(first.rows[0].record.owner).toBe('TARGET');expect(first.nextOffset).toBe(1);
+ const second=await call(db,'referencedBy',{...args,limit:1,offset:1});
+ expect(ids(second)).toEqual(['a']);expect(second.nextOffset).toBeNull();
+ expect(ids(await call(db,'referencedBy',{...args,column:'related'}))).toEqual(['a']);
+ await db.run('ALTER TABLE entries ADD COLUMN starts TEXT');
+ await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('entries.starts','entries','starts','date_or_datetime')");
+ await db.run("UPDATE entries SET starts=CASE id WHEN 'a' THEN '2026-03-08T06:59:00Z' ELSE '2026-03-07' END");
+ await core.saveView(db,{id:view.id,table:'entries',name:view.name,expectedUpdatedAt:view.updated_at!,definition:{version:2,timeZone:'America/New_York',dayStartMinutes:180,filters:[{column:'title',op:'ne',value:'Excluded'},{column:'starts',op:'eq',relative:'today'}],sort:[{column:'title',direction:'desc'}]}});
+ await expect(call(db,'referencedBy',args)).rejects.toThrow(/calendar/i);
+ expect(ids(await call(db,'referencedBy',{...args,calendar:{today:'2026-03-07',start:'2026-03-07T08:00:00.000Z',end:'2026-03-08T07:00:00.000Z'}}))).toEqual(['e','a']);
+ expect(ids(await call(db,'referencedBy',{...args,calendar:{today:'2026-03-08',start:'2026-03-08T07:00:00.000Z',end:'2026-03-09T07:00:00.000Z'}}))).toEqual([]);
+ await db.run('UPDATE views SET deleted_at=? WHERE id=?',[T0,view.id]);
+ const fallback=await call(db,'referencedBy',args);
+ expect(ids(fallback)).toEqual(['a','d','e']);expect(fallback.viewUnavailable).toMatch(/unavailable/i);
+});
 test("lists current incoming relation definitions without scanning source rows", async () => {
   const db = await local();
   await db.run("DROP TABLE entries");

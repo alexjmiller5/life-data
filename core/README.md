@@ -514,6 +514,19 @@ preference only for plain table navigation; an explicit view/record destination
 wins. Absent configuration uses the catalog-generated view. Operators include
 both preference and saved-view tables in the client's permitted sync scope.
 
+Related-record preferences use the same revision-checked operations and writer,
+with `getRelatedViewDefault`/`setRelatedViewDefault` and the separately provisioned
+`schema/related-view-defaults.json` manifest. IDs use `related:v1:` plus table hex.
+Ordinary defaults are unaffected. `referencedBy` applies the selected query's
+filters and sort before pagination, retains full live source rows, and preserves
+target primary-key affinity/collation. Presentation columns and trash mode do not
+hide required record fields or expose deleted links. For relative filters hosts
+supply `calendar` using the selected definition's timezone/day policy. A deleted,
+invalid or wrong-table pointer falls back to all live links with `viewUnavailable`;
+absent unprovisioned related preferences retain existing link behavior. Reads never
+create preference storage. Recognized preferences follow table renames via ordinary
+logged writes/tombstones. Include this optional table in the client's sync scope.
+
 Run `bun test` and `bun run check` here, or `just test` / `just check` at the
 repository root. The shared `tests/fixtures/sync-protocol/revisions.json` cases
 run in both Python and TypeScript; core tests also call the actual Worker over

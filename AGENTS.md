@@ -31,6 +31,14 @@ and use normal validation/history/Undo; unavailable pointers fall back visibly
 without rewriting user views. Plain table navigation applies the preference;
 explicit destinations win. Provisioning is operator-owned, never implicit in reads.
 
+Related-record view IDs use the separate `related-view-defaults/v1` manifest and
+`getRelatedViewDefault`/`setRelatedViewDefault` operations. This optional store does
+not change ordinary default-view storage. Incoming references apply the selected
+saved view's query filters and sort before pagination through the same compiler,
+retain full live rows and target-ID collation, and show an unavailable-view fallback.
+Relative filters require the host calendar context. Table rename rekeys both stores;
+reads never provision either store or rewrite saved definitions.
+
 ## Layout
 
 - `src/life_data/__init__.py` - CLI, sync engine and hubs.

@@ -866,44 +866,47 @@ def _has_shared_views(conn) -> bool:
     )
 
 
-def _has_view_defaults(conn) -> bool:
+def _has_view_defaults(conn, table="view_defaults", marker="view-defaults/v1") -> bool:
     """Recognize the canonical optional preference store, without adopting collisions."""
     schema = conn.execute(
-        "SELECT sql FROM main.sqlite_master WHERE (type='table' AND name='view_defaults') "
-        "OR (type='trigger' AND name='view_defaults_updated_at') ORDER BY type"
+        "SELECT sql FROM main.sqlite_master WHERE (type='table' AND name=?) "
+        "OR (type='trigger' AND name=?) ORDER BY type",
+        (table, table + "_updated_at"),
     ).fetchall()
-    expected = _pkg().table_ddl("view_defaults", ["tbl:ref!", "view_id:ref"])
+    expected = _pkg().table_ddl(table, ["tbl:ref!", "view_id:ref"])
     if [re.sub(r"\s+", " ", row["sql"]).strip() for row in schema] != [
         re.sub(r"\s+", " ", sql).strip() for sql in expected
     ]:
         return False
-    table = conn.execute(
-        "SELECT kind,display FROM catalog_tables WHERE id='view_defaults' AND deleted_at IS NULL"
+    entry = conn.execute(
+        "SELECT kind,display FROM catalog_tables WHERE id=? AND deleted_at IS NULL", (table,)
     ).fetchone()
     props = conn.execute(
-        "SELECT * FROM catalog_properties WHERE tbl='view_defaults' AND deleted_at IS NULL"
+        "SELECT * FROM catalog_properties WHERE tbl=? AND deleted_at IS NULL", (table,)
     ).fetchall()
-    if not table or dict(table) != {"kind": "table", "display": "tbl"} or len(props) != 2:
+    if not entry or dict(entry) != {"kind": "table", "display": "tbl"} or len(props) != 2:
         return False
     by_col = {p["col"]: p for p in props}
     if set(by_col) != {"tbl", "view_id"}:
         return False
     return all(
-        p["id"] == f"view_defaults.{col}" and p["type"] == "ref" and p["ref_table"] == target
+        p["id"] == f"{table}.{col}" and p["type"] == "ref" and p["ref_table"] == target
         for col, target in (("tbl", "catalog_tables"), ("view_id", "views"))
         for p in [by_col[col]]
     ) and (
         by_col["tbl"]["required"] == 1
         and by_col["view_id"]["source"] == "life-core"
-        and by_col["view_id"]["source_ref"] == "view-defaults/v1"
+        and by_col["view_id"]["source_ref"] == marker
     )
 
 
-def _rename_view_default(conn, old: str, new: str) -> None:
-    if not _has_view_defaults(conn):
+def _rename_view_default(
+    conn, old: str, new: str, table="view_defaults", prefix="default:v1:", marker="view-defaults/v1"
+) -> None:
+    if not _has_view_defaults(conn, table, marker):
         return
-    old_id, new_id = ("default:v1:" + value.encode("ascii").hex() for value in (old, new))
-    rows = conn.execute("SELECT * FROM view_defaults WHERE tbl=? OR id=?", (old, old_id)).fetchall()
+    old_id, new_id = (prefix + value.encode("ascii").hex() for value in (old, new))
+    rows = conn.execute(f"SELECT * FROM {qi(table)} WHERE tbl=? OR id=?", (old, old_id)).fetchall()
     if not rows:
         return
     if len(rows) != 1 or rows[0]["id"] != old_id or rows[0]["tbl"] != old:
@@ -918,12 +921,12 @@ def _rename_view_default(conn, old: str, new: str) -> None:
     row.update(id=new_id, tbl=new, updated_at=stamp, hub_at=None)
     cols = list(row)
     conn.execute(
-        f"INSERT INTO view_defaults ({', '.join(qi(c) for c in cols)}) "
+        f"INSERT INTO {qi(table)} ({', '.join(qi(c) for c in cols)}) "
         f"VALUES ({', '.join('?' for _ in cols)})",
         list(row.values()),
     )
     conn.execute(
-        "UPDATE view_defaults SET deleted_at=?,updated_at=? WHERE id=?", (stamp, stamp, old_id)
+        f"UPDATE {qi(table)} SET deleted_at=?,updated_at=? WHERE id=?", (stamp, stamp, old_id)
     )
 
 
@@ -966,6 +969,9 @@ def rename_refs(conn, old: str, new: str) -> None:
             (new, old),
         )
     _rename_view_default(conn, old, new)
+    _rename_view_default(
+        conn, old, new, "related_view_defaults", "related:v1:", "related-view-defaults/v1"
+    )
     conn.execute(
         "UPDATE catalog_rules SET tbl = ? WHERE tbl = ? AND deleted_at IS NULL", (new, old)
     )

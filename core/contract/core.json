@@ -1756,6 +1756,9 @@
         },
         "offset": {
           "$ref": "#/$defs/Count"
+        },
+        "calendar": {
+          "$ref": "#/$defs/CalendarContext"
         }
       },
       "required": [
@@ -1786,6 +1789,9 @@
               "type": "null"
             }
           ]
+        },
+        "viewUnavailable": {
+          "type": "string"
         }
       },
       "required": [
@@ -5678,6 +5684,22 @@
       },
       "result": {
         "$ref": "#/$defs/ResolvedViewDefinition"
+      }
+    },
+    "getRelatedViewDefault": {
+      "args": {
+        "$ref": "#/$defs/GetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      }
+    },
+    "setRelatedViewDefault": {
+      "args": {
+        "$ref": "#/$defs/SetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
       }
     }
   }
