@@ -20,3 +20,5 @@ export * from './governance.ts';
 
 export * from './governance-service.ts';
 export {isGovernanceCapability} from './governance-wire.ts';
+
+export * from './resolve-derived.ts';
