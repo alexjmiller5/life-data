@@ -21,6 +21,11 @@
 			"database_id": "572840fc-5179-4f42-b9d0-4474d97edc6a"
 		}
 	],
+	// Instant sync: one ChangeSignal object per hub holds the change sequence
+	// replicas long-poll at /v1/changes (src/changes.js). SQLite-backed, so
+	// it deploys on any Workers plan.
+	"durable_objects": { "bindings": [{ "name": "CHANGES", "class_name": "ChangeSignal" }] },
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChangeSignal"] }],
 	"r2_buckets": [
 		{ "binding": "BACKUPS", "bucket_name": "life-data-backups" },
 		{ "binding": "ARCHIVE", "bucket_name": "life-data-archive" }

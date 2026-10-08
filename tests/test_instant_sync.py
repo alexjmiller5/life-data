@@ -364,6 +364,8 @@ def test_push_candidates_come_from_an_unlogged_updated_at_index(db, hub):
 def test_pulled_rows_commit_chunk_by_chunk(tmp_path, hub, monkeypatch):
     a, b = init(tmp_path / "a" / "life.db"), init(tmp_path / "b" / "life.db")
     create_table(a, "people", ["name:text"])
+    sync(a, hub)
+    sync(b, hub)  # past the first-sync recovery, which pages anyway
     insert_rows(a, "people", [{"name": f"p{i}"} for i in range(2 * life_data.CHUNK + 50)])
     sync(a, hub)
 

@@ -57,6 +57,26 @@ life background disable      # finish the current round, then stop syncing
 life background status       # enabled, running, last success/error and counts
 ```
 
+`life watch` and the background runner push a local write within about a
+second and pull a remote edit within a couple of seconds: they hold a long
+poll on the hub's change signal and run a round as soon as anything is
+committed there. While the hub cannot be reached that way they sync every
+`--poll` seconds (30 by default); with the signal live, a round every ten
+minutes is the safety net. A failed round is retried after 15 s, doubling to
+at most two minutes (5 s when another local writer held the database); a
+round that must fetch the credential again backs off up to an hour.
+
+```http
+GET /v1/changes?since=<seq>&wait=<0-25>
+```
+
+Any token with `tables:read` (or `full`) may call it. It answers `{"seq": n}`
+at once when `since` is absent or differs from the hub's change sequence,
+otherwise when the next row or schema commit moves it or `wait` seconds pass.
+Only a commit that changes rows or schema moves the sequence; no-op and
+rejected writes do not. The sequence says only "something changed": run an
+ordinary sync round, then poll again with the new value.
+
 On a new Mac, sign in through the browser and then enable sync:
 
 ```bash

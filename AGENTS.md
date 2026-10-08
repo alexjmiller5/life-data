@@ -60,7 +60,10 @@ reads never provision either store or rewrite saved definitions.
 - `worker/src/index.js` - the hub service; `worker/src/auth.js` owns the
   separate auth registry and `worker/src/login.js` owns the Access-gated
   browser flow. `worker/wrangler.jsonc` declares the main data D1, auth D1,
-  R2 bindings and backup cron (those declarations ARE the provisioning).
+  R2 bindings, the `ChangeSignal` Durable Object and backup cron (those
+  declarations ARE the provisioning).
+- `worker/src/changes.js` - instant sync: the `ChangeSignal` Durable Object
+  (one per hub) holds a change sequence that `GET /v1/changes` long-polls.
 - `core/src/` - shared TypeScript validator, sync, write path, catalog, HTTP
   adapter and view compiler for UI clients. `core/README.md` documents adapter
   contracts and current boundaries. `worker/src/validate.js` re-exports the
@@ -481,7 +484,10 @@ reads never provision either store or rewrite saved definitions.
   the hub or credential provider while disabled. Credentials are generic env,
   a background-only command, or an explicitly saved macOS Keychain token.
   Never inherit an interactive token command into the runner. Retry failures
-  in-process from 60s up to 3600s; do not restart to fetch credentials again.
+  in-process from 15s doubling to 120s (5s for a locked database); a round
+  that must fetch the credential again (none yet, 401/403) doubles to 3600s,
+  because a credential command's budget is finite. Never restart to fetch
+  credentials again.
   Background Keychain reads disable native UI for that call and restore the
   previous process allowance, returning an OS code when interaction is required.
   Status distinguishes authenticating from syncing. Only a rejection-free sync
@@ -618,11 +624,30 @@ acknowledgment is safe to retry but does not preserve creation attribution.
 protection 403s the default `Python-urllib/x.y` agent (error 1010) before
 the request reaches the Worker.
 
-`life watch` pushes within ~1s of a local write (fingerprinting the db AND
-its `-wal`, since WAL mode leaves the main file untouched until checkpoint)
-and polls for remote changes. Replacing that poll with a push channel needs
-hub work (a WebSocket or long-poll endpoint the hub does not have) as well as
-client changes.
+`life watch` and `life background run` push within ~1s of a local write
+(fingerprinting the db AND its `-wal`, since WAL mode leaves the main file
+untouched until checkpoint). Remote changes arrive through `RemoteChanges`, a
+thread holding `GET /v1/changes?since=<seq>&wait=25` on the hub: any new
+sequence (its first answer included) starts a round. While that channel fails
+the loops poll every `poll_seconds`; while it is live, `SAFETY_SECONDS` (600)
+is the only timer. The hub bumps the sequence through `markChanged()` from
+`withChangeSignal`, which wraps every request and cron run: `commitChecked`
+marks only a non-probe commit with transitions (so no-op, stale and rejected
+pushes never wake replicas - a re-pushing replica would otherwise loop every
+replica), and schema push, row creation and changeset commits mark
+explicitly. A new writer that bypasses those must call `markChanged()` too;
+a missed bump costs up to `SAFETY_SECONDS`. Our own push echoes back one
+quiet round.
+
+A quiet round stays cheap: `/v1/cursor` also returns `schema` (the hub's
+newest `_schema_log` id) and blank marks for tables the hub lacks. A replica
+whose own log has not moved since its last completed replay reads the cursor
+first and skips `schema/pull` while `schema` has not moved either
+(`_sync_state.schema_seen` = `<hub mark>:<local mark>`). A hub mark read after
+a replay is never stored (another replica's DDL may land in between), so each
+schema change costs two full-log rounds. Push candidates scan an unlogged
+`<table>_updated_at` index each replica creates for itself, and pulled rows
+commit per 200-row chunk so a `life sql` writer never waits a whole pull.
 
 ## Hub service
 

@@ -843,6 +843,11 @@ class LocalHub:
     def marks(self, tables: list[str]) -> tuple[str, dict[str, str], int]:
         marks = {}
         for t in tables:
+            # As the service: a table renamed or dropped by a replay the caller
+            # has not run yet has no arrivals.
+            if not self._query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [t]):
+                marks[t] = ""
+                continue
             col = "hub_at" if self._has_hub_at(t) else "updated_at"
             rows = self._query(f"SELECT max({col}) AS m FROM {qi(t)}")
             marks[t] = rows[0]["m"] or ""
