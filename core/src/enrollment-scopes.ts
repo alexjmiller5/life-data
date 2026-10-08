@@ -2,7 +2,7 @@
  * tests/fixtures/enrollment-scopes.json is the contract; src/life_data/login.py
  * implements the same grammar for the CLI. Full, admin and token administration
  * are never profile grants. */
-const simple = new RegExp('^(?:tables:read|tables:write|streams:append'
+const simple = new RegExp('^(?:tables:read|tables:write|streams:append|backups:read|backups:write'
   + '|captures:(?:submit|read):[a-z][a-z0-9-]{0,63}'
   + '|streams:(?:read|append):[A-Za-z0-9_-]{1,64}'
   + '|subscriptions:consume:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'

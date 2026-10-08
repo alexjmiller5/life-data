@@ -9,6 +9,8 @@
     {"name": "catalog metadata with column read", "scopes": ["tables:read:contacts:id", "tables:read:contacts:name", "catalog:read:contacts:name"], "valid": true},
     {"name": "catalog metadata without column read", "scopes": ["tables:read:contacts:id", "catalog:read:contacts:name"], "valid": false},
     {"name": "whole-table read", "scopes": ["tables:read:flights"], "valid": true},
+    {"name": "hub backups read and write", "scopes": ["backups:read", "backups:write"], "valid": true},
+    {"name": "hub backups unknown operation", "scopes": ["backups:delete"], "valid": false},
     {"name": "whole-table write without read", "scopes": ["tables:write:flights"], "valid": true},
     {"name": "whole-table read and write", "scopes": ["tables:read:flights", "tables:write:flights"], "valid": true},
     {"name": "whole-table grant on history", "scopes": ["tables:read:history"], "valid": false},

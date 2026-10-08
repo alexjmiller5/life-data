@@ -32,7 +32,7 @@ MAX_RESPONSE_BYTES = 64 * 1024
 # Same grammar as core/src/enrollment-scopes.ts; tests/fixtures/enrollment-scopes.json
 # is the shared contract. Full, admin and token administration never qualify.
 _SIMPLE_SCOPE = re.compile(
-    r"tables:read|tables:write|streams:append"
+    r"tables:read|tables:write|streams:append|backups:read|backups:write"
     r"|captures:(?:submit|read):[a-z][a-z0-9-]{0,63}"
     r"|streams:(?:read|append):[A-Za-z0-9_-]{1,64}"
     r"|subscriptions:consume:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"

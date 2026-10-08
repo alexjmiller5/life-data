@@ -28,6 +28,7 @@ import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders, listFiles } from "./files.js";
 import { changesRoute, markChanged, withChangeSignal } from "./changes.js";
 import { backup } from "./backup.js";
+import { backupsAllowed, handleBackups } from "./backups.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
@@ -153,6 +154,7 @@ function allowed(pathname, method, scopes) {
     return scopes.includes("full") || fileAllowed(pathname, method, scopes);
   }
   if (pathname === "/v1/backup") return scopes.includes("full");
+  if (pathname === "/v1/backups" || pathname.startsWith("/v1/backups/")) return backupsAllowed(pathname, method, scopes);
   if (pathname.startsWith('/v1/streams/')) {
     const route = /^\/v1\/streams\/([A-Za-z0-9_-]{1,64})\/(append|tail|records)$/.exec(pathname);
     if (route) {
@@ -966,6 +968,7 @@ async function handle(request, env, ctx, url) {
       if (request.headers.get("If-None-Match") === etag) return new Response(null, { status: 304, headers: { ETag: etag } });
       return new Response(text, { headers: { "Content-Type": "application/json", ETag: etag } });
     }
+    if (url.pathname === "/v1/backups" || url.pathname.startsWith("/v1/backups/")) return await handleBackups(request, env, url);
     if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
     if (url.pathname === "/v1/changes" && request.method === "GET") return await changesRoute(env, url);
     if (

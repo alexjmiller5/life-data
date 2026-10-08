@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import worker from "../src/index.js";
@@ -20,6 +20,10 @@ class Bucket {
   }
   async put(key, body, options = {}) {
     this.objects.set(key, { body: new Uint8Array(await new Response(body).arrayBuffer()), uploaded: this.now, customMetadata: options.customMetadata ?? {} });
+  }
+  async head(key) {
+    const o = this.objects.get(key);
+    return o && { key, size: o.body.length, uploaded: o.uploaded, customMetadata: o.customMetadata };
   }
   async get(key) {
     const o = this.objects.get(key);
@@ -56,7 +60,7 @@ class Bucket {
 }
 
 const realFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = realFetch; });
+afterEach(() => { globalThis.fetch = realFetch; setSystemTime(); });
 
 // D1's export API: one poll, then the signed URL of the finished SQL file.
 function exportApi(sql) {
@@ -133,7 +137,7 @@ test("backup grants are their own: table grants never imply them, read never imp
   expect((await call("/v1/backups", { token: full })).status).toBe(200);
   // Enrollment profiles may carry them; core, the Worker and the CLI share this grammar.
   expect(validEnrollmentScopes(["backups:read", "backups:write"])).toBe(true);
-  expect(scopes.cases.filter((c) => c.scopes.some((s) => s.startsWith("backups:"))).every((c) => validEnrollmentScopes(c.scopes) === c.valid)).toBe(true);
+  expect(scopes.cases.filter((c) => Array.isArray(c.scopes) && c.scopes.some((s) => s.startsWith("backups:"))).every((c) => validEnrollmentScopes(c.scopes) === c.valid)).toBe(true);
 });
 
 test("backups:write takes a manual copy of the data database, at most once an hour", async () => {
@@ -141,12 +145,13 @@ test("backups:write takes a manual copy of the data database, at most once an ho
   const writer = await mint("writer", "backups:write");
   exportApi("CREATE TABLE t (id TEXT);\n");
   // An hour has not passed since the seeded manual copy.
+  setSystemTime(new Date("2026-10-08T08:30:00.000Z"));
   const limited = await call("/v1/backups", { method: "POST", token: writer });
   expect(limited.status).toBe(429);
   expect(Number(limited.headers.get("Retry-After"))).toBe(1830);
   expect(await limited.json()).toEqual({ error: "backup_rate_limited", retry_after: 1830 });
 
-  env.BACKUPS.now = new Date("2026-10-08T09:00:31.000Z");
+  setSystemTime(env.BACKUPS.now = new Date("2026-10-08T09:00:31.000Z"));
   const taken = await call("/v1/backups", { method: "POST", token: writer });
   expect(taken.status).toBe(201);
   const { backup } = await taken.json();

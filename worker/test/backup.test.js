@@ -207,6 +207,14 @@ test("a success after a gap in stored copies counts as a recovery, a daily caden
   expect(all[0].body).toContain("Sep 7");
 });
 
+test("the gap check reads every database's daily copies, whatever order the config lists them in", async () => {
+  // Cloudflare hands JSON vars back with sorted keys: auth before life.
+  const env = environment({ BACKUP_DATABASES: { auth: "db-auth", life: "db-life" } });
+  env.BACKUPS.seed("daily/life-2026-09-07T09-10-00.sql.gz", new Date("2026-09-07T09:12:00.000Z"));
+  await backup(env, at(env, "2026-10-08T09:10:00.000Z"), io(d1Api({ "db-life": "life", "db-auth": "auth" })));
+  expect(notices(env).map((n) => n.type)).toEqual(["backup.recovered"]);
+});
+
 test("the backup cron rejects when the backup fails, so the cron history records it", async () => {
   const env = environment({ BACKUP_API_TOKEN: undefined });
   const ctx = { waitUntil() {} };

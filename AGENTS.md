@@ -754,7 +754,7 @@ aborting every upload on any error so no truncated copy lands. **Never dump
 with SELECTs**: once one table's result outgrows D1's response limit the
 whole run fails (`D1_ERROR: Memory limit exceeded before EOF`). A running
 export blocks other queries on its database (about 30 s for the 600 MB data
-dump). `limits.cpu_ms` (300000) covers the gzip. `BACKUP_API_TOKEN` is a
+dump); a whole run takes about 36 s wall and under 1 s CPU. `BACKUP_API_TOKEN` is a
 Cloudflare token with D1 Write only (the export endpoint refuses D1 Read; D1
 grants are account-wide, Cloudflare has no per-database scope), minted by
 `scripts/provision.py` into the ENV item and pushed on deploy. The cron awaits

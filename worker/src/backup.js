@@ -77,9 +77,9 @@ async function missedRuns(env, now) {
     "SELECT type FROM _notifications WHERE producer = 'backup' ORDER BY seq DESC LIMIT 1",
   ).first();
   if (last?.type === "backup.failed") return {};
-  const [name] = Object.keys(env.BACKUP_DATABASES ?? {});
-  const { objects } = await env.BACKUPS.list({ prefix: `daily/${name}-` });
-  const newest = objects.at(-1)?.uploaded;
+  // ponytail: one list page (1000 keys) covers 35 days of dailies for ~28 databases.
+  const { objects } = await env.BACKUPS.list({ prefix: "daily/" });
+  const newest = objects.reduce((max, o) => (o.uploaded > max ? o.uploaded : max), null);
   return newest && now - newest > GAP_MS ? { since: newest } : null;
 }
 
