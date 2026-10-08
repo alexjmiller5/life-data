@@ -845,7 +845,9 @@ class LocalHub:
         for t in tables:
             # As the service: a table renamed or dropped by a replay the caller
             # has not run yet has no arrivals.
-            if not self._query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [t]):
+            if not self._query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [t]
+            ):
                 marks[t] = ""
                 continue
             col = "hub_at" if self._has_hub_at(t) else "updated_at"

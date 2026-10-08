@@ -39,8 +39,17 @@
 		"ARCHIVE_BUCKET": "life-data-archive",
 		"LOGIN_ACCESS_AUD": "9f21efcb47f8b63e252f64e20c3df14a9e7372999de4bb1ed6a84599c46f9f29",
 		// Browser apps allowed to call /v1 (comma-separated exact origins).
-		"CORS_ORIGINS": "https://life-ui.nqipomyrjb.workers.dev"
+		"CORS_ORIGINS": "https://life-ui.nqipomyrjb.workers.dev",
+		// What the backup cron exports through D1's export API (src/backup.js):
+		// backup object name -> database_id of a d1_databases entry above.
+		"BACKUP_DATABASES": {
+			"life": "a7a10931-e427-428e-8d0d-1e4024a3312b",
+			"auth": "572840fc-5179-4f42-b9d0-4474d97edc6a"
+		}
 	},
+	// The backup gzips each full SQL export inside one cron run; the 30 s
+	// default CPU limit does not cover a database of hundreds of MB.
+	"limits": { "cpu_ms": 300000 },
 	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
 	// belongs to (daily / weekly / monthly / yearly). Every 15 minutes the
 	// derivation sweep picks up underived and stale rows (SWEEP_CRON in

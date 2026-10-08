@@ -27,6 +27,7 @@ import {configuration as governanceConfiguration,limits as governanceLimits} fro
 import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders, listFiles } from "./files.js";
 import { changesRoute, markChanged, withChangeSignal } from "./changes.js";
+import { backup } from "./backup.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
@@ -590,70 +591,6 @@ async function handleSession(request, tenant, env) {
   return json({ logged_out: true });
 }
 
-// --- backups: tiered SQL dumps to R2 ----------------------------------------
-//
-// R2 lifecycle rules can only expire a whole prefix by age, so tiered
-// (grandfather-father-son) retention comes from WRITING into the prefix whose
-// rule matches how long that copy should live. scripts/cf-r2-lifecycle.py owns
-// the expiries; this function only decides which prefixes today belongs to.
-function backupPrefixes(now) {
-  const prefixes = ["daily"];
-  if (now.getUTCDay() === 0) prefixes.push("weekly");
-  if (now.getUTCDate() === 1) prefixes.push("monthly");
-  if (now.getUTCMonth() === 0 && now.getUTCDate() === 1) prefixes.push("yearly");
-  return prefixes;
-}
-
-function sqlLiteral(value) {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "number") return String(value);
-  if (value instanceof ArrayBuffer) return `X'${[...new Uint8Array(value)].map((b) => b.toString(16).padStart(2, "0")).join("")}'`;
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-async function dumpSql(db) {
-  const lines = ["PRAGMA foreign_keys=OFF;", "BEGIN TRANSACTION;"];
-  // D1 keeps internal tables (_cf_KV, ...) in the same schema and forbids
-  // reading them (SQLITE_AUTH), so they must be excluded from the dump.
-  const { results: objects } = await db
-    .prepare(
-      `SELECT name, type, sql FROM sqlite_master
-       WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-         AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'
-       ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END`
-    )
-    .all();
-  for (const obj of objects ?? []) {
-    lines.push(`${obj.sql};`);
-    if (obj.type !== "table") continue;
-    const { results: rows } = await db.prepare(`SELECT * FROM ${qident(obj.name)}`).all();
-    for (const row of rows ?? []) {
-      const cols = Object.keys(row);
-      const vals = cols.map((c) => sqlLiteral(row[c])).join(", ");
-      lines.push(`INSERT INTO ${qident(obj.name)} (${cols.map(qident).join(", ")}) VALUES (${vals});`);
-    }
-  }
-  lines.push("COMMIT;");
-  return lines.join("\n");
-}
-
-async function runBackup(env, now) {
-  await ensureReady(env.DB);
-  const sql = await dumpSql(env.DB);
-  const gz = new Response(sql).body.pipeThrough(new CompressionStream("gzip"));
-  const body = await new Response(gz).arrayBuffer();
-  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const keys = [];
-  for (const prefix of backupPrefixes(now)) {
-    const key = `${prefix}/life-${stamp}.sql.gz`;
-    await env.BACKUPS.put(key, body, {
-      httpMetadata: { contentType: "application/gzip" },
-    });
-    keys.push(key);
-  }
-  return keys;
-}
-
 // --- streams: verbatim JSON landing + manifest + tail ------------------------
 //
 // Streams are append-only: the hub stores whatever JSON body arrives, byte for
@@ -905,7 +842,9 @@ export default {
     return withChangeSignal(env, ctx, async () => {
       // One Worker, two schedules — dispatch on which trigger fired.
       if (event.cron === SWEEP_CRON) ctx.waitUntil(logDerive(sweep(env.DB, env)));
-      else ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
+      // Awaited, not waitUntil: a failed backup fails the cron run, so the
+      // provider's cron history shows it (backup.js also notifies).
+      else await backup(env, new Date(event.scheduledTime));
     });
   },
 };
@@ -1039,7 +978,7 @@ async function handle(request, env, ctx, url) {
       return json({ error: "not found" }, 404);
     }
     if (url.pathname === "/v1/backup") {
-      return json({ keys: await runBackup(env, new Date()) });
+      return json({ keys: await backup(env, new Date()) });
     }
     await ensureReady(tenant.db);
     const body=await request.json();

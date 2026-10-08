@@ -9,6 +9,17 @@ import { supportedRuleSql } from '../../core/src/rule-sql.ts';
 const quoteColumn = (v) => '"' + v.replaceAll('"', '""') + '"';
 const JSON_BYTES = 256 * 1024;
 const byteLength = value => new TextEncoder().encode(value).length;
+// D1 rejects a compound SELECT with more than five terms. Larger unions nest
+// groups of five as subqueries; term order (and so bind order) is unchanged.
+const D1_COMPOUND_TERMS = 5;
+function unionAll(terms) {
+  while(terms.length>D1_COMPOUND_TERMS){
+    const groups=[];
+    for(let i=0;i<terms.length;i+=D1_COMPOUND_TERMS)groups.push(`SELECT * FROM (${terms.slice(i,i+D1_COMPOUND_TERMS).join(' UNION ALL ')})`);
+    terms=groups;
+  }
+  return terms.join(' UNION ALL ');
+}
 
 // Keep each JSON value well below D1's length limit, including UTF-8 and JSON
 // escaping. A single oversized row must use native cells instead.
@@ -88,7 +99,7 @@ export function readGuards(db, reads) {
         // cheap without passing any REAL through SQLite's JSON number parser.
         // IDs are SQL integer literals, leaving exactly one bind per native value.
         const nativeSQL=numbers.length?`${nativeName}(id,value) AS (VALUES ${numbers.map((_,i)=>`(${i},?)`).join(',')}),`:'';
-        const source=chunks.map(()=>'SELECT value FROM json_each(?)').join(' UNION ALL ');
+        const source=unionAll(chunks.map(()=>'SELECT value FROM json_each(?)'));
         const guard=equal(sql,`SELECT ${expected} FROM (${source}) j`,cols).replace(`WITH ${actualName} AS`,`WITH ${nativeSQL}${actualName} AS`);
         guards.push(assertion(guard,[...numbers,...args,...chunks]));
         continue;
@@ -114,7 +125,7 @@ export function readGuards(db, reads) {
     const unique=[...groups.values()],step=Math.floor(capacity/cols.length);
     for(let offset=0;offset<unique.length;offset+=step){
       const slice=unique.slice(offset,offset+step);
-      const expected=slice.map(({count})=>`SELECT ${cols.map(c=>'? AS '+quoteColumn(c)).join(',')},${count} AS ${countName}`).join(' UNION ALL ');
+      const expected=unionAll(slice.map(({count})=>`SELECT ${cols.map(c=>'? AS '+quoteColumn(c)).join(',')},${count} AS ${countName}`));
       guards.push(assertion(`WITH ${actualName} AS (${actual}),${expectedName} AS (${expected})
         SELECT NOT EXISTS (SELECT * FROM ${expectedName} EXCEPT SELECT * FROM ${actualName})`,
       [...args,...slice.flatMap(({row})=>cols.map(c=>row[c]))]));

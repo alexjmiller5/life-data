@@ -270,8 +270,10 @@ the expected public policy receipt, never the server policy or provider facts.
 
 ### Backups
 
-The hub's daily cron dumps the database to R2 as gzipped SQL, writing into
-the prefix matching how long that copy should live:
+The hub's daily cron exports each database (the data database as `life-…`,
+the auth registry as `auth-…`) through D1's export API and streams the SQL,
+gzipped, to R2, writing into the prefix matching how long that copy should
+live:
 
 | Prefix     | Written | Kept |
 |------------|---------|------|
@@ -281,10 +283,17 @@ the prefix matching how long that copy should live:
 | `yearly/`  | Jan 1   | forever |
 
 Retention is enforced by R2 lifecycle rules; `scripts/cf-r2-lifecycle.py` is
-their source of truth. Restore any of them with
-`gunzip -c life-….sql.gz | sqlite3 restored.db`. D1 Time Travel separately covers each database under its configured plan.
-These R2 SQL backups contain the data database, not the separate auth registry;
-recovery of auth state uses that database's own recovery or device reenrollment.
+their source of truth. The export needs the `BACKUP_API_TOKEN` Worker secret,
+a Cloudflare API token with D1 Write (`scripts/provision.py` mints it). A
+failed run fails the cron and posts a critical `backup.failed` notification to
+the hub's feed (pushed to enrolled devices); the first good run afterwards
+posts `backup.recovered`. `POST /v1/backup` with a full or operator token runs
+a backup on demand.
+
+Restore a copy locally with `gunzip -c life-….sql.gz | sqlite3 restored.db`,
+or into a fresh D1 database with
+`gunzip -c life-….sql.gz > dump.sql && wrangler d1 execute <new-db> --remote --file dump.sql`.
+D1 Time Travel separately covers each database under its configured plan.
 
 ## Streams (append-only data)
 

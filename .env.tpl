@@ -24,3 +24,7 @@ ENROLLMENT_PROFILES=op://Life Data/Life Data ENV/ENROLLMENT_PROFILES
 ROW_CREATION_POLICIES=op://Life Data/Life Data ENV/ROW_CREATION_POLICIES
 # Capture gateway adapters (docs/scoped-enrollment.md), {} when unused.
 CAPTURE_ADAPTERS=op://Life Data/Life Data ENV/CAPTURE_ADAPTERS
+
+# The backup cron's Cloudflare token for D1's export API (D1 Write, minted by
+# scripts/provision.py; see worker/src/backup.js).
+BACKUP_API_TOKEN=op://Life Data/Life Data ENV/BACKUP_API_TOKEN

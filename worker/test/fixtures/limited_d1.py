@@ -1,4 +1,4 @@
-"""In-memory SQLite with D1's length/parameter limits, driven by JSON lines."""
+"""In-memory SQLite with D1's length/parameter/compound-SELECT limits, driven by JSON lines."""
 
 import json
 import sqlite3
@@ -9,6 +9,7 @@ db.row_factory = sqlite3.Row
 db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 2_000_000)
 db.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 99)
 db.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 100_000)
+db.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 5)
 
 
 def execute(statement):

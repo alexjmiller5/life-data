@@ -143,6 +143,18 @@ test('bulk sparse pushes bound approval snapshots while preserving every unchang
   } finally {await db.close();}
 });
 
+test('read guards over more distinct REALs than one bind budget stay within D1 compound SELECT terms',async()=>{
+  const db=new LimitedD1();
+  try {
+    await db.prepare('CREATE TABLE samples(n REAL)').run();
+    for(let i=0;i<120;i++)await db.prepare('INSERT INTO samples VALUES(?)').bind(i+0.5).run();
+    const view=checkedReads(db);await view.prepare('SELECT * FROM samples').all();
+    await db.batch(readGuards(db,view.reads));
+    await db.prepare('UPDATE samples SET n=0.25 WHERE rowid=1').run();
+    await expect(db.batch(readGuards(db,view.reads))).rejects.toThrow('integer overflow');
+  } finally {await db.close();}
+});
+
 test('chunked snapshots preserve a REAL that Bun SQLite JSON rounds by one ULP',async()=>{
   const db=new D1Shim();
   try {

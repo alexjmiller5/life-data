@@ -64,6 +64,8 @@ reads never provision either store or rewrite saved definitions.
   declarations ARE the provisioning).
 - `worker/src/changes.js` - instant sync: the `ChangeSignal` Durable Object
   (one per hub) holds a change sequence that `GET /v1/changes` long-polls.
+- `worker/src/backup.js` - the backup cron: D1 export API → gzip → R2
+  retention tiers, with failure/recovery notifications.
 - `core/src/` - shared TypeScript validator, sync, write path, catalog, HTTP
   adapter and view compiler for UI clients. `core/README.md` documents adapter
   contracts and current boundaries. `worker/src/validate.js` re-exports the
@@ -351,7 +353,9 @@ reads never provision either store or rewrite saved definitions.
   affinity normalizes approved values. References/options_sql run at each
   mutation to observe earlier accepted rows. Read assertions run before helper
   DDL using SELECT CASE and SQLite integer overflow on mismatch. Read/approval
-  JSON snapshots use bounded UTF-8 chunks. Read guards retain whole-result
+  JSON snapshots use bounded UTF-8 chunks; a guard's UNION ALL nests in groups
+  of five, D1's compound SELECT limit, which the LimitedD1 test fixture also
+  enforces. Read guards retain whole-result
   multiplicity and binary comparison; oversized encoded rows or exhausted JSON
   binding capacity use native cells and global counts within 99 parameters.
   A native row wider than the remaining bindings fails with the write budget.
@@ -741,9 +745,23 @@ the usage flush while still authenticating and reading the current cap. Cold or
 unready service state is unavailable. The protocol remains unadvertised until
 all documented operations and writer guarantees exist.
 
-Backups: the cron dumps D1 to gzipped SQL and writes it into every retention
-prefix today qualifies for. **Exclude D1's internal tables** (`_cf_%`) from
-any `sqlite_master` walk - reading them raises `SQLITE_AUTH`.
+Backups (`worker/src/backup.js`): the cron exports each database in the
+`BACKUP_DATABASES` var (`life` = DB, `auth` = AUTH_DB) through D1's export
+API, polling with the returned bookmark until the signed URL appears, and
+streams that SQL file through gzip into one R2 multipart upload per retention
+prefix today qualifies for (`<prefix>/<name>-<stamp>.sql.gz`, 8 MiB parts),
+aborting every upload on any error so no truncated copy lands. **Never dump
+with SELECTs**: once one table's result outgrows D1's response limit the
+whole run fails (`D1_ERROR: Memory limit exceeded before EOF`). A running
+export blocks other queries on its database (about 30 s for the 600 MB data
+dump). `limits.cpu_ms` (300000) covers the gzip. `BACKUP_API_TOKEN` is a
+Cloudflare token with D1 Write only (the export endpoint refuses D1 Read; D1
+grants are account-wide, Cloudflare has no per-database scope), minted by
+`scripts/provision.py` into the ENV item and pushed on deploy. The cron awaits
+the backup, so a failure fails the run in Cloudflare's cron history; it also
+posts `backup.failed` (critical) into the notification feed, and the first
+success after a failure, or after a newest daily copy older than 26 h, posts
+`backup.recovered`. `POST /v1/backup` (full/admin) runs the same path on demand.
 
 Two cron triggers, dispatched in `scheduled()` on `event.cron`: `10 9 * * *`
 is the backup, `*/15 * * * *` is the derivation sweep (`SWEEP_CRON` in
@@ -820,8 +838,9 @@ reports this deployment's own consumption only, never the provider account's.
   25B, writes 50M, requests 10M, storage 5 GB). `USAGE_LIMITS` (JSON, per
   metric `{allowance, cap, alert_at}`) and `USAGE_PERIOD_ANCHOR_DAY` (1-28,
   default 1) override them. Requests never cap: a refused request still bills.
-- **Notifications.** The flush that crosses an `alert_at` fraction or a cap
-  inserts into `_notifications` (AUTH_DB) at that moment. The id
+- **Notifications.** Producers: `usage` (below) and `backup` (`backup.failed`,
+  `backup.recovered`, see Hub service). The flush that crosses an `alert_at`
+  fraction or a cap inserts into `_notifications` (AUTH_DB) at that moment. The id
   (`usage:<period-start-date>:<metric>:<pct|cap>`) is the dedupe key, so
   concurrent isolates insert once and a future push reuses the same id.
   Read state is deployment-wide.
@@ -1025,6 +1044,15 @@ Media Center's poller or native clients does not mutate service infrastructure.
 The contract and bounds are in `docs/scoped-enrollment.md`; portable fixtures
 are in `tests/fixtures/hub-capture-contract.json`. No adapter is enabled by source
 alone. The pure receipt/capability policy is `core/src/capture.ts`.
+Upstream calls use `redirect: 'manual'`: Workers reject `'error'`, and Bun-based
+tests would not notice. Submissions get 60 s because acceptance waits for the
+adapter's serialized writer; receipt reads get 15 s.
+
+Profile consumers: Media Center's native iPhone/Mac clients enroll with profile
+`media-center` (consumer config namespace `media-center`; table/column bindings
+and grants are ENV state) and capture through adapter `media` (Synapse's media
+endpoint). The adapter's gateway credential is minted by Synapse's
+`scripts/media-capture.py`; its `CAPTURE_ADAPTERS` value is kept in the ENV item.
 
 Singleton creation policies can use `occurrenceType: "none"` and the generic
 `prefix-source-v1` identity encoding. Such requests omit `occurrenceKey`;
