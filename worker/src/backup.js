@@ -34,9 +34,12 @@ export function backupPrefixes(now) {
   return prefixes;
 }
 
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function backup(env, now, io = { fetch, wait }) {
+// `fetch` is wrapped, never stored as a method: workerd throws "Illegal
+// invocation" when it runs with any `this` but the global scope.
+export async function backup(env, now, { fetch: get = (...a) => fetch(...a), wait = sleep } = {}) {
+  const io = { fetch: get, wait };
   const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const db = env.AUTH_DB;
   await ensureUsage(db);

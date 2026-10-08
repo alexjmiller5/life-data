@@ -24,6 +24,7 @@ import { resolveDerived } from './resolve-derived.ts';
 import { listViews, saveView, deleteView, resolveViewDefinition } from './saved-views.ts';
 import { listSidebarPins, pinTable, unpinTable, moveTablePin } from './sidebar-pins.ts';
 import { readUsage, readNotifications, markNotificationsRead, notificationPresentation } from './services.ts';
+import { validateBackup, previewRestore, exportReplica, restoreReplica, listHubBackups, createHubBackup, type BackupFiles } from './backup.ts';
 
 /** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
 export async function readRows(db: SqlDriver, view: View): Promise<WorkspaceRow[]> {
@@ -49,8 +50,12 @@ export async function readOptions(db: SqlDriver, { table, column }: OptionsArgs)
 }
 
 /** Typed local dispatch, not a network protocol. Credentials stay in the host. */
-export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local', governance: GovernanceAPI | null = null): CoreHandlers {
+export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => ServiceHub, origin = 'local', governance: GovernanceAPI | null = null, files: BackupFiles | null = null): CoreHandlers {
   const writes = createWriteSession(db, origin);
+  const backupFiles = () => {
+    if (!files) throw new Error('This app cannot open backup files.');
+    return files;
+  };
   return {
     ...(governance ?? unavailableGovernance()),
     enrollmentApproval,
@@ -100,5 +105,11 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     serviceNotifications: args => readNotifications(hub(args.endpoint)),
     markNotificationsRead: args => markNotificationsRead(hub(args.endpoint), args.selector),
     notificationPresentation: args => notificationPresentation(args.feed, args.baseline),
+    validateBackup: ({ file }) => validateBackup(backupFiles().open(file)),
+    previewRestore: ({ file }) => previewRestore(db, backupFiles().open(file)),
+    exportReplica: ({ file }) => exportReplica(db, backupFiles().create(file)),
+    restoreReplica: args => writes.replaceAll(() => restoreReplica(db, backupFiles(), args)),
+    hubBackups: ({ endpoint }) => listHubBackups(hub(endpoint)),
+    createHubBackup: ({ endpoint }) => createHubBackup(hub(endpoint)),
   };
 }

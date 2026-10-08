@@ -211,3 +211,18 @@ test("the backup cron rejects when the backup fails, so the cron history records
     "BACKUP_API_TOKEN",
   );
 });
+
+test("the default fetch is called unbound, as the Workers runtime requires", async () => {
+  const api = d1Api({ "db-life": "life", "db-auth": "auth" });
+  const real = globalThis.fetch;
+  // workerd throws "Illegal invocation" when fetch runs with a foreign `this`.
+  globalThis.fetch = function (...args) {
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    return api.fetch(...args);
+  };
+  try {
+    expect(await backup(environment(), SUNDAY, { wait: async () => {} })).toHaveLength(4);
+  } finally {
+    globalThis.fetch = real;
+  }
+});

@@ -140,5 +140,14 @@ export function createWriteSession(db: SqlDriver, origin: string) {
     const args=snapshot(input);
     return queued(()=>operation(args));
   }
-  return { write, runRowAction, undo, undoStatus, capturedMutation, uncapturedMutation };
+  /** Whole-replica replacement: queued like every mutation, and no receipt
+   * survives it, since none describes the replaced rows any more. */
+  async function replaceAll<T>(operation: () => Promise<T>): Promise<T> {
+    return queued(async () => {
+      const out = await operation();
+      history.length = 0;
+      return out;
+    });
+  }
+  return { write, runRowAction, undo, undoStatus, capturedMutation, uncapturedMutation, replaceAll };
 }

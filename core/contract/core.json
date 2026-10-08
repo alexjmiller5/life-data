@@ -5243,6 +5243,185 @@
         "definition",
         "view"
       ]
+    },
+    "BackupFileArgs": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Opaque host file reference; the host opens it and removes gzip."
+        }
+      },
+      "required": [
+        "file"
+      ]
+    },
+    "RestoreArgs": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "recovery": {
+          "type": "string",
+          "description": "Opaque host destination for the recovery dump of the current replica, written before anything is replaced."
+        },
+        "confirm": {
+          "type": "string",
+          "enum": [
+            "replace"
+          ],
+          "description": "Typed by the user in the app before applying."
+        }
+      },
+      "required": [
+        "file",
+        "recovery",
+        "confirm"
+      ]
+    },
+    "BackupTableSummary": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rows": {
+          "$ref": "#/$defs/Count"
+        },
+        "liveRows": {
+          "$ref": "#/$defs/Count"
+        },
+        "newestUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "table",
+        "rows",
+        "liveRows",
+        "newestUpdatedAt"
+      ]
+    },
+    "BackupSummary": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "description": "Dump format version."
+        },
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackupTableSummary"
+          }
+        },
+        "rows": {
+          "$ref": "#/$defs/Count"
+        },
+        "newestUpdatedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schemaEntries": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "version",
+        "tables",
+        "rows",
+        "newestUpdatedAt",
+        "schemaEntries"
+      ],
+      "description": "Ordinary tables only; underscore plumbing and device sync state are never part of a dump."
+    },
+    "RestorePreview": {
+      "type": "object",
+      "properties": {
+        "backup": {
+          "$ref": "#/$defs/BackupSummary"
+        },
+        "current": {
+          "$ref": "#/$defs/BackupSummary"
+        }
+      },
+      "required": [
+        "backup",
+        "current"
+      ]
+    },
+    "RestoreResult": {
+      "type": "object",
+      "properties": {
+        "restored": {
+          "$ref": "#/$defs/BackupSummary"
+        },
+        "recovery": {
+          "$ref": "#/$defs/BackupSummary"
+        }
+      },
+      "required": [
+        "restored",
+        "recovery"
+      ]
+    },
+    "HubBackup": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "taken_at": {
+          "type": "string"
+        },
+        "bytes": {
+          "$ref": "#/$defs/Count"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "taken_at",
+        "bytes",
+        "sha256"
+      ]
+    },
+    "HubBackupList": {
+      "type": "object",
+      "properties": {
+        "backups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HubBackup"
+          }
+        }
+      },
+      "required": [
+        "backups"
+      ]
     }
   },
   "operations": {
@@ -5712,6 +5891,57 @@
       },
       "result": {
         "$ref": "#/$defs/ViewDefault"
+      }
+    },
+    "validateBackup": {
+      "args": {
+        "$ref": "#/$defs/BackupFileArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/BackupSummary"
+      },
+      "description": "Checks the dump shape, format version, schema log and row counts without touching the replica."
+    },
+    "previewRestore": {
+      "args": {
+        "$ref": "#/$defs/BackupFileArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RestorePreview"
+      }
+    },
+    "restoreReplica": {
+      "args": {
+        "$ref": "#/$defs/RestoreArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/RestoreResult"
+      },
+      "description": "Writes the recovery dump, then replaces every ordinary table and the schema log in one transaction and resets device sync state."
+    },
+    "exportReplica": {
+      "args": {
+        "$ref": "#/$defs/BackupFileArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/BackupSummary"
+      },
+      "description": "Streams the portable SQL dump (the life export shape) to a host destination."
+    },
+    "hubBackups": {
+      "args": {
+        "$ref": "#/$defs/EndpointArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/HubBackupList"
+      }
+    },
+    "createHubBackup": {
+      "args": {
+        "$ref": "#/$defs/EndpointArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/HubBackup"
       }
     }
   }

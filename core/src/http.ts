@@ -80,7 +80,7 @@ export function createHttpHub(endpoint: string, token: string, fetcher: Fetcher)
       // carry credentials, override an origin, or escape the endpoint path.
       if (typeof route !== "string") throw new Error("invalid hub route");
       const feed = /^\/v1\/notifications\?after=(0|[1-9][0-9]*)&limit=([1-9][0-9]*)$/.exec(route);
-      if (route !== "/v1/usage" && route !== "/v1/notifications"
+      if (route !== "/v1/usage" && route !== "/v1/notifications" && route !== "/v1/backups"
         && !(feed && feed[0] === route && Number.isSafeInteger(Number(feed[1]))
           && Number(feed[2]) <= 200)) throw new Error("invalid hub route");
       return request("GET", route);
