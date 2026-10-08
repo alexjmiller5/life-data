@@ -45,7 +45,7 @@ export async function backup(env, now, { fetch: get = (...a) => fetch(...a), wai
   await ensureUsage(db);
   try {
     const recovering = await missedRuns(env, now);
-    const keys = await runBackup(env, now, stamp, io);
+    const keys = (await runBackup(env, now, stamp, io)).map((s) => s.key);
     if (recovering) {
       await notify(db, {
         id: `backup:${stamp}:recovered`, producer: "backup", type: "backup.recovered", severity: "info",
@@ -83,19 +83,31 @@ async function missedRuns(env, now) {
   return newest && now - newest > GAP_MS ? { since: newest } : null;
 }
 
-async function runBackup(env, now, stamp, io) {
+// One on-demand copy of the data database (the first BACKUP_DATABASES entry)
+// under manual/, for a consumer's "Back up now". No notifications: the caller
+// gets the result. Returns {key, bytes, sha256}.
+export async function backupNow(env, now, { fetch: get = (...a) => fetch(...a), wait = sleep } = {}) {
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const [name] = Object.keys(env.BACKUP_DATABASES ?? {});
+  if (!name) throw new Error("BACKUP_DATABASES is not set");
+  const [stored] = await runBackup(env, now, stamp, { fetch: get, wait }, { names: [name], prefixes: ["manual"] });
+  return stored;
+}
+
+async function runBackup(env, now, stamp, io, { names, prefixes = backupPrefixes(now) } = {}) {
   if (!env.BACKUP_API_TOKEN) throw new Error("BACKUP_API_TOKEN is not set");
-  const keys = [];
+  const stored = [];
   for (const [name, id] of Object.entries(env.BACKUP_DATABASES ?? {})) {
+    if (names && !names.includes(name)) continue;
     const url = await exportUrl(env, id, io);
     const res = await io.fetch(url);
     if (!res.ok) throw new Error(`D1 export download ${res.status}`);
-    const named = backupPrefixes(now).map((prefix) => `${prefix}/${name}-${stamp}.sql.gz`);
-    const stored = await store(env.BACKUPS, named, res.body.pipeThrough(new CompressionStream("gzip")));
-    console.log(JSON.stringify({ backup: name, keys: named, sql_bytes: Number(res.headers.get("content-length")), gz_bytes: stored }));
-    keys.push(...named);
+    const named = prefixes.map((prefix) => `${prefix}/${name}-${stamp}.sql.gz`);
+    const { bytes, sha256 } = await store(env.BACKUPS, named, res.body.pipeThrough(new CompressionStream("gzip")));
+    console.log(JSON.stringify({ backup: name, keys: named, sql_bytes: Number(res.headers.get("content-length")), gz_bytes: bytes }));
+    stored.push(...named.map((key) => ({ key, bytes, sha256 })));
   }
-  return keys;
+  return stored;
 }
 
 // Starts an export, then polls with its bookmark until the file is ready.
@@ -120,23 +132,31 @@ async function exportUrl(env, id, io) {
 }
 
 // Streams into one multipart upload per key; aborts all of them on any error,
-// so a broken stream never leaves a truncated copy. Returns the bytes stored.
+// so a broken stream never leaves a truncated copy. Multipart objects carry no
+// SHA-256, so each key gets an empty `<key>.sha256` sidecar holding it as
+// metadata (same prefix, so the same lifecycle expiry). Returns {bytes, sha256}.
 async function store(bucket, keys, stream) {
   const uploads = await Promise.all(
     keys.map((key) => bucket.createMultipartUpload(key, { httpMetadata: { contentType: "application/gzip" } })),
   );
   const parts = uploads.map(() => []);
+  const hasher = new crypto.DigestStream("SHA-256");
+  const hash = hasher.getWriter();
   let bytes = 0;
   try {
     let n = 0;
     for await (const part of fixedParts(stream, PART_BYTES)) {
       n++;
       bytes += part.length;
+      await hash.write(part);
       const done = await Promise.all(uploads.map((u) => u.uploadPart(n, part)));
       done.forEach((p, i) => parts[i].push(p));
     }
+    await hash.close();
+    const sha256 = [...new Uint8Array(await hasher.digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     await Promise.all(uploads.map((u, i) => u.complete(parts[i])));
-    return bytes;
+    await Promise.all(keys.map((key) => bucket.put(`${key}.sha256`, "", { customMetadata: { sha256 } })));
+    return { bytes, sha256 };
   } catch (e) {
     await Promise.allSettled(uploads.map((u) => u.abort()));
     throw e;

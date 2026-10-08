@@ -1541,7 +1541,8 @@ class RemoteChanges(threading.Thread):
 
     def __init__(self, hub, retry: float = POLL_SECONDS):
         super().__init__(daemon=True)
-        self.hub, self.retry, self.live = hub, retry, False
+        self.hub, self.retry = hub, retry
+        self.live = None  # unknown until the first answer
         self._changed, self._stopped = threading.Event(), threading.Event()
 
     def run(self) -> None:
@@ -1549,10 +1550,23 @@ class RemoteChanges(threading.Thread):
         while not self._stopped.is_set():
             try:
                 current = self.hub.changes(seq, CHANGES_WAIT)
-            except Exception:  # noqa: BLE001 - the caller's poll covers any failure
+            except Exception as exc:  # noqa: BLE001 - the caller's poll covers any failure
+                if self.live is not False:  # the class only: a body may carry data
+                    print(
+                        f"change signal unavailable ({type(exc).__name__}); "
+                        f"polling every {self.retry} s",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 self.live = False
                 self._stopped.wait(self.retry)
                 continue
+            if not self.live:
+                print(
+                    "change signal live: remote edits sync as they land",
+                    file=sys.stderr,
+                    flush=True,
+                )
             self.live = True
             if current != seq:
                 # The first answer is news too: a change between the caller's last

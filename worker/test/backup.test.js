@@ -18,6 +18,9 @@ class FakeBucket {
     this.aborted = [];
     this.now = new Date();
   }
+  async put(key, body, options) {
+    this.objects.set(key, { body: new Uint8Array(await new Response(body).arrayBuffer()), uploaded: this.now, parts: 1, options });
+  }
   seed(key, uploaded) {
     this.objects.set(key, { body: new Uint8Array(), uploaded, parts: 1 });
   }

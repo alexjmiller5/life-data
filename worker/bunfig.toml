@@ -2,3 +2,4 @@
 # bun's 5 s default on a loaded host.
 [test]
 timeout = 60000
+preload = ["./test/setup.js"]
