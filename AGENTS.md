@@ -952,6 +952,7 @@ storage credentials never leave this service.
 | Screentime Dashboard | `raw/screentime/` |
 | Music Sync | `raw/spotify-pull/`, `raw/spotify-capture/` |
 | People Sync | `photos/people/`, `photos/records/`, `profiles/` |
+| Media Center YouTube offline (mini job) | `youtube/` |
 
 ## Durable change recording
 
