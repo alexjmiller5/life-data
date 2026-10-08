@@ -9,3 +9,6 @@ dist/
 result
 worker/.wrangler/
 node_modules
+
+# Added by ggshield
+.cache_ggshield

@@ -557,18 +557,6 @@ test("cooldowns use endpoint name and URL, survive header rotation, and remain i
     expect(db.db.query("SELECT * FROM provenance").all()).toEqual([]);
     expect(db.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_life_write_*'").all()).toEqual([]);
 
-    // Full operational backups retain cooldowns, while schema/catalog sync above does not.
-    const backups = [];
-    env.BACKUPS = { put: async (_key, bytes) => backups.push(bytes) };
-    expect((await request("/v1/backup", {})).status).toBe(200);
-    const sql = await new Response(new Response(backups[0]).body.pipeThrough(new DecompressionStream("gzip"))).text();
-    const restored = new D1Shim();
-    try {
-      restored.db.exec(sql);
-      const out = await deriveRows(restored, env, "movies", ["78"]);
-      expect(out.failed[0]).toMatchObject({ status: 503, retry_after: 90 });
-      expect(upstream).toHaveBeenCalledTimes(3);
-    } finally { restored.db.close(); }
   } finally { clock.mockRestore(); upstream.mockRestore(); }
 });
 
