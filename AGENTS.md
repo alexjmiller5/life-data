@@ -645,9 +645,9 @@ and `subscriptions:consume` grants; never full, admin or token administration.
 `docs/consumer-access.md` is the standard for which consumer uses which pattern.
 Column patch grants require same-column and id/updated_at/hub_at reads, exclude
 lifecycle fields, and never authorize push/insert or caller-supplied history.
-The deploy workflow pushes `ENROLLMENT_PROFILES`, `ROW_CREATION_POLICIES` and
-`CAPTURE_ADAPTERS` (JSON, `{}` when unused) from the project's ENV item on every
-deploy; edit the item and redeploy, never `wrangler secret put` by hand. One Worker secret is
+The deploy workflow pushes `ENROLLMENT_PROFILES` and `ROW_CREATION_POLICIES`
+(JSON, `{}` when unused) from the project's ENV item on every deploy; edit the
+item and redeploy, never `wrangler secret put` by hand. One Worker secret is
 capped at 5.1 kB, so the deploy step sends `ENROLLMENT_PROFILES` as
 `gzip:<base64>`; the Worker accepts either form and bounds decompression.
 Requested unknown profiles never fall back to full. Auth storage binds

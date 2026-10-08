@@ -46,12 +46,11 @@ jobs:
           APNS_PRIVATE_KEY: op://Life Data/Life Data ENV/APNS_PRIVATE_KEY
           ENROLLMENT_PROFILES: op://Life Data/Life Data ENV/ENROLLMENT_PROFILES
           ROW_CREATION_POLICIES: op://Life Data/Life Data ENV/ROW_CREATION_POLICIES
-          CAPTURE_ADAPTERS: op://Life Data/Life Data ENV/CAPTURE_ADAPTERS
       # Every deploy pushes these from the ENV item, so the vault is the source of truth.
       # ENROLLMENT_PROFILES travels gzip-compressed: one secret is capped at 5.1 kB.
       - name: Sync service secrets
         working-directory: worker
         run: |
-          bun -e 'const names=["APNS_CONFIG","APNS_PRIVATE_KEY","ENROLLMENT_PROFILES","ROW_CREATION_POLICIES","CAPTURE_ADAPTERS"];const v=Object.fromEntries(names.map(n=>[n,process.env[n]]));v.ENROLLMENT_PROFILES="gzip:"+Buffer.from(Bun.gzipSync(v.ENROLLMENT_PROFILES)).toString("base64");process.stdout.write(JSON.stringify(v))' | bunx wrangler@4 secret bulk
+          bun -e 'const names=["APNS_CONFIG","APNS_PRIVATE_KEY","ENROLLMENT_PROFILES","ROW_CREATION_POLICIES"];const v=Object.fromEntries(names.map(n=>[n,process.env[n]]));v.ENROLLMENT_PROFILES="gzip:"+Buffer.from(Bun.gzipSync(v.ENROLLMENT_PROFILES)).toString("base64");process.stdout.write(JSON.stringify(v))' | bunx wrangler@4 secret bulk
       - working-directory: worker
         run: bunx wrangler@4 deploy
