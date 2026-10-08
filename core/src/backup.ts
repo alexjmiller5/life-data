@@ -321,7 +321,7 @@ async function readDump(source: DumpSource, apply?: Apply): Promise<{ summary: B
   const deferred: string[] = [];
   let pending: { table: string; columns: string[]; tuples: string[]; bytes: number } | null = null;
   const flush = async () => {
-    if (pending && apply) await apply.rows(pending.table, pending.columns, pending.tuples);
+    if (pending?.tuples.length && apply) await apply.rows(pending.table, pending.columns, pending.tuples);
     pending = null;
   };
   let characters = 0;

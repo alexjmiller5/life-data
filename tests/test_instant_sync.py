@@ -113,6 +113,24 @@ def test_listener_signals_each_new_sequence_once_and_reports_a_dead_channel():
     assert (4, 25) in hub.calls
 
 
+def test_listener_logs_only_when_the_channel_goes_live_or_down(capsys):
+    hub = QueueHub()
+    remote = RemoteChanges(hub, retry=0.01)
+    remote.start()
+    try:
+        for answer in (1, 1, RuntimeError("hub HTTP 501"), RuntimeError("again"), 1):
+            hub.answers.put(answer)
+        assert eventually(lambda: len(hub.calls) == 6)
+    finally:
+        remote.stop()
+        hub.answers.put(1)
+    assert capsys.readouterr().err.splitlines() == [
+        "change signal live: remote edits sync as they land",
+        "change signal unavailable (RuntimeError); polling every 0.01 s",
+        "change signal live: remote edits sync as they land",
+    ]
+
+
 # --- the loops, on a fake clock --------------------------------------------------
 
 

@@ -227,3 +227,12 @@ test('handlers clear undo after a restore and validate hub backup listings', asy
     await expect(listHubBackups(reply(bad))).rejects.toThrow('invalid hub backups response');
   }
 });
+
+test('restores row counts that fill whole insert batches exactly', async () => {
+  const lines = ['CREATE TABLE _schema_log (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, ddl TEXT NOT NULL);', 'CREATE TABLE t (id TEXT PRIMARY KEY, updated_at TEXT);'];
+  for (let i = 0; i < 400; i++) lines.push(`INSERT INTO "t" ("id","updated_at") VALUES('${i}','${T0}');`);
+  const db = new TestSql();
+  await initCore(db);
+  await restoreReplica(db, memoryFiles({ d: lines.join('\n') + '\n' }), { file: 'd', recovery: 'r', confirm: 'replace' });
+  expect(db.db.query('SELECT count(*) AS n FROM t').get()).toEqual({ n: 400 });
+});
