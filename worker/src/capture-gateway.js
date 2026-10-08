@@ -74,7 +74,8 @@ export async function captureGateway(request,tenant,env,fetcher=fetch,timeouts=U
  const requestId=read?match[2]:payload.request_id;
  const delegated={action:read?'get':'submit',allowed_fields:Object.keys(config.fields),subject:await hashToken(`capture-subject:${tenant.hash}`),...(read?{request_id:requestId}:{request:payload})};
  try{
-  const upstream=await fetcher(config.url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(read?timeouts.read:timeouts.submit),headers:{Authorization:`Bearer ${config.credential}`,'Content-Type':'application/json'},body:JSON.stringify(delegated)});
+  // Workers reject redirect:'error'; a manual-mode 3xx is not ok, so it reads as unavailable.
+  const upstream=await fetcher(config.url,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(read?timeouts.read:timeouts.submit),headers:{Authorization:`Bearer ${config.credential}`,'Content-Type':'application/json'},body:JSON.stringify(delegated)});
   if(upstream.status===404)return reply({error:'capture not found'},404);
   if(upstream.status===409)return reply({error:'request conflict'},409);
   if(!upstream.ok)return reply({error:'capture unavailable'},503);

@@ -514,16 +514,26 @@ const ROUTES = {
   "/v1/cursor": async (body, db) => {
     await ensureHubAtIndexes(db);
     const tables = body.tables ?? [];
-    if (!tables.length) return { max_hub_at: "", max_updated_at: "", tables: {} };
     // Two batches, whatever the table count: a replica reads this every round,
     // and one round trip per table made the read cost seconds on a large estate.
-    const infos = await db.batch(tables.map((t) => db.prepare(`PRAGMA table_info(${qident(t)})`)));
+    // The last entry is the schema log itself: its newest id lets a replica
+    // whose own log has not moved skip the whole-log pull while this has not
+    // moved either.
+    const names = [...tables, "_schema_log"];
+    const infos = await db.batch(names.map((t) => db.prepare(`PRAGMA table_info(${qident(t)})`)));
     const maxes = await db.batch(
-      tables.map((t, i) => {
-        const col = (infos[i].results ?? []).some((c) => c.name === "hub_at") ? "hub_at" : "updated_at";
+      names.map((t, i) => {
+        const info = infos[i].results ?? [];
+        const log = i === tables.length;
+        // A table the hub lacks (renamed or dropped by a replay the caller has
+        // not run yet) has no arrivals.
+        if (!info.length) return db.prepare(log ? "SELECT 0 AS m" : "SELECT '' AS m");
+        if (log) return db.prepare("SELECT coalesce(max(id), 0) AS m FROM _schema_log");
+        const col = info.some((c) => c.name === "hub_at") ? "hub_at" : "updated_at";
         return db.prepare(`SELECT max(${col}) AS m FROM ${qident(t)}`);
       }),
     );
+    const schema = maxes.pop().results?.[0]?.m ?? 0;
     let top = "";
     const marks = {};
     tables.forEach((t, i) => {
@@ -535,7 +545,7 @@ const ROUTES = {
     // tables whose mark reached its cursor instead of asking every table.
     // max_updated_at kept for clients from before the hub_at cursor: same value, so an
     // old client keeps syncing (full-pull semantics) until it is upgraded.
-    return { max_hub_at: top, max_updated_at: top, tables: marks };
+    return { max_hub_at: top, max_updated_at: top, tables: marks, schema };
   },
 };
 

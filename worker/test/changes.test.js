@@ -160,3 +160,15 @@ test("GET /v1/changes needs table read access and validates its query", async ()
   expect((await call("/v1/changes?since=x&wait=0")).status).toBe(400);
   expect((await call("/v1/changes?wait=-1")).status).toBe(400);
 });
+
+// A cheap quiet round: the cursor also answers for the schema log, so a replica
+// skips the whole-log pull while neither side's log has moved.
+test("the cursor reports the schema log mark and tolerates tables the hub lacks", async () => {
+  const db = await peopleDb();
+  await db.prepare("CREATE TABLE _schema_log (id INTEGER PRIMARY KEY, applied_at TEXT, ddl TEXT)").run();
+  const before = await ROUTES["/v1/cursor"]({ tables: ["people", "renamed_away"] }, db);
+  expect(before.schema).toBe(0);
+  expect(before.tables.renamed_away).toBe("");
+  await ROUTES["/v1/schema/push"]({ entries: [{ applied_at: T1, ddl: "ALTER TABLE people ADD COLUMN bio TEXT" }] }, db);
+  expect((await ROUTES["/v1/cursor"]({ tables: ["people"] }, db)).schema).toBe(1);
+});

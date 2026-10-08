@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,11 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+
+RETRY_FIRST = 15  # seconds before retrying a failed round, doubling per failure...
+RETRY_MAX = 120  # ...up to two minutes, so one bad round never parks sync for long
+CREDENTIAL_RETRY_MAX = 3600  # a round that must fetch the credential again: finite budget
+LOCKED_RETRY = 5  # another local writer held the database; it lets go in seconds
 
 
 def read_json(path: Path) -> dict:
@@ -231,7 +237,17 @@ def _credential(data: Path, cfg: dict, prefs: dict) -> str:
 
 def run(data: Path, poll_seconds: int) -> int:
     """Stay supervised while disabled; never authenticate until opted in."""
-    from . import _transient, db_changed, db_version, hub_from_config, init, load_config, sync
+    from . import (
+        SAFETY_SECONDS,
+        RemoteChanges,
+        _transient,
+        db_changed,
+        db_version,
+        hub_from_config,
+        init,
+        load_config,
+        sync,
+    )
     from .credentials import KeychainError
 
     data.mkdir(parents=True, exist_ok=True)
@@ -249,18 +265,23 @@ def run(data: Path, poll_seconds: int) -> int:
         saved_status = None
         path = data / "life.db"
         hub = None
+        # The hub's change long poll (RemoteChanges) for the current hub only.
+        remote = listening = None
         previous_config = None
         fingerprint = db_version(path)
-        next_sync = 0.0
-        retry = 60
+        next_sync = last_round = 0.0
+        retry = RETRY_FIRST
         while True:
             try:
+                if remote is not None and listening is not hub:
+                    remote.stop()
+                    remote = None
                 prefs = read_json(data / "background.json")
                 if not prefs.get("enabled", False):
                     hub = None
                     previous_config = None
                     next_sync = 0.0
-                    retry = 60
+                    retry = RETRY_FIRST
                     current["state"] = "disabled"
                 else:
                     cfg = load_config(data, resolve_auth=False)
@@ -269,10 +290,16 @@ def run(data: Path, poll_seconds: int) -> int:
                     if signature != previous_config:
                         hub = None
                         next_sync = 0.0
-                        retry = 60
+                        retry = RETRY_FIRST
                         previous_config = signature
-                    due = time.monotonic() >= next_sync
-                    if due or (changed and hub and current.get("state") == "idle"):
+                    idle = current.get("state") == "idle"
+                    if idle and remote is not None and remote.live:
+                        # Remote edits arrive as signals; the poll is only a safety net.
+                        due = time.monotonic() >= last_round + SAFETY_SECONDS
+                    else:
+                        due = time.monotonic() >= next_sync
+                    signalled = remote is not None and remote.take()
+                    if due or ((changed or signalled) and hub and idle):
                         current.update(
                             state="authenticating" if hub is None else "syncing",
                             last_attempt=_stamp(),
@@ -285,6 +312,9 @@ def run(data: Path, poll_seconds: int) -> int:
                             if not token:
                                 raise RuntimeError("no background credential configured")
                             hub = hub_from_config({**cfg, "token": token})
+                            if hasattr(hub, "changes"):
+                                remote, listening = RemoteChanges(hub, poll_seconds), hub
+                                remote.start()
                             current["state"] = "syncing"
                             write_json(data / "background-status.json", current)
                         init(path)
@@ -295,8 +325,9 @@ def run(data: Path, poll_seconds: int) -> int:
                             raise RuntimeError("hub rejected rows")
                         current.update(state="idle", last_success=_stamp(), last_error=None)
                         fingerprint = db_version(path)
-                        retry = 60
-                        next_sync = time.monotonic() + poll_seconds
+                        retry = RETRY_FIRST
+                        last_round = time.monotonic()
+                        next_sync = last_round + poll_seconds
             except Exception as exc:  # noqa: BLE001 - stay alive through outages
                 # Exception messages/remote bodies can contain credentials or data.
                 http_error = exc if isinstance(exc, urllib.error.HTTPError) else exc.__cause__
@@ -326,8 +357,11 @@ def run(data: Path, poll_seconds: int) -> int:
                 # the status file keeps the redacted class above.
                 detail = f"{type(exc).__name__}: {str(exc)[:300]}" if _transient(exc) else error
                 print(f"sync failed: {detail}", file=sys.stderr, flush=True)
-                next_sync = time.monotonic() + retry
-                retry = min(retry * 2, 3600)
+                if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc):
+                    next_sync = time.monotonic() + LOCKED_RETRY
+                else:
+                    next_sync = time.monotonic() + retry
+                    retry = min(retry * 2, RETRY_MAX if hub else CREDENTIAL_RETRY_MAX)
             if current != saved_status:
                 write_json(data / "background-status.json", current)
                 saved_status = current.copy()

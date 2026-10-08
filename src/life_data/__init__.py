@@ -9,6 +9,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -18,8 +19,10 @@ VERSION = "0.2.0"
 # Default hosted hub. Any deployment can be targeted by setting hub_url in
 # config.json, so the client is not tied to this instance.
 DEFAULT_HUB_URL = "https://life-data.nqipomyrjb.workers.dev"
-POLL_SECONDS = 30  # how often `life watch` pulls remote changes
+POLL_SECONDS = 30  # how often `life watch` pulls when the hub cannot signal changes
 TICK_SECONDS = 1  # how often `life watch` checks for local changes
+CHANGES_WAIT = 25  # seconds one change long poll may be held (the hub's maximum)
+SAFETY_SECONDS = 600  # with live change signals, a slow round still catches a missed one
 
 NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 DDL_KEYWORDS = {"CREATE", "ALTER", "DROP"}
@@ -837,13 +840,15 @@ class LocalHub:
     def cursor(self, tables: list[str]) -> str:
         return self.marks(tables)[0]
 
-    def marks(self, tables: list[str]) -> tuple[str, dict[str, str]]:
+    def marks(self, tables: list[str]) -> tuple[str, dict[str, str], int]:
         marks = {}
         for t in tables:
             col = "hub_at" if self._has_hub_at(t) else "updated_at"
             rows = self._query(f"SELECT max({col}) AS m FROM {qi(t)}")
             marks[t] = rows[0]["m"] or ""
-        return max(marks.values(), default=""), marks
+        self.ensure_ready()  # as the service does before every route
+        schema = self._query("SELECT coalesce(max(id), 0) AS m FROM _schema_log")[0]["m"]
+        return max(marks.values(), default=""), marks, schema
 
     def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
         return {"derived": 0, "failed": []}  # derivations run on the hub only
@@ -1024,10 +1029,16 @@ class HttpHub:
     def cursor(self, tables: list[str]) -> str:
         return self.marks(tables)[0]
 
-    def marks(self, tables: list[str]) -> tuple[str, dict[str, str] | None]:
-        """The pull cursor plus each table's newest arrival (None from a hub too old to say)."""
+    def marks(self, tables: list[str]) -> tuple[str, dict[str, str] | None, int | None]:
+        """The pull cursor, each table's newest arrival and the schema log's newest
+        entry (None for either from a hub too old to say)."""
         out = self._post("/v1/cursor", {"tables": tables})
-        return out.get("max_hub_at") or "", out.get("tables")
+        return out.get("max_hub_at") or "", out.get("tables"), out.get("schema")
+
+    def changes(self, since: int | None, wait: int) -> int:
+        """The hub's change sequence, once it differs from `since` or `wait` runs out."""
+        query = f"wait={wait}" + ("" if since is None else f"&since={since}")
+        return int(self._get(f"/v1/changes?{query}")["seq"])
 
     def derive(self, table: str, ids: list[str], col: str | None = None) -> dict:
         body = {"table": table, "ids": ids}
@@ -1186,10 +1197,6 @@ def _user_tables(path: Path, conn: sqlite3.Connection | None = None) -> list[str
     return sorted(first) + sorted(n for n in names if n not in first)
 
 
-def _columns(path: Path, table: str) -> list[str]:
-    return [r["name"] for r in execute_sql(path, f"PRAGMA table_info({qi(table)})")]
-
-
 def _apply_local_ddl(path: Path, entry: dict) -> None:
     with connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1211,9 +1218,13 @@ def ensure_hub_at(path: Path) -> bool:
     True if anything was added — the caller then owes one full pull, because
     every existing row still has a NULL hub_at."""
     added = False
-    for t in _user_tables(path):
-        if "hub_at" in _columns(path, t):
-            continue
+    with connect(path) as conn:  # one connection: a round runs this over every table
+        missing = [
+            t
+            for t in _user_tables(path, conn)
+            if "hub_at" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({qi(t)})")}
+        ]
+    for t in missing:
         # The literal DEFAULT backfills every existing row, and because the DDL
         # replays verbatim, the hub and every other replica backfill to the SAME
         # stamp. Without it those rows keep a NULL hub_at, the hub's cursor stays
@@ -1226,6 +1237,13 @@ def ensure_hub_at(path: Path) -> bool:
             if "duplicate column" not in str(exc).lower():
                 raise
     return added
+
+
+def _marks(hub, tables: list[str]) -> tuple:
+    """(cursor, per-table marks, schema log mark); hubs from before the schema
+    mark answer with the first two only."""
+    pull_cursor, marks, *schema = hub.marks(tables)
+    return pull_cursor, marks, schema[0] if schema else None
 
 
 def sync(path: Path, hub) -> dict:
@@ -1252,24 +1270,52 @@ def _sync_locked(path: Path, hub) -> dict:
     hub.ensure_ready()
     # before the schema replay, so the ALTERs travel to the hub in this sync
     upgraded = ensure_hub_at(path)
-
-    local_log = execute_sql(path, "SELECT applied_at, ddl FROM _schema_log ORDER BY applied_at, id")
-    hub_log = hub.schema_pull()
-    hub_ddls = {e["ddl"] for e in hub_log}
-    local_ddls = {e["ddl"] for e in local_log}
-
-    unsent = [e for e in local_log if e["ddl"] not in hub_ddls]
-    ddl_applied = hub.schema_push(unsent) if unsent else 0
-    for entry in hub_log:
-        if entry["ddl"] not in local_ddls:
-            _apply_local_ddl(path, entry)
-            ddl_applied += 1
-
-    tables = _user_tables(path)
     # Old checkpoints could miss equal revisions, inherit a remote future
     # timestamp, or consume a precommit hub arrival. Repair both directions
     # once, even when that poisoned timestamp is no longer in the future.
     repair = _get_state(path, "checkpoint_version") != "3"
+
+    # A replica whose own log has not moved since its last replay has every
+    # table on the hub, so it reads the cursor first and skips the whole-log
+    # pull while the hub's log has not moved either.
+    local_mark = str(execute_sql(path, "SELECT coalesce(max(id), 0) AS m FROM _schema_log")[0]["m"])
+    seen_hub, _, seen_local = _get_state(path, "schema_seen").partition(":")
+    early = hasattr(hub, "marks") and not (unbound_hub or repair) and seen_local == local_mark
+    marks = schema_mark = None
+    if early:
+        pull_cursor, marks, schema_mark = _marks(hub, _user_tables(path))
+    ddl_applied = 0
+    if not early or schema_mark is None or str(schema_mark) != seen_hub:
+        local_log = execute_sql(
+            path, "SELECT applied_at, ddl FROM _schema_log ORDER BY applied_at, id"
+        )
+        hub_log = hub.schema_pull()
+        hub_ddls = {e["ddl"] for e in hub_log}
+        local_ddls = {e["ddl"] for e in local_log}
+
+        unsent = [e for e in local_log if e["ddl"] not in hub_ddls]
+        ddl_applied = hub.schema_push(unsent) if unsent else 0
+        for entry in hub_log:
+            if entry["ddl"] not in local_ddls:
+                _apply_local_ddl(path, entry)
+                ddl_applied += 1
+    # Only a hub mark read before the replay may be trusted next round: one read
+    # after it could cover another replica's DDL that this replay never saw.
+    schema_seen = f"{schema_mark if early else ''}:{local_mark}"
+
+    # capture the pull cursor BEFORE pulling: the hub writes rows itself
+    # (derivations on push and on cron), and anything it writes after this read
+    # gets hub_at > pull_cursor, so the next sync still sees it. Read before the
+    # replay (above) it is only more conservative: a table the replay adds has
+    # no mark and is pulled.
+    # `marks` is each table's newest arrival on the hub: a table whose mark
+    # never reached our cursor has nothing for us, so it is not asked at all -
+    # a quiet round costs a handful of requests instead of one per table.
+    if not early:
+        if hasattr(hub, "marks"):
+            pull_cursor, marks, _ = _marks(hub, _user_tables(path))
+        else:
+            pull_cursor = hub.cursor(_user_tables(path))
     last_pull = _get_state(path, "last_pull")
     last_push = _get_state(path, "last_push")
     announce_repair = repair and bool(last_pull or last_push)
@@ -1293,17 +1339,6 @@ def _sync_locked(path: Path, hub) -> dict:
         last_pull = ""
     if unbound_hub or repair:
         last_push = ""
-    # capture the pull cursor BEFORE pulling: the hub writes rows itself
-    # (derivations on push and on cron), and anything it writes after this read
-    # gets hub_at > pull_cursor, so the next sync still sees it.
-    # `marks` is each table's newest arrival on the hub: a table whose mark
-    # never reached our cursor has nothing for us, so it is not asked at all -
-    # a quiet round costs a handful of requests instead of one per table.
-    marks = None
-    if hasattr(hub, "marks"):
-        pull_cursor, marks = hub.marks(tables)
-    else:
-        pull_cursor = hub.cursor(tables)
 
     # Serialize with local writers before reading our clock and snapshot.
     # Never derive this checkpoint from rows: pulled revisions may be dated
@@ -1353,6 +1388,12 @@ def _sync_locked(path: Path, hub) -> dict:
             columns[table] = [
                 r["name"] for r in snapshot.execute(f"PRAGMA table_info({qi(table)})")
             ]
+            # Unlogged, like the engine indexes: each replica owns its own.
+            # Without it this scan reads every row of every table each round.
+            snapshot.execute(
+                f"CREATE INDEX IF NOT EXISTS {qi(table + '_updated_at')} "
+                f"ON {qi(table)} (updated_at)"
+            )
             candidates[table] = [
                 dict(r)
                 for r in snapshot.execute(
@@ -1386,6 +1427,9 @@ def _sync_locked(path: Path, hub) -> dict:
                     _upsert_sql(table, columns[table]), (json.dumps(remote[i : i + CHUNK]),)
                 )
                 pulled += cur.rowcount
+                # Short transactions: a `life sql` writer waits one chunk, not a
+                # whole pull. A failure re-pulls; the LWW upsert is idempotent.
+                conn.commit()
             if table == PURGES:
                 apply_purges(conn, remote)
 
@@ -1461,7 +1505,7 @@ def _sync_locked(path: Path, hub) -> dict:
         )
         push(table, mine, events)
 
-    state = {"last_pull": progress.get("recovery_pull", pull_cursor)}
+    state = {"last_pull": progress.get("recovery_pull", pull_cursor), "schema_seen": schema_seen}
     if not rejected:
         state.update(last_push=push_cursor, checkpoint_version="3")
         if isinstance(hub, HttpHub):
@@ -1483,34 +1527,79 @@ def _sync_locked(path: Path, hub) -> dict:
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 
-def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False) -> None:
-    """Push local changes within ~1s; pull remote changes every poll_seconds."""
-    state = db_version(path)
-    last_poll = 0.0
-    while True:
-        changed, state = db_changed(path, state)
-        due = (time.monotonic() - last_poll) >= poll_seconds
-        if changed or due:
+class RemoteChanges(threading.Thread):
+    """Long-polls the hub's change sequence in the background. `take()` reports,
+    once, that the hub changed since the last look; `live` is False while the
+    channel fails (offline, an older hub), and the caller polls instead."""
+
+    def __init__(self, hub, retry: float = POLL_SECONDS):
+        super().__init__(daemon=True)
+        self.hub, self.retry, self.live = hub, retry, False
+        self._changed, self._stopped = threading.Event(), threading.Event()
+
+    def run(self) -> None:
+        seq = None
+        while not self._stopped.is_set():
             try:
-                stats = sync(path, hub)
-                if stats["pushed"] or stats["pulled"] or stats["ddl_applied"]:
-                    print(json.dumps(stats), flush=True)
-            except Exception as e:  # noqa: BLE001 - offline, hub down, or a local
-                # hiccup: keep watching. A launchd restart re-runs the credential
-                # command, and that budget is finite.
-                print(f"sync deferred: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-            if changed:
+                current = self.hub.changes(seq, CHANGES_WAIT)
+            except Exception:  # noqa: BLE001 - the caller's poll covers any failure
+                self.live = False
+                self._stopped.wait(self.retry)
+                continue
+            self.live = True
+            if current != seq:
+                # The first answer is news too: a change between the caller's last
+                # round and this listener's first look must still start a round.
+                seq = current
+                self._changed.set()
+
+    def take(self) -> bool:
+        if not self._changed.is_set():
+            return False
+        self._changed.clear()
+        return True
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+
+def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False) -> None:
+    """Push local changes within ~1s; pull as soon as the hub signals a remote
+    change, or every poll_seconds while it cannot."""
+    state = db_version(path)
+    last_round = float("-inf")
+    remote = None if once or not hasattr(hub, "changes") else RemoteChanges(hub, poll_seconds)
+    if remote:
+        remote.start()
+    try:
+        while True:
+            changed, state = db_changed(path, state)
+            signalled = remote is not None and remote.take()
+            interval = SAFETY_SECONDS if remote is not None and remote.live else poll_seconds
+            if changed or signalled or time.monotonic() - last_round >= interval:
                 try:
-                    findings = catalog.check(path)
-                    if findings:
-                        print(json.dumps({"check": findings}), file=sys.stderr, flush=True)
-                except Exception as e:  # noqa: BLE001 - never kill the daemon
-                    print(f"check failed: {e}", file=sys.stderr, flush=True)
-            state = db_version(path)
-            last_poll = time.monotonic()
-        if once:
-            return
-        time.sleep(TICK_SECONDS)
+                    stats = sync(path, hub)
+                    if stats["pushed"] or stats["pulled"] or stats["ddl_applied"]:
+                        print(json.dumps(stats), flush=True)
+                except Exception as e:  # noqa: BLE001 - offline, hub down, or a local
+                    # hiccup: keep watching. A launchd restart re-runs the credential
+                    # command, and that budget is finite.
+                    print(f"sync deferred: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                if changed:
+                    try:
+                        findings = catalog.check(path)
+                        if findings:
+                            print(json.dumps({"check": findings}), file=sys.stderr, flush=True)
+                    except Exception as e:  # noqa: BLE001 - never kill the daemon
+                        print(f"check failed: {e}", file=sys.stderr, flush=True)
+                state = db_version(path)
+                last_round = time.monotonic()
+            if once:
+                return
+            time.sleep(TICK_SECONDS)
+    finally:
+        if remote:
+            remote.stop()
 
 
 # --- CLI ---------------------------------------------------------------------

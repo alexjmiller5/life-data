@@ -11,7 +11,7 @@ test('gateway uses fixed service credential and opaque subject, never device tok
  const fetcher=async(url,init)=>{called={url,init};return Response.json({request_id:id,state:'received',internal:'hidden'});};
  const response=await captureGateway(request(),tenant,env,fetcher);
  expect(response.status).toBe(202);expect(await response.json()).toEqual({request_id:id,state:'received'});
- expect(called.url).toBe('https://resolver.test/capture');expect(called.init.redirect).toBe('error');
+ expect(called.url).toBe('https://resolver.test/capture');expect(called.init.redirect).toBe('manual');
  expect(called.init.headers.Authorization).toBe('Bearer synthetic-service-token');
  expect(JSON.stringify(called)).not.toContain('device-secret');expect(JSON.stringify(called)).not.toContain(tenant.hash);
  expect(JSON.parse(called.init.body).action).toBe('submit');
@@ -108,4 +108,11 @@ test('submissions wait longer than receipt reads for the adapter to accept',asyn
  const budget={read:20,submit:400};
  expect((await captureGateway(request(),tenant,env,slow,budget)).status).toBe(202);
  expect((await captureGateway(request(undefined,'GET'),tenant,env,slow,budget)).status).toBe(503);
+});
+
+test('an upstream redirect is never followed and reads as unavailable',async()=>{
+ // Workers reject redirect:"error"; manual mode returns the 3xx itself.
+ const moved=async()=>new Response(null,{status:302,headers:{Location:'https://elsewhere.test/'}});
+ const response=await captureGateway(request(),tenant,env,moved);
+ expect(response.status).toBe(503);expect(await response.json()).toEqual({error:'capture unavailable'});
 });
