@@ -223,6 +223,11 @@ def test_dump_sql_roundtrips_schema_and_data(db):
     _mk_people(db, ["Ada"])
     text = dump_sql(db)
     assert "CREATE TABLE" in text and "Ada" in text
+    # The versioned dump shape core's validateBackup and the app's restore read.
+    assert text.startswith("-- life-data-dump: 1\nBEGIN TRANSACTION;\n")
+    copy = sqlite3.connect(":memory:")
+    copy.executescript(text)
+    assert copy.execute("SELECT name FROM people").fetchall() == [("Ada",)]
 
 
 # --- change detection (drives `life watch`) ---------------------------------

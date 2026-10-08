@@ -277,9 +277,13 @@ def rename_table(path: Path, old: str, new: str) -> None:
     catalog.write(path, run, ddl=True)
 
 
+# The dump shape version shared with life-core (DUMP_HEADER in core/src/backup.ts).
+DUMP_HEADER = "-- life-data-dump: 1"
+
+
 def dump_sql(path: Path) -> str:
     with connect(path) as conn:
-        return "\n".join(conn.iterdump())
+        return "\n".join([DUMP_HEADER, *conn.iterdump()])
 
 
 def db_version(path: Path) -> tuple:
@@ -1534,6 +1538,28 @@ def _sync_locked(path: Path, hub) -> dict:
     return {"pushed": pushed, "pulled": pulled, "ddl_applied": ddl_applied, "rejected": rejected}
 
 
+def pending_local_writes(path: Path) -> bool:
+    """Local writes the last round's snapshot missed because they landed while it
+    ran: a dirty receipt (Python writers) or a row stamped between that snapshot
+    and now (any writer). Bounded by now, so a pulled row from a clock running
+    ahead never keeps rounds going."""
+    with connect(path) as conn:
+        row = conn.execute("SELECT value FROM _sync_state WHERE key = 'last_push'").fetchone()
+        if not row or not row[0]:
+            return False
+        dirty = catalog._table_exists(conn, "_sync_dirty")
+        if dirty and conn.execute("SELECT 1 FROM _sync_dirty LIMIT 1").fetchone():
+            return True
+        now = conn.execute(f"SELECT {NOW}").fetchone()[0]
+        return any(
+            conn.execute(
+                f"SELECT 1 FROM {qi(t)} WHERE updated_at >= ? AND updated_at <= ? LIMIT 1",
+                (row[0], now),
+            ).fetchone()
+            for t in _user_tables(path, conn)
+        )
+
+
 class RemoteChanges(threading.Thread):
     """Long-polls the hub's change sequence in the background. `take()` reports,
     once, that the hub changed since the last look; `live` is False while the
@@ -1592,16 +1618,21 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
     remote = None if once or not hasattr(hub, "changes") else RemoteChanges(hub, poll_seconds)
     if remote:
         remote.start()
+    again = False  # a write landed while the last round ran
     try:
         while True:
             changed, state = db_changed(path, state)
             signalled = remote is not None and remote.take()
             interval = SAFETY_SECONDS if remote is not None and remote.live else poll_seconds
-            if changed or signalled or time.monotonic() - last_round >= interval:
+            if changed or signalled or again or time.monotonic() - last_round >= interval:
+                again = False
                 try:
                     stats = sync(path, hub)
                     if stats["pushed"] or stats["pulled"] or stats["ddl_applied"]:
                         print(json.dumps(stats), flush=True)
+                    # The fingerprint below absorbs the round's own writes, and
+                    # with them any made meanwhile: those still need pushing.
+                    again = not stats["rejected"] and pending_local_writes(path)
                 except Exception as e:  # noqa: BLE001 - offline, hub down, or a local
                     # hiccup: keep watching. A launchd restart re-runs the credential
                     # command, and that budget is finite.

@@ -1,6 +1,6 @@
 // Consumer access to hub backups: list, download and take one now. Only the
-// data database's copies (the first BACKUP_DATABASES entry) are visible; the
-// auth registry's never are. `backups:read` / `backups:write` grant these
+// BACKUP_DATA_DATABASE entry's copies are visible; the auth registry's never
+// are. Named explicitly: Cloudflare returns JSON vars with sorted keys. `backups:read` / `backups:write` grant these
 // routes (full and admin imply both); table grants never do.
 import { backupNow } from "./backup.js";
 
@@ -10,7 +10,7 @@ const MANUAL_INTERVAL_MS = 3600_000;
 const json = (obj, status = 200, headers = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers } });
 
-const dataName = (env) => Object.keys(env.BACKUP_DATABASES ?? {})[0];
+const dataName = (env) => (Object.hasOwn(env.BACKUP_DATABASES ?? {}, env.BACKUP_DATA_DATABASE ?? "") ? env.BACKUP_DATA_DATABASE : null);
 const keyPattern = (name) =>
   new RegExp(`^(?:${TIERS.join("|")})/${name.replace(/[^A-Za-z0-9_-]/g, "")}-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.sql\\.gz$`);
 

@@ -66,6 +66,12 @@ reads never provision either store or rewrite saved definitions.
   (one per hub) holds a change sequence that `GET /v1/changes` long-polls.
 - `worker/src/backup.js` - the backup cron: D1 export API → gzip → R2
   retention tiers, with failure/recovery notifications.
+  `worker/src/backups.js` - consumer `GET/POST /v1/backups` routes
+  (`docs/backups.md`).
+- `core/src/backup.ts` - the SQL dump format, `validateBackup`,
+  `previewRestore`, `exportReplica`, `restoreReplica` and the hub backup
+  clients. Rows are re-serialized from parsed literals; dump SQL never runs
+  for data. `docs/backups.md` is the contract.
 - `core/src/` - shared TypeScript validator, sync, write path, catalog, HTTP
   adapter and view compiler for UI clients. `core/README.md` documents adapter
   contracts and current boundaries. `worker/src/validate.js` re-exports the
@@ -641,7 +647,11 @@ pushes never wake replicas - a re-pushing replica would otherwise loop every
 replica), and schema push, row creation and changeset commits mark
 explicitly. A new writer that bypasses those must call `markChanged()` too;
 a missed bump costs up to `SAFETY_SECONDS`. Our own push echoes back one
-quiet round.
+quiet round. Both loops reset their file fingerprint after a round, which
+also absorbs a local write made while it ran, so after a clean round
+`pending_local_writes` (a dirty receipt, or a row stamped between the round's
+snapshot and now) starts another round at once. The window ends at now, so a
+row from a clock running ahead cannot keep rounds going.
 
 A quiet round stays cheap: `/v1/cursor` also returns `schema` (the hub's
 newest `_schema_log` id) and blank marks for tables the hub lacks. A replica
@@ -762,6 +772,10 @@ the backup, so a failure fails the run in Cloudflare's cron history; it also
 posts `backup.failed` (critical) into the notification feed, and the first
 success after a failure, or after a newest daily copy older than 26 h, posts
 `backup.recovered`. `POST /v1/backup` (full/admin) runs the same path on demand.
+Each stored copy gets an empty `<key>.sha256` sidecar holding its digest as
+metadata. Consumers use `/v1/backups` (`docs/backups.md`): `backups:read` lists
+and downloads the data database's copies, `backups:write` takes an hourly-limited
+`manual/` copy; `full`/admin imply both, table grants never do.
 
 Two cron triggers, dispatched in `scheduled()` on `event.cron`: `10 9 * * *`
 is the backup, `*/15 * * * *` is the derivation sweep (`SWEEP_CRON` in

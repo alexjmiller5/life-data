@@ -246,6 +246,7 @@ def run(data: Path, poll_seconds: int) -> int:
         hub_from_config,
         init,
         load_config,
+        pending_local_writes,
         sync,
     )
     from .credentials import KeychainError
@@ -270,6 +271,7 @@ def run(data: Path, poll_seconds: int) -> int:
         previous_config = None
         fingerprint = db_version(path)
         next_sync = last_round = 0.0
+        again = False  # a write landed while the last round ran
         retry = RETRY_FIRST
         while True:
             try:
@@ -299,7 +301,8 @@ def run(data: Path, poll_seconds: int) -> int:
                     else:
                         due = time.monotonic() >= next_sync
                     signalled = remote is not None and remote.take()
-                    if due or ((changed or signalled) and hub and idle):
+                    if due or ((changed or signalled or again) and hub and idle):
+                        again = False
                         current.update(
                             state="authenticating" if hub is None else "syncing",
                             last_attempt=_stamp(),
@@ -324,7 +327,10 @@ def run(data: Path, poll_seconds: int) -> int:
                         if stats.get("rejected"):
                             raise RuntimeError("hub rejected rows")
                         current.update(state="idle", last_success=_stamp(), last_error=None)
+                        # The fingerprint absorbs this round's own writes, and with
+                        # them any made meanwhile: those still need pushing.
                         fingerprint = db_version(path)
+                        again = pending_local_writes(path)
                         retry = RETRY_FIRST
                         last_round = time.monotonic()
                         next_sync = last_round + poll_seconds

@@ -14,6 +14,7 @@ whose rule matches its intended lifetime:
     weekly/   Sundays          -> 190 days  (~27 points across six months)
     monthly/  the 1st          -> 400 days  (13 points across a year)
     yearly/   Jan 1            -> kept forever
+    manual/   "Back up now"    -> 35 days   (POST /v1/backups, at most hourly)
 
 Usage:
     ./scripts/cf-r2-lifecycle.py [--bucket NAME] [--dry-run]
@@ -34,6 +35,7 @@ TIERS = [
     ("weekly/", 190),
     ("monthly/", 400),
     ("yearly/", None),  # never expires
+    ("manual/", 35),
 ]
 
 

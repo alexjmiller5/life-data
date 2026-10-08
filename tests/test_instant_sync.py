@@ -21,6 +21,7 @@ from life_data import (
     execute_sql,
     init,
     insert_rows,
+    pending_local_writes,
     sync,
     watch,
 )
@@ -310,7 +311,72 @@ def test_runner_polls_while_the_change_channel_is_down(tmp_path, monkeypatch, cl
     assert gaps(attempts) == [30, 30, 30]
 
 
+def test_watch_runs_again_at_once_when_a_write_landed_during_its_round(db, clock, monkeypatch):
+    rounds = []
+    monkeypatch.setattr(life_data, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
+    answers = iter([True])  # the first round missed a write; the second did not
+    monkeypatch.setattr(life_data, "pending_local_writes", lambda _: next(answers, False))
+    monkeypatch.setattr(life_data, "RemoteChanges", lambda hub, retry: FakeListener(clock, []))
+    stop_at(monkeypatch, clock, 1010)
+    with pytest.raises(KeyboardInterrupt):
+        watch(db, SignalHub(), poll_seconds=30)
+    assert [r - 1000 for r in rounds] == [0, 1]
+
+
+def test_runner_runs_again_at_once_when_a_write_landed_during_its_round(
+    tmp_path, monkeypatch, clock
+):
+    answers = iter([True])
+    monkeypatch.setattr(life_data, "pending_local_writes", lambda _: next(answers, False))
+    monkeypatch.setattr(life_data, "RemoteChanges", lambda hub, retry: FakeListener(clock, []))
+    attempts = run_runner(tmp_path, monkeypatch, clock, 1010, lambda _: QUIET, SignalHub())
+    assert [a - 1000 for a in attempts] == [0, 1]
+
+
 # --- a cheap quiet round -----------------------------------------------------------
+
+
+def test_writes_made_while_a_round_ran_are_pending_until_the_next_round(db, hub):
+    create_table(db, "people", ["name:text"])
+    insert_rows(db, "people", [{"name": "Ada"}])
+    sync(db, hub)
+    assert not pending_local_writes(db)
+    execute_sql(db, "UPDATE people SET name = 'Grace'")  # a `life sql` write
+    assert pending_local_writes(db)
+    sync(db, hub)
+    assert not pending_local_writes(db)
+    with sqlite3.connect(db) as other:  # a writer without dirty receipts (Life UI)
+        other.execute(
+            "UPDATE people SET name = 'Lin', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        )
+    assert pending_local_writes(db)
+    # The hub logs this edit's history itself, stamped just after our snapshot
+    # and pulled back in the same round: one more round, then quiet.
+    sync(db, hub)
+    sync(db, hub)
+    assert not pending_local_writes(db)
+
+
+def test_a_backdated_import_is_pending_through_its_dirty_receipt(db, hub):
+    create_table(db, "people", ["name:text"])
+    sync(db, hub)
+    old = {"id": "imported", "name": "Ada", "updated_at": "2001-01-01T00:00:00.000Z"}
+    insert_rows(db, "people", [old])  # the source's own stamp, far behind the cursor
+    assert pending_local_writes(db)
+
+
+def test_a_future_stamped_row_never_keeps_rounds_running(db, hub):
+    create_table(db, "people", ["name:text"])
+    sync(db, hub)
+    future = {"id": "f", "name": "Skewed", "updated_at": "2999-01-01T00:00:00.000Z"}
+    hub.rows_push("people", list(future), [future])
+    sync(db, hub)
+    assert execute_sql(db, "SELECT name FROM people") == [{"name": "Skewed"}]
+    assert not pending_local_writes(db)
+
+
+def test_a_replica_that_never_synced_has_nothing_pending_to_report(db):
+    assert not pending_local_writes(db)
 
 
 class CountingHub(LocalHub):

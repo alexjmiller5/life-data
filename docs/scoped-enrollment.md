@@ -30,6 +30,8 @@ is the grammar contract, checked by core, the Worker and the Python CLI:
 - `files:read:<prefix>/` and `files:write:<prefix>/`: slash-terminated
   segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`.
 - `subscriptions:consume:<subscription-uuid>`.
+- `backups:read` and `backups:write` ([backups.md](backups.md)), independent
+  of every table grant.
 
 Internal, catalog, history, provenance and purge tables are not eligible.
 Full, admin and token administration are never profile grants; a profile that

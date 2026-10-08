@@ -93,6 +93,13 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   this snapshot is not a replacement row. Saving a correction does not clear
   the inbox; an accepted sync receipt does. Refresh after failed sync as well,
   because earlier receipts in that round may already have committed.
+- `validateBackup`, `previewRestore`, `exportReplica` and `restoreReplica`
+  read and write SQL dumps through an injected `BackupFiles` adapter (the
+  fifth `createCoreHandlers` argument): hosts own files, gzip and progress.
+  `restoreReplica` writes a recovery dump first, replaces the replica in one
+  transaction, resets device sync state and clears the undo stack.
+  `hubBackups`/`createHubBackup` read and take hub backups. See
+  `docs/backups.md`.
 - `readCatalog` decodes properties. `compileView` produces parameterized,
   catalog-scoped SQL with filtering, sorting and bounded pages. `contains`
   remains a literal substring filter (or exact JSON array membership).

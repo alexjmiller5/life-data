@@ -78,7 +78,9 @@ function exportApi(sql) {
 async function setup() {
   const env = {
     HUB_TOKEN: "root", DB: new D1Shim(), AUTH_DB: new D1Shim(), BACKUPS: new Bucket(),
-    ACCOUNT_ID: "acct", BACKUP_API_TOKEN: "backup-token", BACKUP_DATABASES: { life: "db-life", auth: "db-auth" },
+    // Cloudflare hands JSON vars back with sorted keys: auth before life.
+    ACCOUNT_ID: "acct", BACKUP_API_TOKEN: "backup-token", BACKUP_DATABASES: { auth: "db-auth", life: "db-life" },
+    BACKUP_DATA_DATABASE: "life",
   };
   const ctx = { waitUntil() {} };
   const call = (path, { method = "GET", token = "root" } = {}) =>
@@ -94,6 +96,7 @@ async function setup() {
   env.BACKUPS.seed(`weekly/life-2026-10-04T09-10-00.sql.gz`, new Uint8Array([1, 2]), "2026-10-04T09:12:00.000Z");
   env.BACKUPS.seed(`daily/auth-${STAMP}.sql.gz`, new TextEncoder().encode("token hashes"), "2026-10-07T09:12:00.000Z", hex("x"));
   env.BACKUPS.seed(`manual/life-2026-10-08T08-00-00.sql.gz`, new Uint8Array([3]), "2026-10-08T08:00:30.000Z");
+  env.BACKUPS.seed("daily/life-scratch.txt", new Uint8Array([4]), "2026-10-08T10:00:00.000Z");
   return { env, call, mint, daily };
 }
 
@@ -137,7 +140,7 @@ test("backup grants are their own: table grants never imply them, read never imp
   expect((await call("/v1/backups", { token: full })).status).toBe(200);
   // Enrollment profiles may carry them; core, the Worker and the CLI share this grammar.
   expect(validEnrollmentScopes(["backups:read", "backups:write"])).toBe(true);
-  expect(scopes.cases.filter((c) => Array.isArray(c.scopes) && c.scopes.some((s) => s.startsWith("backups:"))).every((c) => validEnrollmentScopes(c.scopes) === c.valid)).toBe(true);
+  expect(scopes.cases.filter((c) => Array.isArray(c.scopes) && c.scopes.some((s) => String(s).startsWith("backups:"))).every((c) => validEnrollmentScopes(c.scopes) === c.valid)).toBe(true);
 });
 
 test("backups:write takes a manual copy of the data database, at most once an hour", async () => {

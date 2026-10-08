@@ -83,13 +83,13 @@ async function missedRuns(env, now) {
   return newest && now - newest > GAP_MS ? { since: newest } : null;
 }
 
-// One on-demand copy of the data database (the first BACKUP_DATABASES entry)
-// under manual/, for a consumer's "Back up now". No notifications: the caller
-// gets the result. Returns {key, bytes, sha256}.
+// One on-demand copy of the BACKUP_DATA_DATABASE entry under manual/, for a
+// consumer's "Back up now". No notifications: the caller gets the result.
+// Returns {key, bytes, sha256}.
 export async function backupNow(env, now, { fetch: get = (...a) => fetch(...a), wait = sleep } = {}) {
   const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const [name] = Object.keys(env.BACKUP_DATABASES ?? {});
-  if (!name) throw new Error("BACKUP_DATABASES is not set");
+  const name = env.BACKUP_DATA_DATABASE;
+  if (!Object.hasOwn(env.BACKUP_DATABASES ?? {}, name ?? "")) throw new Error("BACKUP_DATA_DATABASE is not a BACKUP_DATABASES entry");
   const [stored] = await runBackup(env, now, stamp, { fetch: get, wait }, { names: [name], prefixes: ["manual"] });
   return stored;
 }

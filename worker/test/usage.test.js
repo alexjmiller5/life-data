@@ -445,9 +445,12 @@ test("the cap covers every /v1 route except the ones that never read the data D1
     ["/v1/tokens/list", { method: "POST", body: {} }],
     ["/v1/files/a/b.txt", {}],
     ["/v1/streams/x/latest", {}],
+    ["/v1/backups", {}],
   ]) {
     expect([path, (await call(env, path, init)).status === 429]).toEqual([path, false]);
   }
+  // Reading backups stays open for recovery; taking one exports the data D1.
+  expect((await call(env, "/v1/backups", { method: "POST", body: {} })).status).toBe(429);
 });
 
 test("a capped deployment refuses even a token whose scope the route would reject", async () => {

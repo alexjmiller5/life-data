@@ -45,7 +45,10 @@
 		"BACKUP_DATABASES": {
 			"life": "a7a10931-e427-428e-8d0d-1e4024a3312b",
 			"auth": "572840fc-5179-4f42-b9d0-4474d97edc6a"
-		}
+		},
+		// The one entry whose copies consumers may list, download and take
+		// (src/backups.js); the auth registry's never leave the service.
+		"BACKUP_DATA_DATABASE": "life"
 	},
 	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
 	// belongs to (daily / weekly / monthly / yearly). Every 15 minutes the

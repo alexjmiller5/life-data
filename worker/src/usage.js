@@ -36,6 +36,8 @@ const CUMULATIVE = ["d1_rows_read", "d1_rows_written", "requests"];
 // files/streams/archive on R2). Deny by default, so a route added later is
 // capped unless it is listed here.
 const UNCAPPED_ROUTE = /^\/v1\/(usage|notifications|session|tokens|files|streams|archive)(\/|$)/;
+// Listing and downloading backups read R2 only, and matter most when capped.
+const BACKUP_READ = /^\/v1\/backups(\/|$)/;
 
 export function limits(env) {
   let over = {};
@@ -544,7 +546,8 @@ export function withUsage(hub, { authenticate, sweepCron, deliverNotifications =
           }
           // Not gated on the route's scope check: a finer-grained check added
           // later (e.g. one that reads the request body) must not bypass the cap.
-          if (tenant && !UNCAPPED_ROUTE.test(url.pathname) && !pushRegistrationRoute(request)) {
+          if (tenant && !UNCAPPED_ROUTE.test(url.pathname) && !pushRegistrationRoute(request)
+            && !(request.method === "GET" && BACKUP_READ.test(url.pathname))) {
             const cap = await capState(env, new Date());
             if (cap) {
               const capped=capResponse(cap,READ_SCOPES.some(s=>tenant.scopes.includes(s)));
