@@ -33,7 +33,7 @@ export async function preparePatch(db, body, policy = null, options = {}) {
 
   db=queryBudget(db,750);
   const view=options.view ?? checkedReads(db);
-  if (policy) await policy(view,table,true,[body.id]);
+  if (policy) await policy(view,table,true,[body.id],columns);
   const {results:schema}=await view.prepare('SELECT * FROM pragma_table_info(?) ORDER BY cid').bind(table).all();
   const names=new Set(schema.map(c=>c.name));
   if (!['id','updated_at','deleted_at'].every(c=>names.has(c)) || columns.some(c=>!names.has(c))) return reply('invalid_patch',400);

@@ -83,6 +83,29 @@ test('a lookalike deletion rule with an extra condition cannot leak ungranted da
  expect(data.db.query('SELECT enabled FROM contacts').get().enabled).toBe(0);
 });
 
+test('live-row patch preserves a single-reference deletion invariant',async()=>{
+ const {call,data}=await setup();
+ data.db.exec(`CREATE TABLE quotes(id TEXT PRIMARY KEY,contact_id TEXT,deleted_at TEXT);
+ INSERT INTO quotes VALUES ('q','a',NULL);
+ INSERT INTO catalog_rules VALUES ('incoming','contacts','invariant',1,'table',
+ 'SELECT p.id FROM changed p WHERE p.deleted_at IS NOT NULL AND EXISTS (SELECT 1 FROM quotes q WHERE q.deleted_at IS NULL AND q.contact_id = p.id)',NULL);`);
+ expect((await call('/v1/rows/patch',patch())).status).toBe(200);
+ data.db.exec(`UPDATE catalog_rules SET sql=sql||' OR p.enabled=0'`);
+ expect((await call('/v1/rows/patch',patch({enabled:0},{expected_revision:data.db.query('SELECT updated_at,hub_at FROM contacts').get()}))).status).toBe(403);
+});
+
+test('derived tables accept patches that touch neither derived values nor their inputs',async()=>{
+ const derived=`INSERT INTO catalog_properties(id,tbl,col,type,required,derived_by,inputs) VALUES ('contacts.name','contacts','name','text',0,'http:lookup','["id"]')`;
+ const {call,data}=await setup([...scopes,'tables:patch:contacts:name']);
+ data.db.exec(`DELETE FROM catalog_properties WHERE id='contacts.name';${derived}`);
+ expect((await call('/v1/rows/patch',patch())).status).toBe(200);
+ const revision=data.db.query('SELECT updated_at,hub_at FROM contacts').get();
+ expect((await call('/v1/rows/patch',patch({name:'changed'},{expected_revision:revision}))).status).toBe(403);
+ data.db.exec(`UPDATE catalog_properties SET inputs='["id","enabled"]' WHERE id='contacts.name'`);
+ expect((await call('/v1/rows/patch',patch({enabled:0},{expected_revision:revision}))).status).toBe(403);
+ expect(data.db.query('SELECT name,enabled FROM contacts').get()).toEqual({name:'<person-1>',enabled:1});
+});
+
 test('browser approval gives exact patch authority and canonical enrollment validates it',async()=>{
  const {env}=await setup();const candidate='phone-candidate',key=await hashToken(candidate);
  const url=`https://hub.test/login?key=${key}&name=Phone&profile=${expectation.id}`;

@@ -97,8 +97,10 @@ uncertain, not evidence of failure. Read the current row before another edit.
 These grants never authorize push, insert, lifecycle edits, caller history,
 schema, replica synchronization or governance. Catalog invariants remain
 enforced. The checked patch path additionally recognizes the exact incoming
-multi-reference deletion guard template, whose deletion predicate cannot hold
-for a live-row patch; arbitrary SQL and lookalike suffixes are still denied.
+single- and multi-reference deletion guard templates, whose deletion predicate
+cannot hold for a live-row patch; arbitrary SQL and lookalike suffixes are still
+denied. A table with hub derivations accepts a patch that writes neither a
+derived column nor any of its declared inputs; no derivation runs for it.
 Writable browser approval shows the complete grants as read/update access.
 Canonical enrollment validation requires `conditional_patch: revision-v1`
 as well as the exact profile/scope receipt. Existing reader profiles and

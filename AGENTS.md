@@ -647,7 +647,9 @@ table with safe defaults and no generated expressions, arbitrary triggers,
 derivations, unrecognized enforced SQL rules or physical foreign keys. Only the
 three fully anchored local invariant templates in `scopes.js` are eligible:
 row pattern rejection, conditional JSON-tag membership, and same-table
-uniqueness. Their columns and ownership are checked; validation remains
+uniqueness. Column patches additionally admit the incoming single/multi-reference
+deletion guards and derived tables when the patch touches no derived column or
+derivation input (`patch.js` passes the patched columns to the policy). Their columns and ownership are checked; validation remains
 transactional. `GET /v1/catalog/options?table=X&column=Y` exposes only static
 select choices under the exact table-read grant, never dynamic SQL or other
 catalog metadata. Eligibility reads join
