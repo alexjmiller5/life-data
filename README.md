@@ -290,9 +290,22 @@ the hub's feed (pushed to enrolled devices); the first good run afterwards
 posts `backup.recovered`. `POST /v1/backup` with a full or operator token runs
 a backup on demand.
 
-Restore a copy locally with `gunzip -c life-….sql.gz | sqlite3 restored.db`,
-or into a fresh D1 database with
-`gunzip -c life-….sql.gz > dump.sql && wrangler d1 execute <new-db> --remote --file dump.sql`.
+Restore a copy locally inside one transaction (the export carries none, and
+committing each statement separately takes hours):
+
+```bash
+{ echo 'BEGIN;'; gunzip -c life-….sql.gz; echo 'COMMIT;'; } | sqlite3 restored.db
+```
+
+Restore into a fresh D1 database through `scripts/d1-fit-dump.py`, which
+splits rows over D1's 100 KB statement limit (the export writes each row as
+one INSERT, and D1 refuses longer ones with `SQLITE_TOOBIG`):
+
+```bash
+gunzip -c life-….sql.gz | scripts/d1-fit-dump.py > dump.sql
+wrangler d1 execute <new-db> --remote --file dump.sql
+```
+
 D1 Time Travel separately covers each database under its configured plan.
 
 ## Streams (append-only data)

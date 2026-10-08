@@ -772,6 +772,10 @@ the backup, so a failure fails the run in Cloudflare's cron history; it also
 posts `backup.failed` (critical) into the notification feed, and the first
 success after a failure, or after a newest daily copy older than 26 h, posts
 `backup.recovered`. `POST /v1/backup` (full/admin) runs the same path on demand.
+Restoring into D1 goes through `scripts/d1-fit-dump.py` (tested by
+`tests/test_d1_fit_dump.py`): the export writes rows over D1's 100 KB statement
+limit as single INSERTs, which `wrangler d1 execute --file` refuses
+(`SQLITE_TOOBIG`). Local sqlite3 restores need one wrapping transaction.
 Each stored copy gets an empty `<key>.sha256` sidecar holding its digest as
 metadata. Consumers use `/v1/backups` (`docs/backups.md`): `backups:read` lists
 and downloads the data database's copies, `backups:write` takes an hourly-limited
