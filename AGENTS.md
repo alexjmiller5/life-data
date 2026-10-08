@@ -28,8 +28,12 @@ values remain visible after configured options, followed by the empty column.
 Per-table preferred-view IDs use the canonical `view-defaults/v1` manifest and
 `getViewDefault`/`setViewDefault` operations. Writes require the displayed revision
 and use normal validation/history/Undo; unavailable pointers fall back visibly
-without rewriting user views. Plain table navigation applies the preference;
-explicit destinations win. Provisioning is operator-owned, never implicit in reads.
+without rewriting user views. Plain table navigation calls `ensureDefaultView`:
+without an available preference it creates or restores the table's deterministic
+`catalog-default:v1:<hex>` saved view and points an absent or cleared preference at
+it, so every table opens on a real saved view. It records no Undo receipt and falls
+back to a plain read when either store is unprovisioned or unwritable. Explicit
+destinations win. Provisioning is operator-owned, never implicit in reads.
 
 Related-record view IDs use the separate `related-view-defaults/v1` manifest and
 `getRelatedViewDefault`/`setRelatedViewDefault` operations. This optional store does

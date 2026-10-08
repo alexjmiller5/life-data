@@ -1,5 +1,5 @@
 import {saveCatalogProperty,saveCatalogRule} from './catalog-edit.ts';
-import {getViewDefault,setViewDefault,getRelatedViewDefault,setRelatedViewDefault} from './view-defaults.ts';
+import {getViewDefault,setViewDefault,ensureDefaultView,getRelatedViewDefault,setRelatedViewDefault} from './view-defaults.ts';
 import { boardRows } from './board-rows.ts';
 import { calendarRows } from './calendar-rows.ts';
 import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.generated.ts';
@@ -79,13 +79,14 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     getRelatedViewDefault: args => getRelatedViewDefault(db,args),
     setRelatedViewDefault: args => writes.capturedMutation('related_view_defaults',args,(input,capture)=>setRelatedViewDefault(db,input,{origin},capture)),
     getViewDefault: args => getViewDefault(db,args),
+    ensureDefaultView: args => writes.uncapturedMutation(args, input => ensureDefaultView(db,input,{origin})),
     setViewDefault: args => writes.capturedMutation('view_defaults',args,(input,capture)=>setViewDefault(db,input,{origin},capture)),
     saveView: args => writes.capturedMutation('views', args, (input, capture) => saveView(db, input, { origin }, capture)),
     deleteView: args => writes.capturedMutation('views', args, (input, capture) => deleteView(db, input, { origin }, capture)),
     listSidebarPins: args => listSidebarPins(db, args),
-    pinTable: args => writes.sidebarMutation(args, input => pinTable(db,input,{origin})),
-    unpinTable: args => writes.sidebarMutation(args, input => unpinTable(db,input,{origin})),
-    moveTablePin: args => writes.sidebarMutation(args, input => moveTablePin(db,input,{origin})),
+    pinTable: args => writes.uncapturedMutation(args, input => pinTable(db,input,{origin})),
+    unpinTable: args => writes.uncapturedMutation(args, input => unpinTable(db,input,{origin})),
+    moveTablePin: args => writes.uncapturedMutation(args, input => moveTablePin(db,input,{origin})),
     options: args => readOptions(db, args),
     write: writes.write,
     runRowAction: writes.runRowAction,

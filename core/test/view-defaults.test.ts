@@ -118,3 +118,44 @@ test('related-record preferences have independent storage, revision guards and U
  expect((await handlers.getRelatedViewDefault({table:'items'})).view).toBeNull();
  expect(await handlers.getViewDefault({table:'items'})).toEqual(ordinary);
 });
+
+test('opening a table without a preference creates one catalog default view and points to it',async()=>{
+ const {db,view}=await fixture();
+ const handlers=core.createCoreHandlers(db,()=>{throw Error('No network allowed');});
+ const opened=await handlers.ensureDefaultView({table:'items'});
+ expect(opened.view?.definition).toEqual({version:1});expect(opened.view?.name).toBe('Default view');
+ expect(opened.viewId).toBe(opened.view!.id);expect(opened.unavailable).toBeNull();
+ expect(await handlers.ensureDefaultView({table:'items'})).toEqual(opened);
+ expect(await handlers.getViewDefault({table:'items'})).toEqual(opened);
+ expect((await db.all("SELECT id FROM views WHERE tbl='items' AND deleted_at IS NULL")).length).toBe(2);
+ // Automatic setup is not a human action.
+ expect((await handlers.undoStatus({})).action).toBeNull();
+ // An explicit preference wins and is never rewritten.
+ const chosen=await handlers.setViewDefault({table:'items',viewId:view.id,expectedUpdatedAt:opened.updated_at});
+ expect(await handlers.ensureDefaultView({table:'items'})).toEqual(chosen);
+});
+test('a deleted default view is restored; an unavailable preference keeps its notice and row',async()=>{
+ const {db,view}=await fixture();
+ const first=await core.ensureDefaultView(db,{table:'items'});
+ await core.deleteView(db,{id:first.view!.id,expectedUpdatedAt:first.view!.updated_at!});
+ const restored=await core.ensureDefaultView(db,{table:'items'});
+ expect(restored.view?.id).toBe(first.view!.id);expect(restored.view?.deleted_at).toBeNull();
+ const pointed=await core.setViewDefault(db,{table:'items',viewId:view.id,expectedUpdatedAt:restored.updated_at});
+ await db.run('UPDATE views SET deleted_at=? WHERE id=?',['2026-01-02T00:00:00.000Z',view.id]);
+ const before=await db.all('SELECT * FROM view_defaults');
+ const fallback=await core.ensureDefaultView(db,{table:'items'});
+ expect(fallback.viewId).toBe(view.id);expect(fallback.unavailable).toBeTruthy();
+ expect(fallback.view?.id).toBe(first.view!.id);
+ expect(await db.all('SELECT * FROM view_defaults')).toEqual(before);expect(pointed.view?.id).toBe(view.id);
+});
+test('default views are created without preference storage and never provision either store',async()=>{
+ const {db}=await fixture(false);
+ const opened=await core.ensureDefaultView(db,{table:'items'});
+ expect(opened.view?.name).toBe('Default view');expect(opened.unavailable).toMatch(/provision/i);
+ expect((await core.ensureDefaultView(db,{table:'items'})).view?.id).toBe(opened.view!.id);
+ expect(await db.all("SELECT name FROM sqlite_master WHERE name='view_defaults'")).toEqual([]);
+ await db.run('DROP TABLE views');
+ const none=await core.ensureDefaultView(db,{table:'elsewhere'});
+ expect(none.view).toBeNull();
+ expect(await db.all("SELECT name FROM sqlite_master WHERE name='views'")).toEqual([]);
+});

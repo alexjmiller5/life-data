@@ -32,6 +32,6 @@ export * from './changeset-client.ts';
 export * from './calendar-rows.ts';
 export * from './board-rows.ts';
 
-export {getViewDefault,setViewDefault,getRelatedViewDefault,setRelatedViewDefault} from './view-defaults.ts';
+export {getViewDefault,setViewDefault,ensureDefaultView,getRelatedViewDefault,setRelatedViewDefault} from './view-defaults.ts';
 
 export {saveCatalogProperty,saveCatalogRule} from './catalog-edit.ts';

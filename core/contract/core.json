@@ -5646,6 +5646,15 @@
         "$ref": "#/$defs/ViewDefault"
       }
     },
+    "ensureDefaultView": {
+      "args": {
+        "$ref": "#/$defs/GetViewDefaultArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewDefault"
+      },
+      "description": "Plain table navigation. Without an available preference, creates or restores the deterministic catalog-default saved view and points an absent or cleared preference at it; unavailable preferences keep their row and notice. No Undo receipt and no provisioning."
+    },
     "setViewDefault": {
       "args": {
         "$ref": "#/$defs/SetViewDefaultArgs"

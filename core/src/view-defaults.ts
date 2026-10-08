@@ -3,7 +3,7 @@ import type {SqlDriver} from './driver.ts';
 import {readCatalog} from './catalog.ts';
 import {listViews} from './saved-views.ts';
 import {qident,validEditTimestamp,type Row} from './validate.ts';
-import {commitWrite,ValidationError,type WriteCapture} from './write.ts';
+import {commitWrite,ValidationError,writeability,type WriteCapture} from './write.ts';
 import defaults from '../schema/view-defaults.json';
 import related from '../schema/related-view-defaults.json';
 const normalize=(sql:unknown)=>String(sql).replace(/\s+/g,' ').trim();
@@ -68,6 +68,35 @@ export async function setViewDefault(db:SqlDriver,input:SetViewDefaultArgs,optio
     : await commitWrite(tx,storage.table.id,{id:idFor(table,storage),view_id:viewId,deleted_at:null},{origin,expectedUpdatedAt:state.updated_at},!!capture);
   if(committed.capture)capture?.(committed.capture);
   return read(tx,table,storage);
+ });
+}
+
+const defaultViewId=(table:string)=>'catalog-default:v1:'+Array.from(table,c=>c.charCodeAt(0).toString(16).padStart(2,'0')).join('');
+/** Plain table navigation: every table opens on a real saved view. Without an available
+ * preference, create (or restore) the table's deterministic catalog-default view and point an
+ * absent/cleared preference at it. Unavailable preferences keep their row and notice. Not a
+ * human action: no Undo receipt. Never provisions storage; unwritable stores fall back to a read. */
+export async function ensureDefaultView(db:SqlDriver,input:GetViewDefaultArgs,options:{origin?:string}={}):Promise<ViewDefault>{
+ const args=argumentsOf(input,['table']),table=args.table as string,origin=options.origin;
+ return db.transaction(async()=>{
+  const tx=transactionDriver(db),state=await read(tx,table);
+  if(state.view)return state;
+  const id=defaultViewId(table),list=await listViews(tx,{table});
+  if(list.unavailable||!(await writeability(tx,{table:'views'})).writable)return state;
+  let view=list.views.find(v=>v.id===id);
+  if(!view){
+   const [row]=await tx.all('SELECT updated_at,deleted_at FROM main.views WHERE id=?',[id]);
+   const fresh={name:'Default view',tbl:table,definition:{version:1}};
+   if(row&&row.deleted_at===null)return state; // another table owns this ID; never adopt it
+   await commitWrite(tx,'views',row?{id,...fresh,deleted_at:null}:fresh,row?{origin,expectedUpdatedAt:String(row.updated_at)}:{origin,id:()=>id});
+   view=(await listViews(tx,{table})).views.find(v=>v.id===id);
+  }
+  if(!view?.view)return state;
+  const pointable=state.viewId===null&&!(await storageProblem(tx,await readCatalog(tx)))&&(await writeability(tx,{table:defaults.table.id})).writable;
+  if(!pointable)return {...state,view};
+  await commitWrite(tx,defaults.table.id,state.updated_at===null?{tbl:table,view_id:id}:{id:idFor(table),view_id:id,deleted_at:null},
+   state.updated_at===null?{origin,id:()=>idFor(table)}:{origin,expectedUpdatedAt:state.updated_at});
+  return read(tx,table);
  });
 }
 
