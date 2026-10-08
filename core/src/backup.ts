@@ -31,7 +31,9 @@ const SKIP: Record<string, RegExp> = {
 const LEAD = /(?:\s+|--[^\n]*\n|\/\*[\s\S]*?\*\/)*/y;
 
 /** Index of the terminating `;`, or null when the buffer must grow first.
- * Trigger bodies hold `;` until their own END (CASE ... END nests). */
+ * Trigger bodies hold `;` until their own END (CASE ... END nests). Each call
+ * rescans from the statement's start, so a token cut by the buffer's end (half
+ * of a '' escape, END of ENDS) is read whole on the next call. */
 function statementEnd(buf: string, start: number, eof: boolean): number | null {
   LEAD.lastIndex = start;
   LEAD.exec(buf);
@@ -48,7 +50,6 @@ function statementEnd(buf: string, start: number, eof: boolean): number | null {
       continue;
     }
     if (/^[a-z]/i.test(token)) {
-      if (!eof && m.index + token.length === buf.length) return null; // word may continue
       if (token.toUpperCase() === 'CASE') depth++;
       else if (depth) depth--;
       else ended = true;
@@ -61,8 +62,6 @@ function statementEnd(buf: string, start: number, eof: boolean): number | null {
       if (eof) throw invalid('The backup ends inside a quoted value or comment.');
       return null;
     }
-    // A closing quote at the buffer's end may be the first half of an escape.
-    if (!eof && skip.lastIndex === buf.length) return null;
     scan.lastIndex = skip.lastIndex;
   }
   return null;
@@ -139,6 +138,7 @@ class Tokens {
   name(): string {
     const { kind, text } = this;
     if (kind === 'word') { this.next(); return text; }
+    if (kind === 'str') { this.next(); return unquote(text); } // SQLite accepts 'name' (Python's dump uses it)
     if (kind !== 'id') throw unsupported();
     this.next();
     const quote = text[0]!;
@@ -312,7 +312,8 @@ interface Apply {
   ddl(sql: string): Promise<void>;
 }
 
-async function readDump(source: DumpSource, apply?: Apply): Promise<BackupSummary> {
+/** The summary plus the dump's statement length, which also catches edits that keep the counts. */
+async function readDump(source: DumpSource, apply?: Apply): Promise<{ summary: BackupSummary; characters: number }> {
   let version: number | null = null, began = false, committed = false, first = true;
   let schemaLog: string[] | null = null, schemaEntries = 0;
   const tables = new Map<string, TableState>();
@@ -323,7 +324,9 @@ async function readDump(source: DumpSource, apply?: Apply): Promise<BackupSummar
     if (pending && apply) await apply.rows(pending.table, pending.columns, pending.tuples);
     pending = null;
   };
+  let characters = 0;
   for await (const text of statements(source)) {
+    characters += text.length;
     if (first) {
       first = false;
       const header = /^﻿?\s*-- life-data-dump: *(\d+)\s*\n/.exec(text);
@@ -376,7 +379,7 @@ async function readDump(source: DumpSource, apply?: Apply): Promise<BackupSummar
         || statement.rows.some(r => r[1]?.kind !== 'str' || !/^_/.test(r[1].value))) throw unsupported('virtual table');
       continue;
     }
-    if (ignored.has(key) || /^sqlite_/i.test(key)) continue;
+    if (ignoredName(key)) continue;
     const declared = key === '_schema_log' ? (schemaLog ?? null) : tables.get(key)?.columns ?? null;
     if (!declared) throw invalid(`The backup has rows for an undeclared table ${statement.table}.`);
     const lower = declared.map(c => c.toLowerCase());
@@ -417,7 +420,7 @@ async function readDump(source: DumpSource, apply?: Apply): Promise<BackupSummar
   if (began && !committed) throw invalid('The backup is incomplete: it has no final COMMIT.');
   if (!schemaLog) throw invalid('This backup has an unsupported schema version: it has no _schema_log.');
   if (apply) for (const sql of deferred) await apply.ddl(sql);
-  return summarize([...tables.values()], schemaEntries, version ?? DUMP_VERSION);
+  return { summary: summarize([...tables.values()], schemaEntries, version ?? DUMP_VERSION), characters };
 }
 
 function summarize(states: BackupTableSummary[], schemaEntries: number, version = DUMP_VERSION): BackupSummary {
@@ -430,7 +433,7 @@ function summarize(states: BackupTableSummary[], schemaEntries: number, version 
 // --- operations ---------------------------------------------------------------
 
 export async function validateBackup(source: DumpSource): Promise<BackupSummary> {
-  return readDump(source);
+  return (await readDump(source)).summary;
 }
 
 /** Counts of the live replica, in the same shape as a backup summary. */
@@ -525,7 +528,7 @@ export async function restoreReplica(db: SqlDriver, files: BackupFiles, args: Re
   }
   await initCore(db);
   await assertCoreReplica(db);
-  const expected = await validateBackup(files.open(args.file));
+  const expected = await readDump(files.open(args.file));
   const recovery = await exportReplica(db, files.create(args.recovery));
   const restored = await db.transaction(async () => {
     await assertCoreReplica(db);
@@ -534,20 +537,22 @@ export async function restoreReplica(db: SqlDriver, files: BackupFiles, args: Re
     const objects = await db.all("SELECT type, name FROM main.sqlite_master WHERE type IN ('view','table') AND substr(name,1,1) != '_' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY type DESC");
     for (const o of objects) await db.run(`DROP ${o.type === 'view' ? 'VIEW' : 'TABLE'} IF EXISTS ${qident(String(o.name))}`);
     await db.run('DELETE FROM _schema_log');
-    const summary = await readDump(files.open(args.file), {
+    const read = await readDump(files.open(args.file), {
       table: async (_name, sql) => { await db.run(sql); },
       rows: async (table, columns, tuples) => {
         await db.run(`INSERT INTO ${qident(table)} (${columns.map(qident).join(',')}) VALUES ${tuples.join(',')}`);
       },
       ddl: async sql => { await db.run(sql); },
     });
-    if (JSON.stringify(summary) !== JSON.stringify(expected)) throw invalid('The backup changed while it was being restored. Nothing was replaced.');
+    if (read.characters !== expected.characters || JSON.stringify(read.summary) !== JSON.stringify(expected.summary)) {
+      throw invalid('The backup changed while it was being restored. Nothing was replaced.');
+    }
     for (const table of ['_core_sync', '_core_pending', '_core_rejected', '_core_history_hold', '_core_coverage']) await db.run(`DELETE FROM ${table}`);
     await db.run("DELETE FROM _core_state WHERE key IN ('last_sync','skipped_tables')");
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
     const search = (await db.all("SELECT name FROM main.sqlite_master WHERE type='table' AND name IN ('_core_search_fts','_core_search_docs','_core_search_dirty','_core_search_state')")).map(r => String(r.name));
     for (const table of search) await db.run(`DELETE FROM ${table}`);
-    return summary;
+    return read.summary;
   });
   return { restored, recovery };
 }
