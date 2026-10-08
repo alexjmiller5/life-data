@@ -327,7 +327,8 @@ def test_existing_checkpoint_repair_retries_and_recovers_missed_rows(
             if failure == "interrupt":
                 with pytest.raises(OSError, match="synthetic"):
                     life.sync(path, hub)
-                assert state(path) == before
+                kept = {k: v for k, v in state(path).items() if not k.startswith("recovery")}
+                assert kept == before  # only resume progress was saved
             else:
                 assert life.sync(path, hub)["rejected"]
                 assert state(path)["last_push"] == poison
@@ -563,7 +564,7 @@ def test_checkpoint_recovery_is_announced_once_across_restarts(estate, capsys):
     capsys.readouterr()
     life.sync(path, hub)
     messages = capsys.readouterr().err
-    assert "full pull and push" in messages
+    assert "sync checkpoint recovery: full pull" in messages
     assert "checkpoint recovery complete" in messages
     life.sync(life.init(path), hub)
     assert "checkpoint recovery" not in capsys.readouterr().err
@@ -655,3 +656,137 @@ def test_first_sync_and_hubs_without_marks_still_pull_everything(tmp_path, clock
     monkeypatch.setattr(hub, "marks", lambda tables: (marks(tables)[0], None))
     life.sync(path, hub)
     assert {"items", "notes"} <= set(hub.pulled)
+
+
+T3 = "2026-01-01T00:00:03.000Z"
+
+
+class Recording(life.LocalHub):
+    """Records pushes and pull-page requests; can fail one pull page once."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.pushed, self.calls, self.fail_page = [], [], None
+
+    def rows_push(self, table, columns, rows, **kwargs):
+        self.pushed += [(table, r["id"]) for r in rows]
+        return super().rows_push(table, columns, rows, **kwargs)
+
+    def rows_pull_pages(self, table, columns, since, after=None):
+        self.calls.append((table, after))
+        for n, page in enumerate(super().rows_pull_pages(table, columns, since, after)):
+            if (table, n) == self.fail_page:
+                self.fail_page = None
+                raise OSError("synthetic page failure")
+            yield page
+
+
+def legacy_checkpoint(path):
+    with life.connect(path) as conn:
+        conn.execute("UPDATE _sync_state SET value='2' WHERE key='checkpoint_version'")
+
+
+def names(path, table="items"):
+    rows = life.execute_sql(path, f"SELECT id, name FROM {table}")
+    return {r["id"]: r["name"] for r in rows}
+
+
+def test_recovery_pushes_only_rows_the_hub_lacks_or_holds_older(tmp_path, clock):
+    path = life.init(tmp_path / "replica.db")
+    life.create_table(path, "items", ["name:text"])
+    hub = Recording(tmp_path / "hub.db")
+    life.sync(path, hub)
+    remote = [
+        {"id": "same", "name": "hub", "updated_at": T1},
+        {"id": "hub-newer", "name": "hub", "updated_at": T2},
+        {"id": "local-newer", "name": "hub", "updated_at": T0},
+    ]
+    hub.rows_push("items", ["id", "name", "updated_at"], remote)
+    # An older writer left rows without dirty receipts behind a pre-v3 checkpoint.
+    with life.connect(path) as conn:
+        conn.executemany(
+            "INSERT INTO items (id, name, updated_at) VALUES (?, 'local', ?)",
+            [("same", T1), ("hub-newer", T1), ("local-newer", T2), ("local-only", T0)],
+        )
+    legacy_checkpoint(path)
+    life.insert_rows(path, "items", [{"id": "edited", "name": "local"}])
+    hub.pushed.clear()
+    clock[0] = T3
+    assert not life.sync(path, hub)["rejected"]
+    assert sorted(hub.pushed) == [
+        ("items", "edited"),
+        ("items", "local-newer"),
+        ("items", "local-only"),
+    ]
+    assert names(hub.path) == {
+        "same": "hub",
+        "hub-newer": "hub",
+        "local-newer": "local",
+        "local-only": "local",
+        "edited": "local",
+    }
+    assert names(path)["hub-newer"] == "hub"
+    assert state(path)["checkpoint_version"] == "3"
+
+
+def test_interrupted_recovery_resumes_at_the_failed_page(tmp_path, clock, monkeypatch):
+    monkeypatch.setattr(life, "CHUNK", 2)
+    path = life.init(tmp_path / "replica.db")
+    other = life.init(tmp_path / "other.db")
+    for name in ("alpha", "items"):
+        life.create_table(path, name, ["name:text"])
+    hub = Recording(tmp_path / "hub.db")
+    life.sync(path, hub)
+    life.insert_rows(path, "items", [{"id": f"i{n}", "name": "v"} for n in range(6)])
+    life.sync(path, hub)
+    life.sync(other, hub)
+    legacy_checkpoint(path)
+
+    hub.fail_page = ("items", 1)
+    with pytest.raises(OSError, match="synthetic page failure"):
+        life.sync(path, hub)
+    # Between attempts: another replica writes to a table recovery already
+    # verified (two arrivals, so a fresh cursor would skip the first), and so
+    # does this replica.
+    clock[0] = T1
+    life.insert_rows(other, "alpha", [{"id": "remote-late", "name": "v"}])
+    life.sync(other, hub)
+    clock[0] = T2
+    life.insert_rows(other, "alpha", [{"id": "remote-later", "name": "v"}])
+    life.sync(other, hub)
+    life.insert_rows(path, "alpha", [{"id": "local-late", "name": "v"}])
+
+    hub.calls.clear()
+    clock[0] = T3
+    assert not life.sync(path, hub)["rejected"]
+    assert hub.calls[0] == ("items", "i1")  # resumes after the last completed page
+    assert {t for t, _ in hub.calls} <= {"items", "history"}
+    assert state(path)["checkpoint_version"] == "3"
+    assert not [k for k in state(path) if k.startswith("recovery")]
+    assert "local-late" in names(hub.path, "alpha")
+    assert not life.sync(path, hub)["rejected"]
+    assert {"remote-late", "remote-later"} <= set(names(path, "alpha"))
+    assert set(names(path)) == {f"i{n}" for n in range(6)}
+
+
+def test_rejected_recovery_rescans_the_hub_on_retry(estate, clock, monkeypatch):
+    path, hub = estate
+    with life.connect(path) as conn:
+        conn.execute(f"INSERT INTO items (id, updated_at) VALUES ('missed', '{T0}')")
+    legacy_checkpoint(path)
+    original = hub.rows_push
+
+    def rejecting(table, cols, rows, **kwargs):
+        if table == "items":
+            return {"upserted": 0, "rejected": [{"id": r["id"], "rule": "retry"} for r in rows]}
+        return original(table, cols, rows, **kwargs)
+
+    clock[0] = T1  # the missed row predates recovery: only the hub comparison finds it
+    with monkeypatch.context() as m:
+        m.setattr(hub, "rows_push", rejecting)
+        assert life.sync(path, hub)["rejected"]
+    assert state(path)["checkpoint_version"] != "3"
+    clock[0] = T2
+    assert not life.sync(path, hub)["rejected"]
+    assert "missed" in ids(hub)
+    assert state(path)["checkpoint_version"] == "3"

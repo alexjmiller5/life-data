@@ -225,7 +225,7 @@ def test_rejected_rows_are_not_a_success_and_do_not_leak(tmp_path, monkeypatch):
     assert "private" not in (tmp_path / "background-status.json").read_text()
 
 
-def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monkeypatch):
+def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monkeypatch, capsys):
     import urllib.error
 
     import pytest
@@ -259,6 +259,39 @@ def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monk
     assert calls == ["read", "read"]
     assert background.status(tmp_path)["last_error"] == "HTTP 401"
     assert "private body" not in (tmp_path / "background-status.json").read_text()
+    assert "private body" not in capsys.readouterr().err
+
+
+def test_server_error_detail_reaches_daemon_log_not_status(tmp_path, monkeypatch, capsys):
+    import urllib.error
+
+    import life_data
+    from life_data import background
+
+    background.write_json(tmp_path / "background.json", {"enabled": True})
+    monkeypatch.setattr(background, "_credential", lambda *_: "test-token")
+    monkeypatch.setattr(life_data, "hub_from_config", lambda _: object())
+
+    def sync(*_):
+        try:
+            raise urllib.error.HTTPError("https://hub.example", 500, "error", {}, None)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError('hub HTTP 500: {"error":"D1_ERROR: storage timeout"}') from exc
+
+    monkeypatch.setattr(life_data, "sync", sync)
+    ticks = []
+    monkeypatch.setattr(background.time, "monotonic", lambda: len(ticks) * 61)
+
+    def sleep(_):
+        ticks.append(1)
+        if len(ticks) == 1:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(background.time, "sleep", sleep)
+    with pytest.raises(KeyboardInterrupt):
+        background.run(tmp_path, 30)
+    assert background.status(tmp_path)["last_error"] == "HTTP 500"
+    assert "D1_ERROR: storage timeout" in capsys.readouterr().err
 
 
 def test_keychain_save_uses_same_env_endpoint_as_lookup(tmp_path, monkeypatch):

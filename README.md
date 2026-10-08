@@ -97,7 +97,9 @@ Use a fresh `LIFE_DATA_DIR` for a different hub; existing cursors and data
 are never silently reused against another service. A replica without a recorded
 endpoint performs one full sync to establish trustworthy cursors. This first
 round can take longer for a large existing database. Pulls request pages of 200;
-a failed page leaves the sync cursors unchanged for retry.
+a failed page leaves the sync cursors unchanged for retry. A page or push chunk
+failing with a server error, timeout or dropped connection is retried up to
+three times (after 1, 4 and 15 seconds) before the round fails.
 
 Alternatively, pass `--token-command 'credential-tool read hub-token'`.
 It runs in the daemon's environment; it must work without a terminal.
@@ -115,7 +117,8 @@ while disabled, making no hub or credential requests. Only one runner can
 hold a data directory at a time. Failures retry after 60 seconds, doubling
 to a maximum of one hour. Re-enabling resets that wait. `last_success`
 advances only after a round with no rejected rows. The status output never
-includes row payloads or credential-command output.
+includes row payloads or credential-command output; the daemon log adds the
+first 300 characters of a server, timeout or connection failure's message.
 
 Sync is state-based and last-write-wins per row on `updated_at`; deletes are
 soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate. A
@@ -144,10 +147,13 @@ it never advances from a remote row's future revision. The hub stamps arrivals
 inside the committing transaction. Inclusive boundaries replay equal timestamps
 without duplicating IDs or original history events.
 
-Upgrading an older checkpoint triggers one complete reconciliation in both
-directions. Successful completion records the upgrade so normal rounds remain
-incremental; an interrupted or rejected recovery retries. This can take longer
-than an ordinary sync on a large replica. It does not delete history or rebuild
+Upgrading an older checkpoint triggers one reconciliation: a full pull that
+compares each page with the local rows in the same id range, then pushes only
+the rows the hub lacks or holds older, plus pending local edits. Progress is
+saved per page, so an interrupted recovery resumes where it stopped; a rejected
+one rescans from the start. Successful completion records the upgrade so normal
+rounds remain incremental. This can take longer than an ordinary sync on a
+large replica. It does not delete history or rebuild
 rows from guesses. A detected local clock rollback also forces a full push.
 
 `updated_at` remains the conflict revision. Python CLI writes also record local
