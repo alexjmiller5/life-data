@@ -149,3 +149,15 @@ test('read-only profiles are labelled read-only',async()=>{
  const e=env(),{html}=await approve(e,'contact-reader-v1','reader-candidate');
  expect(html).toContain('Read-only access:');expect(html).not.toContain('Read and write access');
 });
+
+test('a gzip-compressed profile set resolves exactly like its JSON and stays bounded',async()=>{
+ const {enrollmentProfile}=await import('../src/enrollment-profile.js');
+ const gzip=text=>'gzip:'+Buffer.from(Bun.gzipSync(text)).toString('base64');
+ const plain=await enrollmentProfile({ENROLLMENT_PROFILES:JSON.stringify(profiles)},'contact-reader-v1');
+ expect(plain).not.toBeNull();
+ expect(await enrollmentProfile({ENROLLMENT_PROFILES:gzip(JSON.stringify(profiles))},'contact-reader-v1')).toEqual(plain);
+ const e=env();e.ENROLLMENT_PROFILES=gzip(JSON.stringify(profiles));await approval(e);
+ const huge=JSON.stringify({...profiles,pad:{label:'x'.repeat(70000)}});
+ for(const value of [gzip(huge),'gzip:not-base64!','gzip:'+Buffer.from('plain').toString('base64')])
+  expect(await enrollmentProfile({ENROLLMENT_PROFILES:value},'contact-reader-v1')).toBeNull();
+});

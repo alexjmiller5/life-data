@@ -5,13 +5,30 @@ import {creationPolicies,creationGrant} from './creation.js';
 
 export const validProfileId = id => typeof id === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(id);
 
+const MAX_PROFILES_TEXT=65536;
+// Cloudflare caps one secret at 5.1 kB, so a large profile set is stored as
+// `gzip:<base64>`. Decompression stops at the same bound as plain JSON.
+async function profilesText(value) {
+  if (typeof value !== 'string' || !value.startsWith('gzip:')) return value;
+  const bytes=Uint8Array.from(atob(value.slice(5)),c=>c.charCodeAt(0));
+  const reader=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+  const decoder=new TextDecoder('utf-8',{fatal:true});let text='';
+  for (;;) {
+    const {done,value:chunk}=await reader.read();if(done)break;
+    text+=decoder.decode(chunk,{stream:true});
+    if (text.length>MAX_PROFILES_TEXT) {await reader.cancel();return null;}
+  }
+  return text+decoder.decode();
+}
+
 // Installation-owned column profiles. No user schema or application grants ship
 // in source. An unavailable or invalid profile cannot select legacy enrollment.
 export async function enrollmentProfile(env,id) {
-  if (!validProfileId(id) || typeof env.ENROLLMENT_PROFILES !== 'string'
-    || env.ENROLLMENT_PROFILES.length > 65536) return null;
-  let profiles;
-  try {profiles=JSON.parse(env.ENROLLMENT_PROFILES);} catch {return null;}
+  if (!validProfileId(id)) return null;
+  let text,profiles;
+  try {text=await profilesText(env.ENROLLMENT_PROFILES);} catch {return null;}
+  if (typeof text !== 'string' || text.length > MAX_PROFILES_TEXT) return null;
+  try {profiles=JSON.parse(text);} catch {return null;}
   if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)
     || !Object.hasOwn(profiles,id)) return null;
   const p=profiles[id];

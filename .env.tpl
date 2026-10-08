@@ -22,3 +22,5 @@ APNS_PRIVATE_KEY=op://Life Data/Life Data ENV/APNS_PRIVATE_KEY
 # Deploy pushes them, so these fields are the declarative source of truth.
 ENROLLMENT_PROFILES=op://Life Data/Life Data ENV/ENROLLMENT_PROFILES
 ROW_CREATION_POLICIES=op://Life Data/Life Data ENV/ROW_CREATION_POLICIES
+# Capture gateway adapters (docs/scoped-enrollment.md), {} when unused.
+CAPTURE_ADAPTERS=op://Life Data/Life Data ENV/CAPTURE_ADAPTERS

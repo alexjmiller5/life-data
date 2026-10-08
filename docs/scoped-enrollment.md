@@ -36,6 +36,8 @@ Full, admin and token administration are never profile grants; a profile that
 contains one is unavailable. Applications choose a public profile ID and exact
 expected grants; customers enter only the service URL.
 
+The value may be `gzip:<base64 of the gzip-compressed JSON>`: one Worker secret is
+capped at 5.1 kB, and decompression is bounded like plain JSON (64 KiB).
 Profile values are installation state, never personal schema in source.
 Unknown, unavailable or invalid requested profiles fail closed. Omitting a
 profile retains existing full-device enrollment for existing clients. A
