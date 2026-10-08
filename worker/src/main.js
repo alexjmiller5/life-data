@@ -3,4 +3,5 @@
 import hub, { SWEEP_CRON, authenticate } from "./index.js";
 import { withUsage } from "./usage.js";
 
+export { ChangeSignal } from "./changes.js";
 export default withUsage(hub, { authenticate, sweepCron: SWEEP_CRON });

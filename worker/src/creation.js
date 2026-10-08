@@ -2,6 +2,7 @@
 import { checkedReads, prepareChecked, readGuards, enforcedRules, queryBudget } from './write.js';
 import { qident, sha256hex, validEditTimestamp, validatePush } from './validate.js';
 import { scopedTable, scopedOrigin, ScopeDenied } from './scopes.js';
+import { markChanged } from './changes.js';
 
 const object=v=>v!==null && typeof v==='object' && !Array.isArray(v);
 const keys=(v,names)=>object(v) && Object.keys(v).sort().join(',')===[...names].sort().join(',');
@@ -149,6 +150,7 @@ export async function handleCreation(request,tenant,env) {
     const receipts=await db.batch([...begin,...target.statements,...origin.statements,target.assertion,origin.assertion,...origin.end,...target.end]);
     const created=receipts[begin.length]?.results?.[0];
     if(!created || created.id!==id)throw new Error('creation_unavailable');
+    markChanged();
     return Response.json({kind:'created',policy:body.policy,id,revision:{updated_at:created.updated_at,hub_at:created.hub_at},originId});
   } catch(error) {
     const message=String(error);

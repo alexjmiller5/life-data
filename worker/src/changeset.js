@@ -2,6 +2,7 @@
 // The caller supplies authorization and all displayed read/membership guards.
 import {checkedReads,prepareChecked,readGuards,enforcedRules,queryBudget} from './write.js';
 import {historyPlan} from './history.js';
+import {markChanged} from './changes.js';
 import {ident,qident,validatePush,validEditTimestamp} from './validate.js';
 
 export const changesetLimits=Object.freeze({maxOperations:64,maxTables:8,maxBytes:65536});
@@ -119,6 +120,7 @@ export async function commitChangeset(plan,{after=[],probe=false}={}){
   }
   try{
     const result=await db.batch(statements);
+    if(!probe)markChanged();
     return {rows:operations.map((op,i)=>{
       const row=result[offset+i].results[0];
       return {table:op.table,id:row.id,kind:op.kind,revision:{updated_at:row.updated_at,hub_at:row.hub_at}};

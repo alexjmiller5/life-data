@@ -205,8 +205,10 @@ submission. Revoked tokens are denied by ordinary authentication.
 The request ID is a canonical lowercase UUID; input has exactly one `text` or
 HTTP(S) `url`; intent is `save` or `record_consumption`. The same UUID must be
 retained for retries. `GET /v1/captures/ADAPTER/REQUEST_ID` reads the same caller's
-receipt. Request and response bodies are bounded to 64 KiB, upstream calls to
-15 seconds, and redirects are refused. Device tokens never leave Life Data.
+receipt. Request and response bodies are bounded to 64 KiB and redirects are
+refused. Upstream submissions wait up to 60 seconds, because acceptance can queue
+behind the adapter's serialized writer; receipt reads wait up to 15 seconds.
+Device tokens never leave Life Data.
 
 A 202 `received` or `processing` receipt is acceptance only. A `saved` receipt
 includes the resolved `{kind,id}` after verified commit. `needs_review`,

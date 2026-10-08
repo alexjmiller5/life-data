@@ -97,3 +97,15 @@ test('session advertises only configured adapters and effective grants; revoked 
  AUTH_DB.db.exec("UPDATE _tokens SET revoked_at='2026-01-01'");
  expect((await call('/v1/captures/media/'+id)).status).toBe(403);
 });
+
+test('submissions wait longer than receipt reads for the adapter to accept',async()=>{
+ const {UPSTREAM_TIMEOUTS}=await import('../src/capture-gateway.js');
+ expect(UPSTREAM_TIMEOUTS).toEqual({read:15000,submit:60000});
+ const slow=(_,init)=>new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>resolve(Response.json({request_id:id,state:'received'})),80);
+  init.signal.addEventListener('abort',()=>{clearTimeout(timer);reject(init.signal.reason);});
+ });
+ const budget={read:20,submit:400};
+ expect((await captureGateway(request(),tenant,env,slow,budget)).status).toBe(202);
+ expect((await captureGateway(request(undefined,'GET'),tenant,env,slow,budget)).status).toBe(503);
+});

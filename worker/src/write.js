@@ -3,6 +3,7 @@
 import { historyPlan, historyStatements } from './history.js';
 import { literal, qident, validatePush } from './validate.js';
 import {assertPublicSql} from './governance-isolation.js';
+import { markChanged } from './changes.js';
 import { supportedRuleSql } from '../../core/src/rule-sql.ts';
 
 const quoteColumn = (v) => '"' + v.replaceAll('"', '""') + '"';
@@ -246,6 +247,7 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   const plan=await prepareChecked(db,table,rules,statements,now,history,expected,props,transitions,probe);
   try {
     const result = await db.batch([...guards,...plan.begin,...plan.statements,...plan.end]);
+    if (!probe && transitions.length) markChanged();
     return result.slice(guards.length+plan.begin.length,guards.length+plan.begin.length+plan.statements.length);
   }
   catch (e) {

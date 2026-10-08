@@ -39,8 +39,12 @@ export function captureCapability(env,scopes){
  return adapters.length?{protocol:'receipt-v1',adapters}:undefined;
 }
 
+// Acceptance waits for the adapter's serialized writer (a cold start or a capture
+// already in progress); receipt reads do not, so they keep the tighter bound.
+export const UPSTREAM_TIMEOUTS={read:15000,submit:60000};
+
 /** Stateless adapter. Synapse owns the durable receipt and serialized writer. */
-export async function captureGateway(request,tenant,env,fetcher=fetch){
+export async function captureGateway(request,tenant,env,fetcher=fetch,timeouts=UPSTREAM_TIMEOUTS){
  const url=new URL(request.url),match=/^\/v1\/captures\/([a-z][a-z0-9-]{0,63})(?:\/([0-9a-f-]+))?$/.exec(url.pathname);
  if(!match||url.search)return reply({error:'invalid capture route'},400);
  const read=request.method==='GET'&&uuid(match[2]);
@@ -70,7 +74,7 @@ export async function captureGateway(request,tenant,env,fetcher=fetch){
  const requestId=read?match[2]:payload.request_id;
  const delegated={action:read?'get':'submit',allowed_fields:Object.keys(config.fields),subject:await hashToken(`capture-subject:${tenant.hash}`),...(read?{request_id:requestId}:{request:payload})};
  try{
-  const upstream=await fetcher(config.url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),headers:{Authorization:`Bearer ${config.credential}`,'Content-Type':'application/json'},body:JSON.stringify(delegated)});
+  const upstream=await fetcher(config.url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(read?timeouts.read:timeouts.submit),headers:{Authorization:`Bearer ${config.credential}`,'Content-Type':'application/json'},body:JSON.stringify(delegated)});
   if(upstream.status===404)return reply({error:'capture not found'},404);
   if(upstream.status===409)return reply({error:'request conflict'},409);
   if(!upstream.ok)return reply({error:'capture unavailable'},503);

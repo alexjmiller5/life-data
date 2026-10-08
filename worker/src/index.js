@@ -26,6 +26,7 @@ import {ensureChangesetStorage} from './changeset-store.js';
 import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
 import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, fileHeaders, listFiles } from "./files.js";
+import { changesRoute, markChanged, withChangeSignal } from "./changes.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
@@ -169,6 +170,7 @@ function allowed(pathname, method, scopes) {
     pathname === "/v1/schema/pull" ||
     pathname === "/v1/rows/pull" ||
     pathname === "/v1/cursor" ||
+    (method === "GET" && pathname === "/v1/changes") ||
     pathname === "/v1/catalog" ||
     pathname === "/v1/stats" ||
     ((method === "GET" || method === "HEAD") &&
@@ -317,7 +319,10 @@ const ROUTES = {
         .run();
       applied++;
     }
-    if (applied) indexed.delete(db); // a replayed CREATE TABLE needs its index
+    if (applied) {
+      indexed.delete(db); // a replayed CREATE TABLE needs its index
+      markChanged();
+    }
     return { applied };
   },
 
@@ -874,19 +879,24 @@ function preflight(request, env) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    if (loginPath(url.pathname)) return handle(request, env, ctx, url);
-    if (request.method === "OPTIONS") return preflight(request, env);
-    const response = await handle(request, env, ctx, url);
-    const origin = corsOrigin(request, env);
-    return origin ? withCors(response, origin) : response;
+  // Every commit inside a request or cron run wakes the replicas (changes.js).
+  fetch(request, env, ctx) {
+    return withChangeSignal(env, ctx, async () => {
+      const url = new URL(request.url);
+      if (loginPath(url.pathname)) return handle(request, env, ctx, url);
+      if (request.method === "OPTIONS") return preflight(request, env);
+      const response = await handle(request, env, ctx, url);
+      const origin = corsOrigin(request, env);
+      return origin ? withCors(response, origin) : response;
+    });
   },
 
-  async scheduled(event, env, ctx) {
-    // One Worker, two schedules — dispatch on which trigger fired.
-    if (event.cron === SWEEP_CRON) ctx.waitUntil(logDerive(sweep(env.DB, env)));
-    else ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
+  scheduled(event, env, ctx) {
+    return withChangeSignal(env, ctx, async () => {
+      // One Worker, two schedules — dispatch on which trigger fired.
+      if (event.cron === SWEEP_CRON) ctx.waitUntil(logDerive(sweep(env.DB, env)));
+      else ctx.waitUntil(runBackup(env, new Date(event.scheduledTime)));
+    });
   },
 };
 
@@ -1008,6 +1018,7 @@ async function handle(request, env, ctx, url) {
       return new Response(text, { headers: { "Content-Type": "application/json", ETag: etag } });
     }
     if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
+    if (url.pathname === "/v1/changes" && request.method === "GET") return await changesRoute(env, url);
     if (
       url.pathname.startsWith("/v1/archive/") &&
       (request.method === "GET" || request.method === "HEAD")
