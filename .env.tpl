@@ -17,3 +17,8 @@ CLOUDFLARE_ACCOUNT_ID=op://Life Data/Life Data CI Cloudflare Token/account-id
 
 APNS_CONFIG=op://Life Data/Life Data ENV/APNS_CONFIG
 APNS_PRIVATE_KEY=op://Life Data/Life Data ENV/APNS_PRIVATE_KEY
+
+# Consumer-access policy (docs/consumer-access.md): JSON objects, {} when unused.
+# Deploy pushes them, so these fields are the declarative source of truth.
+ENROLLMENT_PROFILES=op://Life Data/Life Data ENV/ENROLLMENT_PROFILES
+ROW_CREATION_POLICIES=op://Life Data/Life Data ENV/ROW_CREATION_POLICIES

@@ -89,3 +89,63 @@ test('rejected legacy approval cannot promote an existing non-device credential'
  expect(e.AUTH_DB.db.query('SELECT * FROM _tokens').all()).toEqual(before);
  expect(e.AUTH_DB.db.query('SELECT * FROM _governance_authorities').all()).toEqual([]);
 });
+
+import scopeFixture from '../../tests/fixtures/enrollment-scopes.json';
+import {enrollmentProfile} from '../src/enrollment-profile.js';
+import {creationPolicies,creationGrant} from '../src/creation.js';
+import {validateDeviceSession} from '../../core/src/enrollment.ts';
+
+for(const c of scopeFixture.cases.filter(c=>!JSON.stringify(c.scopes).includes('rows:create:')))
+ test(`hub profile grammar matches the shared contract: ${c.name}`,async()=>{
+  const e={ENROLLMENT_PROFILES:JSON.stringify({p:{label:'Fixture',scopes:c.scopes}})};
+  expect(await enrollmentProfile(e,'p')!==null).toBe(c.valid);
+ });
+
+const creationConfig={namespace:'11111111-2222-4333-8444-555555555555',sourceKind:'fixture-event',
+ occurrenceType:'integer',table:'items',columns:['title'],origin:{kind:'fixture-source',table:'sources',relation:'imported_from'}};
+
+test('creation grants in a profile must name a configured policy revision',async()=>{
+ const e={ROW_CREATION_POLICIES:JSON.stringify({fixture:creationConfig})};
+ const [policy]=await creationPolicies(e);
+ e.ENROLLMENT_PROFILES=JSON.stringify({good:{label:'Creator',scopes:[creationGrant(policy)]},
+  stale:{label:'Creator',scopes:[`rows:create:fixture:${'a'.repeat(64)}`]}});
+ expect((await enrollmentProfile(e,'good')).scopes).toEqual([creationGrant(policy)]);
+ expect(await enrollmentProfile(e,'stale')).toBeNull();
+});
+
+async function approve(e,id,token){
+ const key=await hashToken(token);
+ const page=await call(e,`/login?key=${key}&name=Server&profile=${id}`),html=await page.text();
+ expect(page.status).toBe(200);
+ const revision=html.match(/name="profileRevision" value="([0-9a-f]{64})"/)[1];
+ expect((await call(e,'/login','POST',new URLSearchParams({key,name:'Server',profile:id,profileRevision:revision}).toString())).status).toBe(200);
+ return {html,session:await (await call(e,'/v1/session','GET',undefined,token)).json()};
+}
+
+test('server profiles carry whole-table, file, subscription and stream grants without full authority',async()=>{
+ const grants=['tables:read:flights','tables:write:flights','files:read:raw/flighty/','files:write:raw/flighty/',
+  'subscriptions:consume:11111111-1111-4111-8111-111111111111','streams:append:location'];
+ const e=env();e.ENROLLMENT_PROFILES=JSON.stringify({'flight-sync-v1':{label:'Flight Sync',scopes:grants}});
+ const {html,session}=await approve(e,'flight-sync-v1','server-candidate');
+ expect(html).toContain('Read and write access');
+ expect(session.scopes).toEqual([...grants].sort());
+ expect(session.capabilities.schema).toBe('none');expect(session.capabilities.replica_sync).toBe(false);
+ const native=validateDeviceSession(session,{id:'flight-sync-v1',scopes:grants});
+ expect(native.replica.allowed).toBe(false);expect(native.governance).toBeUndefined();
+ expect(e.AUTH_DB.db.query('SELECT count(*) AS n FROM _governance_authorities').get().n).toBe(0);
+});
+
+test('broad table and stream profiles get schema access but never replica sync or governance',async()=>{
+ const grants=['tables:read','tables:write','streams:append'];
+ const e=env();e.ENROLLMENT_PROFILES=JSON.stringify({'estate-reader-v1':{label:'Estate Reader',scopes:grants}});
+ const {session}=await approve(e,'estate-reader-v1','broad-candidate');
+ expect(session.capabilities.schema).toBe('full-ddl-v1');expect(session.capabilities.replica_sync).toBe(false);
+ const native=validateDeviceSession(session,{id:'estate-reader-v1',scopes:grants});
+ expect(native.replica.allowed).toBe(false);expect(native.governance).toBeUndefined();
+ expect(e.AUTH_DB.db.query('SELECT count(*) AS n FROM _governance_authorities').get().n).toBe(0);
+});
+
+test('read-only profiles are labelled read-only',async()=>{
+ const e=env(),{html}=await approve(e,'contact-reader-v1','reader-candidate');
+ expect(html).toContain('Read-only access:');expect(html).not.toContain('Read and write access');
+});

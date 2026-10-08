@@ -2,23 +2,39 @@
 
 A consumer holds its own generated credential and a user-provided service URL.
 The host owns URL validation, cryptography, browser launch, polling deadlines,
-cancellation and secure storage. Profile enrollment supports projected reads
-and explicitly granted, revision-checked field edits. It does not
-participate in replica synchronization or governance proposal/approval.
+cancellation and secure storage. A profile credential holds exactly the
+profile's grants. It never participates in replica synchronization or
+governance proposal/approval. Which consumers use profiles, and how servers
+enroll, is the standard in [consumer-access.md](consumer-access.md).
 
 ## Service configuration
 
 `ENROLLMENT_PROFILES` is optional, service-owned JSON keyed by a public profile
 ID. Each value has `label`, `scopes` and optional `config`. IDs match
 `[a-z][a-z0-9-]{0,63}`. Labels follow the existing enrollment label policy.
-A profile has 1-256 distinct `tables:read:<table>:<column>` or
-`tables:patch:<table>:<column>` or `catalog:read:<table>:<column>` grants; each table must include its `id` read.
-Metadata grants require a read grant for that same column. Patch grants require reads for the same column plus `updated_at` and `hub_at`.
-Identity, creation/update timestamps, hub revisions and deletion fields cannot
-be patched. Internal, catalog, history, provenance and purge tables are not
-eligible. Full, admin, whole-table, file and general write grants are not
-accepted by this enrollment slice. Applications choose a public profile
-ID and exact expected grants; customers enter only the service URL.
+A profile has 1-256 distinct grants. `tests/fixtures/enrollment-scopes.json`
+is the grammar contract, checked by core, the Worker and the Python CLI:
+
+- Column grants `tables:read:<table>:<column>`, `tables:patch:<table>:<column>`
+  and `catalog:read:<table>:<column>`. Each table must include its `id` read.
+  Metadata grants require a read grant for that same column. Patch grants
+  require reads for the same column plus `updated_at` and `hub_at`. Identity,
+  creation/update timestamps, hub revisions and deletion fields cannot be patched.
+- Whole-table grants `tables:read:<table>` and `tables:write:<table>`.
+- Broad grants `tables:read`, `tables:write` and `streams:append`. Broad
+  `tables:read` adds schema access (`schema: full-ddl-v1`), never replica sync.
+- `streams:read:<name>`, `streams:append:<name>`, `captures:submit:<adapter>`
+  and `captures:read:<adapter>`.
+- `rows:create:<policy-id>:<revision>`. It must name a current
+  `ROW_CREATION_POLICIES` revision, or the whole profile is unavailable.
+- `files:read:<prefix>/` and `files:write:<prefix>/`: slash-terminated
+  segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`.
+- `subscriptions:consume:<subscription-uuid>`.
+
+Internal, catalog, history, provenance and purge tables are not eligible.
+Full, admin and token administration are never profile grants; a profile that
+contains one is unavailable. Applications choose a public profile ID and exact
+expected grants; customers enter only the service URL.
 
 Profile values are installation state, never personal schema in source.
 Unknown, unavailable or invalid requested profiles fail closed. Omitting a
@@ -47,7 +63,8 @@ approvals, not stored credential grants. Revoke existing credentials explicitly.
   generated operation argument forms. The direct functions take `(data,
   expectedProfile?)` and `(reply,expectedFingerprint,expectedProfile?)`.
   Profile validation requires the exact scope set, valid receipt, matching
-  profile, direct-read capabilities and no governance authority. Polling also
+  profile, `replica_sync: false`, schema `none` (or `full-ddl-v1` when the
+  profile holds broad `tables:read`) and no governance authority. Polling also
   binds the exact candidate device fingerprint. Revalidate on reconnect.
 - `POST /v1/session` revokes the authenticated credential and returns
   `{logged_out:true}`. A 401 is not proof of cancellation of an unapproved link.
@@ -101,7 +118,9 @@ single- and multi-reference deletion guard templates, whose deletion predicate
 cannot hold for a live-row patch; arbitrary SQL and lookalike suffixes are still
 denied. A table with hub derivations accepts a patch that writes neither a
 derived column nor any of its declared inputs; no derivation runs for it.
-Writable browser approval shows the complete grants as read/update access.
+Browser approval lists every grant and labels any profile holding a write,
+patch, creation, file-write, stream-append or capture-submit grant as read and
+write access.
 Canonical enrollment validation requires `conditional_patch: revision-v1`
 as well as the exact profile/scope receipt. Existing reader profiles and
 accepted credentials keep their original grants until explicit reenrollment.
@@ -128,8 +147,10 @@ column, type, description, required, readOnly and optional static options.
 Only option values, descriptions and sort ranks are exposed; dynamic SQL,
 reference targets, defaults and private metadata are never disclosed or run.
 Read-only includes identity/revision fields, derived/immutable/dynamic-option
-properties and columns without a patch grant. Metadata does not authorize edits;
-normal checked writes remain the final authority.
+properties and columns without a patch grant. Uncataloged engine columns
+(`id` text; `created_at`, `updated_at`, `hub_at`, `deleted_at` datetime) project
+built-in read-only metadata; any other column still needs one catalog row.
+Metadata does not authorize edits; normal checked writes remain the final authority.
 
 ## Bounded record queries
 

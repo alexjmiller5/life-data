@@ -214,7 +214,7 @@ export async function handleLogin(request, env, ctx, url) {
     if (Object.hasOwn(values,'profile') && !profile) return json({error:'enrollment profile unavailable'},403);
     const push=Object.hasOwn(values,'pushProfile') ? pushConfiguration(env)?.profiles.find(p=>p.id===values.pushProfile) : null;
     if(Object.hasOwn(values,'pushProfile') && !push)return json({error:'push profile unavailable'},403);
-    const profileFields=profile ? `<p>Application: <strong>${escapeHtml(profile.label)}</strong></p><p>${profile.scopes.some(s=>s.startsWith('tables:patch:'))?'Read and update access (listed fields only):':'Read-only access:'}</p><ul>${profile.scopes.map(s=>`<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul><input type="hidden" name="profile" value="${escapeHtml(profile.id)}"><input type="hidden" name="profileRevision" value="${profile.revision}">` : '';
+    const profileFields=profile ? `<p>Application: <strong>${escapeHtml(profile.label)}</strong></p><p>${profile.scopes.some(s=>/^(?:tables:(?:write|patch)|rows:create|files:write|streams:append|captures:submit)(?::|$)/.test(s))?'Read and write access (listed grants only):':'Read-only access:'}</p><ul>${profile.scopes.map(s=>`<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul><input type="hidden" name="profile" value="${escapeHtml(profile.id)}"><input type="hidden" name="profileRevision" value="${profile.revision}">` : '';
     const pushFields=push ? `<p>Allow Apple push notifications for <strong>${escapeHtml(push.id)}</strong> (${escapeHtml(push.platform)}) on this installation.</p><input type="hidden" name="pushProfile" value="${escapeHtml(push.id)}">` : "";
     return page(
       "Approve Life device",

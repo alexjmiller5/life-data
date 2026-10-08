@@ -91,6 +91,9 @@ reads never provision either store or rewrite saved definitions.
   A validated identity is not replica permission: require `session.replica.allowed`.
   A 401 cleanup result is unauthorized, not proof that later approval is cancelled.
   Python login behavior and hub routes are independent of these pure UI operations.
+  `core/src/enrollment-scopes.ts` owns the profile grant grammar;
+  `tests/fixtures/enrollment-scopes.json` is its contract with the Worker and with
+  `valid_profile_scopes` in `src/life_data/login.py`.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
   codecs, including named discriminated object unions; `--check` verifies
@@ -488,6 +491,13 @@ reads never provision either store or rewrite saved definitions.
 - **Device login is app-owned.** `life login` opens an Access-gated approval
   page and saves the resulting scoped device token in the macOS Keychain;
   `life logout` revokes it at the saved hub before deleting the local item.
+  `--profile <id>` enrolls with a hub-configured profile instead of full access.
+  Server consumers use the headless two-step form: `--profile <id> --start
+  <state>` writes a candidate token to a new 0600 state file and prints the
+  approval URL without contacting the hub; `--claim <state> [--wait]` checks
+  once (or polls 5 s / 300 s), prints only the approved token, then deletes the
+  state file. Neither step touches Keychain. A claimed session that is not
+  exactly the requested profile on that candidate is revoked.
   The worker's auth registry is a separate `AUTH_DB` binding, so user schema
   DDL in `DB` cannot alter token state. `LOGIN_ACCESS_AUD` must equal the
   provisioned Access application's audience. `/login` never trusts identity
@@ -610,8 +620,9 @@ the request reaches the Worker.
 
 `life watch` pushes within ~1s of a local write (fingerprinting the db AND
 its `-wal`, since WAL mode leaves the main file untouched until checkpoint)
-and polls for remote changes. Swapping that poll for a WebSocket is tracked
-as a task and is a client-side change only.
+and polls for remote changes. Replacing that poll with a push channel needs
+hub work (a WebSocket or long-poll endpoint the hub does not have) as well as
+client changes.
 
 ## Hub service
 
@@ -627,10 +638,16 @@ Subscriptions advertise `durable-pull-v1`; conditional row edits advertise
 falling back to an unconditional write.
 
 Profile enrollment and projected reads are specified in `docs/scoped-enrollment.md`.
-Optional service-owned `ENROLLMENT_PROFILES` contains exact read-column grants
-and optional `tables:patch:<table>:<column>` grants for revision-checked live-row
-edits. Patch grants require same-column and id/updated_at/hub_at reads, exclude
+Optional service-owned `ENROLLMENT_PROFILES` holds named grant sets. Profiles
+carry column, whole-table, broad `tables:read`/`tables:write`/`streams:append`,
+named stream, capture, `rows:create` (current policy revision only), file-prefix
+and `subscriptions:consume` grants; never full, admin or token administration.
+`docs/consumer-access.md` is the standard for which consumer uses which pattern.
+Column patch grants require same-column and id/updated_at/hub_at reads, exclude
 lifecycle fields, and never authorize push/insert or caller-supplied history.
+The deploy workflow pushes `ENROLLMENT_PROFILES` and `ROW_CREATION_POLICIES`
+(JSON, `{}` when unused) from the project's ENV item on every deploy; edit the
+item and redeploy, never `wrangler secret put` by hand.
 Requested unknown profiles never fall back to full. Auth storage binds
 the approved profile revision and scopes to the fingerprint atomically. Profile
 tokens get no governance authority. Core owns the optional profile expectation
@@ -864,9 +881,10 @@ Beta gotchas, all hit at build time (2026-09-02):
 Credentials have separate owners:
 - Consumer devices enroll through `life login` and store their app-issued
   tokens in native Keychain. Never distribute operator/provider tokens to them.
-- Services receive dedicated, narrowly scoped Life tokens through the supported
-  token API. The auth registry stores only hashes in `AUTH_DB`. Revocation is
-  per credential; `full` allows data operations, not token administration.
+- Services enroll with a named profile (`docs/consumer-access.md`, pattern A)
+  and keep the token in their own project's secrets. The auth registry stores
+  only hashes in `AUTH_DB`. Revocation is per credential; `full` allows data
+  operations, not token administration.
 - `HUB_TOKEN` is an independently managed operator credential. It is never an
   implicit fallback for a signed-out consumer session.
 - Cloudflare infrastructure credentials belong to the service and its CI/operator
@@ -893,7 +911,7 @@ schemas own query indexes; no consumer table names belong in service code.
 bindings require reenrollment; config-less legacy hashes remain stable.
 Canonical config checks export from `life-core/consumer-config`; generated
 Swift/TypeScript DTOs come from `core/contract/core.json`. Profiles admit up to
-256 distinct column grants. Metadata grants require matching row read grants;
+256 distinct grants. Metadata grants require matching row read grants;
 projection never executes or discloses dynamic option SQL. These endpoints
 confer no replica, arbitrary SQL or general catalog authority.
 
@@ -915,11 +933,23 @@ Canonical shapes: `tests/fixtures/hub-files-contract.json`.
 Tests exercise real token creation,
 revocation and requests against an in-memory archive.
 
-Approved consumers: People Sync retains person/record photos and source
-profile snapshots through its scoped file token; Music Sync retains raw
-Spotify pulls through its scoped file token. They depend on this supported
-service contract only. Each consumer's operational recovery state stays in
-its own store; Life Data storage credentials never leave this service.
+`GET /v1/files?prefix=&cursor=&limit=` lists `{objects:[{key,size,uploaded,etag}],cursor}`
+(limit 1-1000, default 100; opaque cursor, `null` on the last page). A
+`files:read:<prefix>/` holder lists only inside its prefix; full/admin list the
+whole archive. `life files list <prefix>` follows every page.
+
+File-consumer registry (every file consumer and prefix is listed here, per
+`docs/consumer-access.md`). Consumers depend on this supported service contract
+only; each keeps its operational recovery state in its own store, and Life Data
+storage credentials never leave this service.
+
+| Consumer | Prefixes |
+|---|---|
+| Flighty Sync | `raw/flighty/` |
+| Page Archiver | `captures/` |
+| Screentime Dashboard | `raw/screentime/` |
+| Music Sync | `raw/spotify-pull/`, `raw/spotify-capture/` |
+| People Sync | `photos/people/`, `photos/records/`, `profiles/` |
 
 ## Durable change recording
 

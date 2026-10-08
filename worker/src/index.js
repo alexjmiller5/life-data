@@ -25,7 +25,7 @@ import {handleChangesetGovernance,canChangeset,changesetGovernanceLimits} from '
 import {ensureChangesetStorage} from './changeset-store.js';
 import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
 import {ensureProposalStorage} from './governance-proposals.js';
-import { putFile, fileHeaders } from "./files.js";
+import { putFile, fileHeaders, listFiles } from "./files.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
 import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
@@ -123,22 +123,22 @@ function fileKey(pathname) {
   return key;
 }
 
+// Prefixes are literal object-key namespaces, with a mandatory boundary.
+function filePrefixes(scopes, operation) {
+  const grant = `files:${operation}:`;
+  return scopes.filter((scope) => scope.startsWith(grant)).map((scope) => scope.slice(grant.length))
+    .filter((prefix) => prefix.endsWith("/") && prefix.length > 1 &&
+      !/[%\\\x00-\x1f\x7f]/.test(prefix) &&
+      prefix.slice(0, -1).split("/").every((p) => p && p !== "." && p !== ".."));
+}
+
 function fileAllowed(pathname, method, scopes) {
   let key;
   try { key = fileKey(pathname); } catch { return false; }
   const operation = method === "PUT" && pathname.startsWith("/v1/files/") ? "write"
     : ["GET", "HEAD"].includes(method) ? "read" : null;
   if (!operation) return false;
-  return scopes.some((scope) => {
-    const grant = `files:${operation}:`;
-    if (!scope.startsWith(grant)) return false;
-    const prefix = scope.slice(grant.length);
-    // Prefixes are literal object-key namespaces, with a mandatory boundary.
-    return prefix.endsWith("/") && prefix.length > 1 &&
-      !/[%\\\x00-\x1f\x7f]/.test(prefix) &&
-      prefix.slice(0, -1).split("/").every((p) => p && p !== "." && p !== "..") &&
-      key.startsWith(prefix);
-  });
+  return filePrefixes(scopes, operation).some((prefix) => key.startsWith(prefix));
 }
 
 // Route family → scopes that may use it. "admin" implies everything;
@@ -916,6 +916,10 @@ async function handle(request, env, ctx, url) {
     return json({ error: session ? "unauthorized" : "forbidden" }, session ? 401 : 403);
   }
   if (url.pathname === "/v1/session") return handleSession(request, tenant, env);
+  if (url.pathname === "/v1/files") {
+    const broad = ["admin", "full"].some((scope) => tenant.scopes.includes(scope));
+    return listFiles(request, tenant.archive, url, broad ? [""] : filePrefixes(tenant.scopes, "read"));
+  }
   if (url.pathname.startsWith('/v1/captures/')) return captureGateway(request,tenant,env);
   if (url.pathname === '/v1/rows/query') return rowsQuery(request,tenant,env);
   if (url.pathname === '/v1/consumer/config') return consumerConfig(request,tenant,env);

@@ -170,7 +170,7 @@ test('browser enrollment and native policy keep exact stream profiles narrow',as
     expect(native.governance).toBeUndefined();
     if(operation==='read') expect((await request(token,'/v1/streams/sample/records')).status).toBe(200);
     else expect((await request(token,'/v1/streams/sample/append','POST','{}')).status).toBe(200);
-    for(const invalid of ['streams:read','streams:append','streams:read:*','streams:read:sample/other','streams:read:sample:extra']) {
+    for(const invalid of ['streams:read','full','streams:read:*','streams:read:sample/other','streams:read:sample:extra']) {
       env.ENROLLMENT_PROFILES=JSON.stringify({bad:{label:'Invalid',scopes:[invalid]}});
       expect(await enrollmentProfile(env,'bad')).toBeNull();
     }

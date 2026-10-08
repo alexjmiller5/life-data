@@ -91,6 +91,34 @@ retried. For an existing externally provisioned device token, use
 `life login --token-stdin`; admin tokens are rejected. Pipe credentials from
 a trusted provider, never put them in arguments or shell history.
 
+### Consumer enrollment
+
+Applications other than your own `life` CLI and Life UI enroll with a named
+profile: a grant set the hub operator configures in `ENROLLMENT_PROFILES`. The
+approval page shows the application label and every grant; the resulting token
+carries exactly those grants and nothing broader. The full standard is
+[docs/consumer-access.md](docs/consumer-access.md).
+
+```bash
+life login --profile reader-v1 --name "Reader"   # this Mac, token in Keychain
+```
+
+A server consumer is enrolled by its operator in two steps, so the approval
+link can wait for the owner:
+
+```bash
+life login --profile sync-v1 --name "Sync server" --start pending.json
+# prints {"approval_url", "approval_code", "state_file"}; send the URL to the owner
+life login --claim pending.json            # one check; fails until approved
+life login --claim pending.json --wait     # or poll every 5 s for up to 300 s
+```
+
+`--start` writes a fresh candidate token to a new `0600` state file (it never
+overwrites one) and contacts nothing. `--claim` prints only the approved token
+on stdout, then deletes the state file; store it straight into the consumer's
+own secret store. An approval that is not exactly the requested profile is
+revoked. Neither step touches Keychain, so both work on any OS.
+
 `--hub-url https://your-hub.example.com` selects a self-hosted instance.
 Once a data directory has synced over HTTP, it is bound to that endpoint.
 Use a fresh `LIFE_DATA_DIR` for a different hub; existing cursors and data
@@ -473,7 +501,14 @@ them. Existing subscriptions retain their exact stored trigger semantics.
 for an absent key). URL-encode each key segment; empty segments, dot
 segments, encoded separators, control characters and percent signs in
 stored keys are rejected. Uploading an existing key replaces its contents.
-There is no file deletion or listing endpoint.
+There is no file deletion endpoint.
+
+`GET /v1/files?prefix=<p>&cursor=<c>&limit=<n>` lists object metadata as
+`{objects:[{key,size,uploaded,etag}],cursor}`; `cursor` is opaque and `null` on
+the last page, `limit` is 1-1000 (default 100). A `files:read:<prefix>/` holder
+may list only prefixes inside its grant; `full` and `admin` may list anything,
+including the whole archive. `life files list <prefix>` follows every page and
+prints the objects as JSON.
 
 Mint client tokens with literal, slash-terminated namespace scopes, for
 example `files:read:photos/client/,files:write:photos/client/`. Read and

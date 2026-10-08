@@ -11,7 +11,9 @@ run *args:
 
 test:
     uv run pytest
-    cd worker && bun test
+    # subprocess SQLite fixtures (worker/test/limited-d1.js) outlast bun's 5 s
+    # default timeout on a loaded host
+    cd worker && bun test --timeout 60000
     cd core && bun test
 
 # all static analysis, read-only

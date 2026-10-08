@@ -120,8 +120,8 @@ test('browser approval gives exact patch authority and canonical enrollment vali
  expect(()=>validateDeviceSession({...info,capabilities:{...info.capabilities,conditional_patch:undefined}},expectation)).toThrow();
 });
 
-test('writable enrollment rejects structural, missing-read and broad grants',async()=>{
- for(const grants of [[...reads,'tables:write:contacts'],[...reads,'tables:patch:contacts:deleted_at'],scopes.filter(s=>s!=='tables:read:contacts:hub_at'),[...reads,'tables:patch:contacts:name','tables:patch:other:flag']]){
+test('writable enrollment rejects structural, missing-read and full grants',async()=>{
+ for(const grants of [[...reads,'full'],[...reads,'tables:patch:contacts:deleted_at'],scopes.filter(s=>s!=='tables:read:contacts:hub_at'),[...reads,'tables:patch:contacts:name','tables:patch:other:flag']]){
   const {env}=await setup(grants);const key=await hashToken('candidate');
   const r=await worker.fetch(new Request(`https://hub.test/login?key=${key}&name=Phone&profile=${expectation.id}`),env,ctx);
   expect(r.status).toBe(403);

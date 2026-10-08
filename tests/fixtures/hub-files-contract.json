@@ -34,5 +34,19 @@
     "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     "Cache-Control": "private, no-store, no-transform",
     "X-Content-SHA256": "74c7835231c92b40bf6415ed21bb8e9cacfb624f16b8a15510a3984874594aa6"
+  },
+  "listing": {
+    "status": 200,
+    "body": {
+      "objects": [
+        {
+          "key": "captures/attempt/page.html",
+          "size": 17,
+          "uploaded": "2026-01-01T00:00:00.000Z",
+          "etag": "\"opaque-etag\""
+        }
+      ],
+      "cursor": null
+    }
   }
 }

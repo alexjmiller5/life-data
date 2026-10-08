@@ -83,7 +83,8 @@ export function validateDeviceSession(data: unknown, expectedProfile?: Enrollmen
     const caps=data.capabilities;
     if (enrollmentProfile?.id !== expectedProfile.id || data.scopes.length !== expectedProfile.scopes.length
       || new Set(data.scopes).size !== data.scopes.length || !data.scopes.every(s=>expectedProfile.scopes.includes(s))
-      || !record(caps) || caps.row_api !== 'v1' || caps.schema !== 'none' || caps.replica_sync !== false
+      || !record(caps) || caps.row_api !== 'v1' || caps.replica_sync !== false
+      || caps.schema !== (expectedProfile.scopes.includes('tables:read') ? 'full-ddl-v1' : 'none')
       || (expectedProfile.scopes.some(s=>s.startsWith('tables:patch:')) && caps.conditional_patch !== 'revision-v1')
       || Object.hasOwn(caps,'governance')) throw new Error('device approval profile does not match');
   }

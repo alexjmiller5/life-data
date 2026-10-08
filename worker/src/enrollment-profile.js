@@ -1,6 +1,7 @@
 import {hashToken,validLabel} from './auth.js';
 import {canonicalConsumerConfig} from '../../core/src/consumer-config.ts';
 import {validEnrollmentScopes} from '../../core/src/enrollment-scopes.ts';
+import {creationPolicies,creationGrant} from './creation.js';
 
 export const validProfileId = id => typeof id === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(id);
 
@@ -17,6 +18,11 @@ export async function enrollmentProfile(env,id) {
   if (!p || !validLabel(p.label) || !validEnrollmentScopes(p.scopes)
     || Object.keys(p).some(k=>!['label','scopes','config'].includes(k))) return null;
   const label=p.label.trim(),scopes=[...p.scopes].sort();
+  // A creation grant must name a current policy revision, as token creation requires.
+  if (scopes.some(s=>s.startsWith('rows:create:'))) {
+    const current=new Set((await creationPolicies(env)).map(creationGrant));
+    if (scopes.some(s=>s.startsWith('rows:create:') && !current.has(s))) return null;
+  }
   let config;
   if (Object.hasOwn(p,'config')) {
     try {config=canonicalConsumerConfig(p.config);} catch {return null;}

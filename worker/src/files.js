@@ -47,3 +47,21 @@ export function fileHeaders(object) {
   if (sha256) headers.set('X-Content-SHA256',sha256);
   return headers;
 }
+
+// GET /v1/files?prefix=&cursor=&limit= over the ARCHIVE binding. `readable` holds
+// the caller's granted read prefixes ([''] for full/admin); the listed prefix must
+// lie inside one, and R2 keeps every page (cursor included) inside that prefix.
+export async function listFiles(request,archive,url,readable) {
+  if (request.method!=='GET') return reply({error:'method not allowed'},405);
+  const params=url.searchParams,names=[...params.keys()];
+  const prefix=params.get('prefix') ?? '',cursor=params.get('cursor'),limit=params.get('limit') ?? '100';
+  if (names.some(n=>!['prefix','cursor','limit'].includes(n)) || new Set(names).size!==names.length
+    || !/^\d{1,4}$/.test(limit) || +limit<1 || +limit>1000 || cursor==='' || prefix.length>1024
+    || /[\x00-\x1f\x7f]/.test(prefix)) return reply({error:'invalid listing request'},400);
+  if (!readable.some(granted=>prefix.startsWith(granted))) return reply({error:'insufficient scope'},403);
+  let page;
+  try { page=await archive.list({prefix,limit:+limit,...(cursor===null?{}:{cursor})}); }
+  catch { return reply({error:'file_list_failed'},502); }
+  return reply({objects:page.objects.map(o=>({key:o.key,size:o.size,uploaded:o.uploaded.toISOString(),etag:o.httpEtag})),
+    cursor:page.truncated ? page.cursor : null});
+}

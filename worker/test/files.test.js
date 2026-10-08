@@ -16,10 +16,15 @@ async function setup(scopes) {
     },
     async get(key) {
       const obj = objects.get(key);
-      return obj && { body: obj.bytes, size: obj.bytes.length, httpEtag:'"etag-not-a-sha256"', checksums:{sha256:obj.digest}, httpMetadata:{contentType:obj.type},
+      return obj && { key, uploaded: new Date("2026-01-01T00:00:00.000Z"), body: obj.bytes, size: obj.bytes.length, httpEtag:'"etag-not-a-sha256"', checksums:{sha256:obj.digest}, httpMetadata:{contentType:obj.type},
         writeHttpMetadata(headers) { headers.set("Content-Type", obj.type); } };
     },
     async head(key) { return this.get(key); },
+    async list({ prefix = "", cursor, limit = 1000 } = {}) {
+      const keys = [...objects.keys()].filter(k => k.startsWith(prefix) && (!cursor || k > cursor)).sort();
+      const page = keys.slice(0, limit), truncated = keys.length > limit;
+      return { objects: await Promise.all(page.map(k => this.get(k))), truncated, ...(truncated ? { cursor: page.at(-1) } : {}) };
+    },
   };
   const env = { HUB_TOKEN: "root", DB: new D1Shim(), AUTH_DB: new D1Shim(), ARCHIVE: archive };
   const ctx = { waitUntil() {} };
@@ -149,4 +154,53 @@ test('capture metadata grants alone confer no file access and legacy writes stil
   const head=await legacy.request('/v1/files/captures/a','HEAD');
   expect(head.headers.get('X-Content-SHA256')).toBeNull();
   expect(await (await legacy.request('/v1/files/captures/a')).text()).toBe('second');
+});
+
+const listed = objects => objects.map(o => ({...o, etag: '"etag-not-a-sha256"'}));
+
+test('listing pages one prefix with opaque cursors and the canonical object shape',async()=>{
+  const {request}=await setup('files:read:captures/,files:write:captures/');
+  const body='<h1>Original</h1>';
+  await request('/v1/files/captures/attempt/page.html','PUT',body,undefined,await immutable(body));
+  const first=await request('/v1/files?prefix=captures/');
+  expect(first.status).toBe(contract.listing.status);
+  expect(first.headers.get('Cache-Control')).toBe('no-store');
+  expect(await first.json()).toEqual({...contract.listing.body,objects:listed(contract.listing.body.objects)});
+  for(const name of ['b','c','d']) await request(`/v1/files/captures/${name}`,'PUT','x');
+  const seen=[];let cursor=null;
+  do {
+    const page=await (await request(`/v1/files?prefix=captures/&limit=2${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`)).json();
+    expect(page.objects.length).toBeLessThanOrEqual(2);
+    seen.push(...page.objects.map(o=>o.key));cursor=page.cursor;
+  } while(cursor);
+  expect(seen).toEqual(['captures/attempt/page.html','captures/b','captures/c','captures/d']);
+});
+
+test('a prefix reader lists only inside its grant while full and admin list everything',async()=>{
+  const {request,objects}=await setup('files:read:photos/people/,files:write:photos/people/');
+  await request('/v1/files/photos/people/a','PUT','x');
+  objects.set('backups/daily/x.sql.gz',{bytes:new Uint8Array([1]),type:'application/gzip'});
+  expect((await (await request('/v1/files?prefix=photos/people/p1/')).json()).objects).toEqual([]);
+  for(const query of ['','?prefix=','?prefix=photos/','?prefix=photos/people','?prefix=backups/','?prefix=photos/records/'])
+    expect((await request(`/v1/files${query}`)).status).toBe(403);
+  const root=await (await request('/v1/files','GET',undefined,'root')).json();
+  expect(root.objects.map(o=>o.key)).toEqual(['backups/daily/x.sql.gz','photos/people/a']);
+  const full=await setup('full');
+  await full.request('/v1/files/backups/a','PUT','x');
+  expect((await (await full.request('/v1/files?prefix=backups/')).json()).objects.map(o=>o.key)).toEqual(['backups/a']);
+});
+
+test('write-only, table and malformed file grants cannot list',async()=>{
+  for(const scopes of ['files:write:photos/people/','tables:read','files:read:photos/people','files:read:photos/../']) {
+    const {request}=await setup(scopes);
+    expect((await request('/v1/files?prefix=photos/people/')).status).toBe(403);
+  }
+});
+
+test('listing rejects malformed parameters and methods before storage',async()=>{
+  const {request}=await setup('files:read:captures/');
+  for(const query of ['limit=0','limit=1001','limit=x','limit=1.5','limit=','prefix=captures/','other=1','cursor='])
+    expect((await request(`/v1/files?prefix=captures/&${query}`)).status).toBe(400);
+  expect((await request('/v1/files?prefix=captures/%01')).status).toBe(400);
+  expect((await request('/v1/files?prefix=captures/','POST','x')).status).toBe(405);
 });

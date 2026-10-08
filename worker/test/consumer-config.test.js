@@ -59,6 +59,18 @@ test('metadata projection requires every grant and discloses only static propert
  expect((await call(env,'/v1/catalog/projection',request)).status).toBe(403);
 });
 
+test('uncataloged engine columns project built-in read-only metadata; other columns still need a catalog row',async()=>{
+ const env=await fixture();
+ env.DB.db.exec('ALTER TABLE items ADD COLUMN extra TEXT');
+ env.AUTH_DB.db.exec("UPDATE _tokens SET scopes=scopes||',catalog:read:items:id,tables:read:items:updated_at,catalog:read:items:updated_at,tables:read:items:extra,catalog:read:items:extra'");
+ const response=await call(env,'/v1/catalog/projection',{table:'items',columns:['id','updated_at','status']});
+ expect(response.status).toBe(200);
+ expect((await response.json()).properties.slice(0,2)).toEqual([
+  {column:'id',type:'text',description:null,required:true,readOnly:true},
+  {column:'updated_at',type:'datetime',description:null,required:true,readOnly:true}]);
+ expect((await call(env,'/v1/catalog/projection',{table:'items',columns:['extra']})).status).toBe(403);
+});
+
 test('metadata edits are enabled only for checked writable properties and never leak SQL options',async()=>{
  const env=await fixture();
  env.AUTH_DB.db.exec("UPDATE _tokens SET scopes=scopes||',tables:patch:items:status'");

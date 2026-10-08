@@ -2,6 +2,9 @@ import {enrollmentProfile} from './enrollment-profile.js';
 import {checkedReads,readGuards,queryBudget} from './write.js';
 import {scopedTable,ScopeDenied} from './scopes.js';
 
+// Injected by table creation: whether each is NOT NULL.
+const ENGINE_COLUMNS={id:true,created_at:true,updated_at:true,hub_at:false,deleted_at:false};
+
 const reply=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 export async function consumerConfig(request,tenant,env) {
   if(request.method!=='GET') return reply({error:'method not allowed'},405);
@@ -45,6 +48,9 @@ export async function catalogProjection(request,tenant) {
       .bind(body.table,JSON.stringify(body.columns)).all();
     const properties=body.columns.map(column=>{
       const matches=props.filter(p=>p.col===column);
+      // Engine columns exist on every table; their meaning needs no user catalog row.
+      if(!matches.length && Object.hasOwn(ENGINE_COLUMNS,column))
+        return {column,type:column==='id'?'text':'datetime',description:null,required:ENGINE_COLUMNS[column],readOnly:true};
       if(matches.length!==1) throw new ScopeDenied();
       const p=matches[0];let options;
       if(p.options!=null) {

@@ -1064,6 +1064,18 @@ class HttpHub:
     def archive_query(self, sql: str) -> dict:
         return self._post("/v1/archive/query", {"sql": sql})
 
+    def files_list(self, prefix: str) -> list[dict]:
+        """Every object under a prefix, following the hub's opaque cursors."""
+        from urllib.parse import urlencode
+
+        objects, query = [], {"prefix": prefix, "limit": 1000}
+        while True:
+            page = self._get(f"/v1/files?{urlencode(query)}")
+            objects += page["objects"]
+            if not page["cursor"]:
+                return objects
+            query["cursor"] = page["cursor"]
+
     def token_create(self, name: str, scopes: str) -> dict:
         return self._post("/v1/tokens/create", {"name": name, "scopes": scopes})
 
@@ -1540,6 +1552,25 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate and save an existing device token from stdin",
     )
+    p_login.add_argument(
+        "--profile", help="enroll with this hub-configured access profile instead of full access"
+    )
+    p_login.add_argument(
+        "--start",
+        metavar="STATE_FILE",
+        type=Path,
+        help="headless, with --profile: write a pending enrollment (0600) and print its "
+        "approval URL; nothing is stored in Keychain",
+    )
+    p_login.add_argument(
+        "--claim",
+        metavar="STATE_FILE",
+        type=Path,
+        help="headless: print the approved token from a --start state file, then delete it",
+    )
+    p_login.add_argument(
+        "--wait", action="store_true", help="with --claim: poll up to 300 s for the approval"
+    )
     sub.add_parser("logout", help="revoke and remove this device credential")
     p_background = sub.add_parser("background", help="enable, disable or inspect background sync")
     bg_sub = p_background.add_subparsers(dest="background_command", required=True)
@@ -1589,6 +1620,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="query raw landing/parquet objects with local duckdb via stream('name') sources",
     )
+    p_files = sub.add_parser("files", help="retained files in the hub archive")
+    f_sub = p_files.add_subparsers(dest="files_command", required=True)
+    p_flist = f_sub.add_parser("list", help="list every object under a key prefix, as JSON")
+    p_flist.add_argument("prefix", help="key prefix, e.g. raw/flighty/ (needs files:read on it)")
     p_token = sub.add_parser("token", help="scoped client tokens (admin token required)")
     k_sub = p_token.add_subparsers(dest="token_command", required=True)
     p_tc = k_sub.add_parser("create", help="mint a scoped token (value shown ONCE)")
@@ -1596,7 +1631,7 @@ def main(argv: list[str] | None = None) -> int:
     p_tc.add_argument(
         "--scopes",
         default="full",
-        help="comma list: full, tables:read, tables:write, streams:append",
+        help="comma list of grants; see docs/consumer-access.md before minting one",
     )
     p_tr = k_sub.add_parser("revoke", help="revoke a token by name")
     p_tr.add_argument("name")
@@ -1678,8 +1713,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     path = db_path()
+    from .login import LoginError
+
     try:
         return _dispatch(args, path)
+    except LoginError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except catalog.ValidationError as e:
         print(
             json.dumps({"rejected": [v.as_dict() for v in e.violations]}, indent=2), file=sys.stderr
@@ -1698,19 +1738,45 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
             raise ValueError("poll interval must be at least one second")
         return command(args, path.parent)
     elif args.command == "login":
-        from .login import login
+        from . import login as enrollment
 
-        print(
-            json.dumps(
-                login(
-                    path.parent,
-                    hub_url=args.hub_url,
-                    name=args.name,
-                    no_browser=args.no_browser,
-                    token_stdin=args.token_stdin,
+        headless = {"--profile": args.profile, "--start": args.start, "--name": args.name}
+        headless |= {"--hub-url": args.hub_url, "--token-stdin": args.token_stdin}
+        if args.claim:
+            if any(headless.values()) or args.no_browser:
+                raise ValueError("--claim takes only the state file and --wait")
+            token = enrollment.claim_enrollment(args.claim, wait=args.wait)
+            print(token, flush=True)
+            args.claim.unlink()
+        elif args.wait:
+            raise ValueError("--wait requires --claim")
+        elif args.start:
+            if not args.profile or args.token_stdin:
+                raise ValueError("--start requires --profile and cannot read a token")
+            print(
+                json.dumps(
+                    enrollment.start_enrollment(
+                        path.parent,
+                        args.start,
+                        hub_url=args.hub_url,
+                        profile=args.profile,
+                        name=args.name,
+                    )
                 )
             )
-        )
+        else:
+            print(
+                json.dumps(
+                    enrollment.login(
+                        path.parent,
+                        hub_url=args.hub_url,
+                        name=args.name,
+                        profile=args.profile,
+                        no_browser=args.no_browser,
+                        token_stdin=args.token_stdin,
+                    )
+                )
+            )
     elif args.command == "logout":
         from .login import logout
 
@@ -1802,6 +1868,8 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
             print(archive_query_duckdb(args.statement, load_config()))
         else:
             print(json.dumps(hub_from_config().archive_query(args.statement), indent=2))
+    elif args.command == "files":
+        print(json.dumps(hub_from_config().files_list(args.prefix), indent=2))
     elif args.command == "token":
         hub = hub_from_config()
         if args.token_command == "create":
