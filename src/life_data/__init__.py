@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import http.client
 import json
 import os
 import re
@@ -25,6 +26,7 @@ DDL_KEYWORDS = {"CREATE", "ALTER", "DROP"}
 RENAME_TABLE = re.compile(r"^\s*ALTER\s+TABLE\s+\S+\s+RENAME\s+TO\b", re.IGNORECASE)
 CHUNK = 200  # rows per upsert (one JSON parameter regardless of row width)
 DERIVE_CHUNK = 50  # max ids per /v1/derive call
+RETRY_DELAYS = (1, 4, 15)  # seconds before each retry of an idempotent hub request
 
 PLUMBING_STMTS = [
     f"""CREATE TABLE IF NOT EXISTS _schema_log (
@@ -615,6 +617,16 @@ class LocalHub:
             [since or "", since or ""],
         )
 
+    def rows_pull_pages(self, table: str, columns: list[str], since: str, after=None):
+        """Pages in id order, as the service serves them."""
+        rows = sorted(
+            (r for r in self.rows_pull(table, columns, since) if after is None or r["id"] > after),
+            key=lambda r: r["id"],
+        )
+        for i in range(0, max(len(rows), 1), CHUNK):
+            page = rows[i : i + CHUNK]
+            yield page, page[-1]["id"] if i + CHUNK < len(rows) else None
+
     def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
         return self._rows_write(table, columns, rows, history=history)
 
@@ -889,6 +901,14 @@ def validate_hub_url(value: str) -> str:
     return value.rstrip("/")
 
 
+def _transient(exc: BaseException) -> bool:
+    """A server error, timeout or dropped connection, as opposed to a refusal."""
+    cause = exc.__cause__ if isinstance(exc, RuntimeError) else exc
+    if isinstance(cause, urllib.error.HTTPError):
+        return cause.code >= 500
+    return isinstance(cause, (OSError, http.client.HTTPException))
+
+
 class HttpHub:
     """Hub reached over HTTP — the deployed service. Knows nothing about any provider."""
 
@@ -921,6 +941,16 @@ class HttpHub:
         except urllib.error.URLError as e:
             raise RuntimeError(f"hub unreachable: {e.reason}") from e
 
+    def _post_idempotent(self, route: str, body: dict) -> dict:
+        """Pull pages and LWW pushes are safe to repeat: ride out brief hub failures."""
+        for delay in (*RETRY_DELAYS, None):
+            try:
+                return self._post(route, body)
+            except Exception as exc:
+                if delay is None or not _transient(exc):
+                    raise
+                time.sleep(delay)
+
     def ensure_ready(self) -> None:
         return None  # the service owns its own plumbing
 
@@ -930,18 +960,25 @@ class HttpHub:
     def schema_push(self, entries: list[dict]) -> int:
         return self._post("/v1/schema/push", {"entries": entries})["applied"]
 
-    def rows_pull(self, table: str, columns: list[str], since: str) -> list[dict]:
+    def rows_pull_pages(self, table: str, columns: list[str], since: str, after=None):
+        """Yield (rows, cursor): the cursor is the last id a page covers, None at the end."""
         body = {"table": table, "columns": columns, "since": since or "", "limit": CHUNK}
-        rows = []
+        if after is not None:
+            body["after"] = after
         while True:
-            page = self._post("/v1/rows/pull", body)
-            rows.extend(page["rows"])
+            page = self._post_idempotent("/v1/rows/pull", body)
             cursor = page.get("next_cursor")
-            if cursor is None:  # Older hubs return a complete response without a cursor.
-                return rows
-            if not isinstance(cursor, str) or cursor <= body.get("after", "") or not page["rows"]:
+            if cursor is not None and (
+                not isinstance(cursor, str) or cursor <= body.get("after", "") or not page["rows"]
+            ):
                 raise RuntimeError("invalid pull cursor")
+            yield page["rows"], cursor
+            if cursor is None:  # Older hubs return a complete response without a cursor.
+                return
             body["after"] = cursor
+
+    def rows_pull(self, table: str, columns: list[str], since: str) -> list[dict]:
+        return [row for rows, _ in self.rows_pull_pages(table, columns, since) for row in rows]
 
     def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
         # the response also carries the hub_at the hub stamped; nothing reads it
@@ -953,7 +990,7 @@ class HttpHub:
             if history:
                 ids = {r["id"] for r in chunk}
                 body["history"] = [e for e in history if e["row_id"] in ids]
-            out = self._post("/v1/rows/push", body)
+            out = self._post_idempotent("/v1/rows/push", body)
             total += out["upserted"]
             rejected += out.get("rejected", [])
         return {"upserted": total, "rejected": rejected}
@@ -1226,11 +1263,16 @@ def _sync_locked(path: Path, hub) -> dict:
     announce_repair = repair and bool(last_pull or last_push)
     if announce_repair:
         print(
-            "sync checkpoint recovery: full pull and push to recover potentially missed rows; "
-            "this runs once, with retries until successful.",
+            "sync checkpoint recovery: full pull, pushing what the hub lacks, to recover "
+            "potentially missed rows; this runs once and resumes where a failure stopped it.",
             file=sys.stderr,
             flush=True,
         )
+    # Repair compares each hub page with the local rows in the same id range and
+    # pushes only what the hub lacks or holds older (it no-ops the rest anyway).
+    # Progress persists per page, so a failure resumes instead of restarting.
+    # An unbound replica cannot trust progress made against another endpoint.
+    resumable = repair and not unbound_hub
     # A table that just gained hub_at has NULL for every existing row, so the
     # stored cursor would skip all of them: one full pull sets that right.
     # Cursors without an endpoint cannot be trusted. A first HTTP sync
@@ -1265,6 +1307,24 @@ def _sync_locked(path: Path, hub) -> dict:
         tables = _user_tables(path, snapshot)
         candidates, columns = {}, {}
         push_cursor = snapshot.execute(f"SELECT {NOW}").fetchone()[0]
+        progress = {}
+        if resumable:
+            progress = {
+                k: v
+                for k, v in snapshot.execute(
+                    "SELECT key, value FROM _sync_state WHERE key LIKE 'recovery%'"
+                )
+            }
+            if not progress:
+                # The pull cursor from before the first page is the one to keep:
+                # tables verified earlier are not pulled again before it is used.
+                progress = {"recovery_pull": pull_cursor, "recovery_push": push_cursor}
+                snapshot.executemany(
+                    "INSERT INTO _sync_state (key, value) VALUES (?, ?)", progress.items()
+                )
+            # Local rows written since recovery began reach the hub like any
+            # incremental change, even in tables it has already verified.
+            last_push = progress["recovery_push"]
         if last_push > push_cursor:
             last_push = ""  # observed local clock rollback or a future checkpoint
             # Keep recovery due if a later network call fails or rows reject,
@@ -1302,48 +1362,101 @@ def _sync_locked(path: Path, hub) -> dict:
     pulled = pushed = 0
     rejected = []
     purged: dict = {}
+
+    def apply(table: str, remote: list[dict]) -> None:
+        # `pulled` counts rows the LWW upsert actually APPLIED, not rows
+        # received: the sync after a push re-reads its own rows (stamped
+        # after this cursor was read) and they land on nothing.
+        nonlocal pulled
+        with connect(path) as conn:
+            for i in range(0, len(remote), CHUNK):
+                cur = conn.execute(
+                    _upsert_sql(table, columns[table]), (json.dumps(remote[i : i + CHUNK]),)
+                )
+                pulled += cur.rowcount
+            if table == PURGES:
+                apply_purges(conn, remote)
+
+    def push(table: str, rows: list[dict], events: list[dict]) -> None:
+        nonlocal pushed
+        if table == "history":
+            rows = [r for r in rows if r["id"] not in withheld]
+        if not rows:
+            return
+        out = hub.rows_push(table, columns[table], rows, **({"history": events} if events else {}))
+        bad = {r["id"] for r in out["rejected"]}
+        withheld.update(e["id"] for e in events if e["row_id"] in bad)
+        rejected.extend({"table": table, **r} for r in out["rejected"])
+        pushed += out["upserted"]
+
+    def verify(table: str, skip: set) -> None:
+        """Recovery for one table: pull every hub page, push local rows it lacks."""
+        after = progress.get(f"recovery_after:{table}")
+        for page, cursor in hub.rows_pull_pages(table, columns[table], "", after):
+            # The id range this page covers, as plain bounds so the key index serves it.
+            bounds = [(c, v) for c, v in (("id > ?", after), ("id <= ?", cursor)) if v is not None]
+            sql = f"SELECT * FROM {qi(table)}"
+            if bounds:
+                sql += " WHERE " + " AND ".join(c for c, _ in bounds)
+            with connect(path) as conn:
+                local = conn.execute(sql, [v for _, v in bounds]).fetchall()
+            hub_rows = {r["id"]: r.get("updated_at") or "" for r in page}
+            ahead = [
+                dict(r)
+                for r in local
+                if r["id"] not in skip
+                and (r["id"] not in hub_rows or (r["updated_at"] or "") > hub_rows[r["id"]])
+            ]
+            apply(table, _uncovered(purged, table, page))
+            ahead = _uncovered(purged, table, ahead)
+            events = []
+            if ahead and table != "history" and "history" in columns:
+                with connect(path) as conn:
+                    events = [
+                        dict(e)
+                        for e in conn.execute(
+                            "SELECT * FROM history WHERE tbl = ? AND row_id IN "
+                            "(SELECT value FROM json_each(?))",
+                            (table, json.dumps([r["id"] for r in ahead])),
+                        )
+                    ]
+            push(table, ahead, _uncovered(purged, "history", events))
+            if cursor is not None:
+                _set_state(path, f"recovery_after:{table}", cursor)
+            after = cursor
+        _set_state(path, f"recovery_done:{table}", "1")
+
     for table in tables:
         cols, mine = columns[table], candidates[table]
-        # the pull is inclusive (hub_at >= cursor), so the comparison is too
-        quiet = marks is not None and last_pull and marks.get(table, last_pull) < last_pull
-        remote = _uncovered(purged, table, [] if quiet else hub.rows_pull(table, cols, last_pull))
-        if remote:
-            # `pulled` counts rows the LWW upsert actually APPLIED, not rows
-            # received: the sync after a push re-reads its own rows (stamped
-            # after this cursor was read) and they land on nothing.
-            with connect(path) as conn:
-                for i in range(0, len(remote), CHUNK):
-                    cur = conn.execute(
-                        _upsert_sql(table, cols), (json.dumps(remote[i : i + CHUNK]),)
-                    )
-                    pulled += cur.rowcount
-                if table == PURGES:
-                    apply_purges(conn, remote)
+        if resumable:
+            if f"recovery_done:{table}" not in progress:
+                verify(table, {r["id"] for r in mine})
+        else:
+            # the pull is inclusive (hub_at >= cursor), so the comparison is too
+            quiet = marks is not None and last_pull and marks.get(table, last_pull) < last_pull
+            remote = [] if quiet else hub.rows_pull(table, cols, last_pull)
+            if remote := _uncovered(purged, table, remote):
+                apply(table, remote)
         if table == PURGES:
             with connect(path) as conn:
                 purged = _purge_index(conn)
         mine = _uncovered(purged, table, mine)
-        if table == "history":
-            mine = [r for r in mine if r["id"] not in withheld]
-        if mine:
-            ids = {r["id"] for r in mine}
-            events = _uncovered(
-                purged,
-                "history",
-                [e for e in pending_history if e["tbl"] == table and e["row_id"] in ids],
-            )
-            out = hub.rows_push(table, cols, mine, **({"history": events} if events else {}))
-            bad = {r["id"] for r in out["rejected"]}
-            withheld.update(e["id"] for e in events if e["row_id"] in bad)
-            rejected += [{"table": table, **r} for r in out["rejected"]]
-            pushed += out["upserted"]
+        ids = {r["id"] for r in mine}
+        events = _uncovered(
+            purged,
+            "history",
+            [e for e in pending_history if e["tbl"] == table and e["row_id"] in ids],
+        )
+        push(table, mine, events)
 
-    state = {"last_pull": pull_cursor}
+    state = {"last_pull": progress.get("recovery_pull", pull_cursor)}
     if not rejected:
         state.update(last_push=push_cursor, checkpoint_version="3")
         if isinstance(hub, HttpHub):
             state["hub_url"] = hub.base
     with connect(path) as conn:
+        # Rejected rows need the hub comparison again; a complete repair needs none.
+        conn.execute("DELETE FROM _sync_state WHERE key LIKE 'recovery%'")
         if not rejected:
             # Only acknowledge the frozen generation. Writes made while the
             # network was in flight have larger sequences, even with old stamps.

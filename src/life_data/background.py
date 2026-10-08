@@ -231,7 +231,7 @@ def _credential(data: Path, cfg: dict, prefs: dict) -> str:
 
 def run(data: Path, poll_seconds: int) -> int:
     """Stay supervised while disabled; never authenticate until opted in."""
-    from . import db_changed, db_version, hub_from_config, init, load_config, sync
+    from . import _transient, db_changed, db_version, hub_from_config, init, load_config, sync
     from .credentials import KeychainError
 
     data.mkdir(parents=True, exist_ok=True)
@@ -322,6 +322,10 @@ def run(data: Path, poll_seconds: int) -> int:
                 else:
                     error = type(exc).__name__
                 current.update(state="retrying", last_error=error)
+                # A server failure's own words (bounded) go to the daemon log only;
+                # the status file keeps the redacted class above.
+                detail = f"{type(exc).__name__}: {str(exc)[:300]}" if _transient(exc) else error
+                print(f"sync failed: {detail}", file=sys.stderr, flush=True)
                 next_sync = time.monotonic() + retry
                 retry = min(retry * 2, 3600)
             if current != saved_status:

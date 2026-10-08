@@ -65,3 +65,79 @@ def test_http_pull_rejects_invalid_or_nonadvancing_cursor(monkeypatch, cursor):
     monkeypatch.setattr(hub, "_post", lambda *_: next(replies))
     with pytest.raises(RuntimeError, match="invalid pull cursor"):
         hub.rows_pull("records", ["name"], "")
+
+
+def serve(replies):
+    """A hub that answers each request with the next scripted (status, body);
+    a None status drops the connection without any response."""
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            status, body = replies.pop(0)
+            if status is None:
+                self.close_connection = True
+                return
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, requests, HttpHub(f"http://127.0.0.1:{server.server_port}")
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    import life_data
+
+    delays = []
+    monkeypatch.setattr(life_data.time, "sleep", delays.append)
+    return delays
+
+
+def test_http_pull_retries_transient_page_failures(waits):
+    server, requests, hub = serve(
+        [
+            (200, {"rows": [{"id": "a"}], "next_cursor": "a"}),
+            (500, {"error": "D1_ERROR: storage operation exceeded timeout"}),
+            (None, None),
+            (200, {"rows": [{"id": "b"}], "next_cursor": None}),
+        ]
+    )
+    try:
+        assert hub.rows_pull("records", ["id"], "") == [{"id": "a"}, {"id": "b"}]
+    finally:
+        server.shutdown()
+    assert [r.get("after") for r in requests] == [None, "a", "a", "a"]
+    assert len(waits) == 2
+
+
+def test_http_push_retries_a_transient_chunk_failure(waits):
+    server, requests, hub = serve(
+        [(503, {"error": "busy"}), (200, {"upserted": 1, "rejected": []})]
+    )
+    try:
+        out = hub.rows_push("records", ["id", "updated_at"], [{"id": "a", "updated_at": "x"}])
+    finally:
+        server.shutdown()
+    assert out == {"upserted": 1, "rejected": []}
+    assert len(requests) == 2 and len(waits) == 1
+
+
+@pytest.mark.parametrize(("status", "attempts"), [(400, 1), (500, 4)])
+def test_http_pull_gives_up_on_client_errors_and_persistent_failures(waits, status, attempts):
+    server, requests, hub = serve([(status, {"error": "boom"})] * 5)
+    try:
+        with pytest.raises(RuntimeError, match=f"hub HTTP {status}: .*boom"):
+            hub.rows_pull("records", ["id"], "")
+    finally:
+        server.shutdown()
+    assert len(requests) == attempts

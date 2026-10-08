@@ -279,6 +279,8 @@ reads never provision either store or rewrite saved definitions.
   `since` stays fixed for the entire walk. The hub returns `next_cursor`
   only for paginated requests. Legacy requests retain complete responses.
   A failed or nonadvancing page aborts before the sync cursors advance.
+  Pull pages and push chunks retry a 5xx, timeout or dropped connection up
+  to three times (`RETRY_DELAYS`); refusals never retry.
   An optional `where` object (column → string or number) adds equality
   filters, so a consumer can pull one slice of a large table.
 
@@ -476,8 +478,9 @@ reads never provision either store or rewrite saved definitions.
   Background Keychain reads disable native UI for that call and restore the
   previous process allowance, returning an OS code when interaction is required.
   Status distinguishes authenticating from syncing. Only a rejection-free sync
-  advances last_success. Status and logs contain
-  counts and sanitized errors, never token values or rejected row payloads.
+  advances last_success. Status holds counts and sanitized error classes; the
+  log adds a transient failure's bounded message (300 characters, e.g. a hub
+  5xx body). Neither holds token values or rejected row payloads.
 - **Device login is app-owned.** `life login` opens an Access-gated approval
   page and saves the resulting scoped device token in the macOS Keychain;
   `life logout` revokes it at the saved hub before deleting the local item.
@@ -509,8 +512,8 @@ captured under BEGIN IMMEDIATE with push candidates and original history. The
 candidate boundary is inclusive (`updated_at >= last_push`), supplemented by
 the local `_sync_dirty` identities; remote row timestamps
 never choose this checkpoint. Release the SQLite writer reservation before any
-network work. Older checkpoint versions receive one full reconciliation, recorded
-only after success; a detected clock rollback forces a full push. Explicitly
+network work. Older checkpoint versions receive one resumable reconciliation
+(below), recorded only after success; a detected clock rollback forces a full push. Explicitly
 backdated imports are discovered through transactional dirty receipts. Equal
 revisions and conflicts with newer hub revisions retain LWW semantics. `last_pull` is **`hub_at`, the
 arrival time the HUB stamps on its own clock** - a nullable TEXT column on
@@ -546,7 +549,14 @@ final checkpoint transaction clears only receipts at or before that boundary;
 failure/rejection retains them and later writes survive an older acknowledgment.
 Pulls and LocalHub writes do not install these triggers. Local and replayed
 table renames carry dirty identities to the new table. Checkpoint version 3
-performs one full reconciliation to recover imports missed before tracking.
+performs one reconciliation to recover imports missed before tracking: a full
+pull compares each hub page with the local rows in its id range and pushes
+only rows the hub lacks or holds older, plus dirty rows and rows written since
+recovery began. `recovery_*` keys in `_sync_state` hold its starting pull
+cursor and per-table page progress, so a failure resumes at the failed page
+and the final `last_pull` still covers arrivals in tables verified earlier.
+Completion or any rejection clears them; a rejection rescans from the start.
+An unbound replica's first HTTP sync keeps the plain full pull and push.
 TypeScript `_core_pending` remains that client's separate receipt mechanism;
 direct external writers retain the timestamp compatibility contract.
 
