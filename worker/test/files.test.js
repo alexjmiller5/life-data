@@ -255,3 +255,54 @@ test('a missing key, a malformed key or the legacy archive route deletes nothing
   expect(objects.has('raw/a')).toBe(true);
   expect(await feed(env)).toEqual([]);
 });
+
+const rehome = (request,body,credential) => request('/v1/files/rehome','POST',JSON.stringify(body),credential,{'Content-Type':'application/json'});
+
+test('admin re-homes an unaddressable stored key to a canonical key and logs it',async()=>{
+  const {request,objects,env}=await setup('full');
+  const from='profiles/facebook/facebook_profile.php?id=1%2F2026-09-09T20%3A24%3A17.016Z.json';
+  objects.set(from,{bytes:new TextEncoder().encode('{"a":1}'),type:'application/json'});
+  const to='profiles/facebook/facebook_profile_1/2026-09-09T20-24-17.016Z.json';
+  const moved=await rehome(request,{from,to},'root');
+  expect(moved.status).toBe(200);
+  expect(await moved.json()).toEqual({from,to,bytes:7,etag:'"etag-not-a-sha256"'});
+  expect(objects.has(from)).toBe(false);
+  const read=await request('/v1/files/profiles/facebook/facebook_profile_1/2026-09-09T20-24-17.016Z.json');
+  expect(await read.text()).toBe('{"a":1}');
+  expect(read.headers.get('Content-Type')).toBe('application/json');
+  expect(await feed(env)).toEqual([{producer:'files',type:'file.rehomed',severity:'info',data:{from,to,bytes:7,etag:'"etag-not-a-sha256"',by:'admin'}}]);
+});
+
+test('only the admin token may re-home',async()=>{
+  for(const scopes of ['full','files:read:profiles/,files:write:profiles/']) {
+    const {request,objects}=await setup(scopes);
+    objects.set('profiles/a%2Fb',{bytes:new Uint8Array([1]),type:'x/y'});
+    expect((await rehome(request,{from:'profiles/a%2Fb',to:'profiles/a/b'})).status).toBe(403);
+    expect([...objects.keys()]).toEqual(['profiles/a%2Fb']);
+  }
+});
+
+test('re-home refuses bad targets, missing sources and overwrites',async()=>{
+  const {request,objects,env}=await setup('full');
+  objects.set('p/a%2Fb',{bytes:new Uint8Array([1]),type:'x/y'});
+  objects.set('p/taken',{bytes:new Uint8Array([2]),type:'x/y'});
+  for(const to of ['p/a%2Fb2','p//b','p/./b','p/../b','p\\b','p/\u0001',''])
+    expect((await rehome(request,{from:'p/a%2Fb',to},'root')).status).toBe(400);
+  for(const body of [{from:'p/a%2Fb'},{from:'p/a%2Fb',to:'p/c',extra:1},{from:'',to:'p/c'},[]])
+    expect((await rehome(request,body,'root')).status).toBe(400);
+  expect((await rehome(request,{from:'p/missing',to:'p/c'},'root')).status).toBe(404);
+  expect((await rehome(request,{from:'p/a%2Fb',to:'p/taken'},'root')).status).toBe(412);
+  expect(objects.get('p/taken').bytes).toEqual(new Uint8Array([2]));
+  expect([...objects.keys()].sort()).toEqual(['p/a%2Fb','p/taken']);
+  expect(await feed(env)).toEqual([]);
+});
+
+test('a copy that does not verify is removed and the original kept',async()=>{
+  const {request,objects,env}=await setup('full');
+  objects.set('p/a%2Fb',{bytes:new Uint8Array([1,2,3]),type:'x/y'});
+  const put=env.ARCHIVE.put.bind(env.ARCHIVE);
+  env.ARCHIVE.put=async(key,body,options)=>put(key,new Uint8Array([9]),options);
+  expect((await rehome(request,{from:'p/a%2Fb',to:'p/a/b'},'root')).status).toBe(502);
+  expect([...objects.keys()]).toEqual(['p/a%2Fb']);
+  expect(await feed(env)).toEqual([]);
+});

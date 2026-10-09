@@ -556,6 +556,13 @@ table's Iceberg files) are refused with 403 unless the request carries
 token name) to the notification feed. `soma files rm <key> --yes [--catalog]`
 is the CLI form.
 
+`POST /v1/files/rehome` with `{"from": <stored key>, "to": <new key>}` is an
+admin-token repair for an object whose stored key the URL rules cannot address
+(for example a literal `%`). It copies the object to `to`, which must be a valid
+key that does not exist yet (412 otherwise), checks that size and etag match,
+deletes `from`, returns `{from,to,bytes,etag}` and posts a `file.rehomed`
+notification. A copy that does not match is removed and the original kept (502).
+
 `GET /v1/files?prefix=<p>&cursor=<c>&limit=<n>` lists object metadata as
 `{objects:[{key,size,uploaded,etag}],cursor}`; `cursor` is opaque and `null` on
 the last page, `limit` is 1-1000 (default 100). A `files:read:<prefix>/` holder

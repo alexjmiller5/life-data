@@ -64,6 +64,30 @@ export async function deleteFile(url,archive,key,feed,by) {
   return reply(deleted);
 }
 
+// POST /v1/files/rehome {from,to}: admin-only repair for an object whose stored key
+// the URL rules cannot address (a literal %). Copies it to a canonical key that does
+// not exist yet, checks size and etag, and only then deletes the original.
+// ponytail: a multipart original's etag never matches a single-put copy; re-home those by hand.
+export async function rehomeFile(request,archive,canonical,feed,by) {
+  const body=await request.json().catch(()=>null);
+  const {from,to}=body ?? {};
+  if (!body || Array.isArray(body) || Object.keys(body).sort().join()!=='from,to'
+    || typeof from!=='string' || !from || from.length>1024 || !canonical(to)) return reply({error:'invalid rehome request'},400);
+  const source=await archive.get(from);
+  if (!source) return reply({error:'not found'},404);
+  const copy=await archive.put(to,source.body,{httpMetadata:source.httpMetadata,customMetadata:source.customMetadata,onlyIf:{etagDoesNotMatch:'*'}});
+  if (!copy) return reply({error:'file_exists'},412);
+  if (copy.size!==source.size || copy.httpEtag!==source.httpEtag) {
+    await archive.delete(to);
+    return reply({error:'rehome_mismatch'},502);
+  }
+  await archive.delete(from);
+  const moved={from,to,bytes:copy.size,etag:copy.httpEtag};
+  await feed({id:`files:rehomed:${crypto.randomUUID()}`,producer:'files',type:'file.rehomed',severity:'info',
+    title:'Soma file re-homed',body:`${from} moved to ${to} (${copy.size} bytes) by ${by}.`,data:{...moved,by}});
+  return reply(moved);
+}
+
 // GET /v1/files?prefix=&cursor=&limit= over the ARCHIVE binding. `readable` holds
 // the caller's granted read prefixes ([''] for full/admin); the listed prefix must
 // lie inside one, and R2 keeps every page (cursor included) inside that prefix.

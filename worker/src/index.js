@@ -25,7 +25,7 @@ import {handleChangesetGovernance,canChangeset,changesetGovernanceLimits} from '
 import {ensureChangesetStorage} from './changeset-store.js';
 import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
 import {ensureProposalStorage} from './governance-proposals.js';
-import { putFile, deleteFile, fileHeaders, listFiles } from "./files.js";
+import { putFile, deleteFile, rehomeFile, fileHeaders, listFiles } from "./files.js";
 import { ensureUsage, notify } from "./usage.js";
 import { changesRoute, markChanged, withChangeSignal } from "./changes.js";
 import { backup } from "./backup.js";
@@ -120,11 +120,13 @@ function fileKey(pathname) {
   const encoded = pathname.replace(/^\/v1\/(files|archive)\//, "");
   if (/%2f|%5c/i.test(encoded)) throw new Error("bad key");
   const key = decodeURIComponent(encoded);
-  if (!key || /[%\\\x00-\x1f\x7f]/.test(key) ||
-      key.split("/").some((part) => !part || part === "." || part === "..")) {
-    throw new Error("bad key");
-  }
+  if (!canonicalKey(key)) throw new Error("bad key");
   return key;
+}
+
+function canonicalKey(key) {
+  return typeof key === "string" && !!key && !/[%\\\x00-\x1f\x7f]/.test(key) &&
+    key.split("/").every((part) => part && part !== "." && part !== "..");
 }
 
 // Prefixes are literal object-key namespaces, with a mandatory boundary.
@@ -929,6 +931,11 @@ async function handle(request, env, ctx, url) {
       return out instanceof Response ? out : json(scopedResult(out));
     }
     if (url.pathname.startsWith("/v1/files/")) {
+      if (url.pathname === "/v1/files/rehome" && request.method === "POST") {
+        if (!tenant.admin) return json({ error: "insufficient scope" }, 403);
+        await ensureUsage(tenant.authDb);
+        return await rehomeFile(request, tenant.archive, canonicalKey, (n) => notify(tenant.authDb, n), tenant.name);
+      }
       if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
       if (!["PUT", "DELETE"].includes(request.method)) return json({ error: "method not allowed" }, 405);
       let key;

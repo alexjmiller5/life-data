@@ -1049,6 +1049,12 @@ legacy archive route has no delete), returns `{key,bytes,etag}` or 404, refuses
 Each delete writes a `files`/`file.deleted` notification naming the token.
 `soma files rm <key> --yes [--catalog]` wraps it.
 
+`POST /v1/files/rehome {from,to}` is HUB_TOKEN-admin only (full tokens get 403):
+it moves an object whose stored key fails the canonical key rules (`from` is the
+raw stored key) to a canonical, not-yet-existing `to`, verifies size and etag
+before deleting `from`, and logs `file.rehomed`. A multipart original's etag
+never matches the copy, so such an object fails closed with 502.
+
 File-consumer registry (every file consumer and prefix is listed here, per
 `docs/consumer-access.md`). Consumers depend on this supported service contract
 only; each keeps its operational recovery state in its own store, and Soma
