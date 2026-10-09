@@ -2,6 +2,7 @@
 // hub_at on every write it makes, and pulls/cursors read it.
 import { expect, test } from "bun:test";
 import { D1Shim } from "./d1shim.js";
+import { LimitedD1 } from "./limited-d1.js";
 import { deriveRows } from "../src/derive.js";
 import { ROUTES } from "../src/index.js";
 
@@ -317,12 +318,28 @@ test("cursor asks the database in batches, not once per table", async () => {
   };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  // after the one-time index and column passes, a cursor read is one statement: one round trip
+  // after the one-time index and column passes, a cursor read is one batch and no per-table round trips
   expect(batches).toBeGreaterThanOrEqual(2);
   const warm = { batches, singles };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  expect(batches - warm.batches).toBe(0);
-  expect(singles - warm.singles).toBe(1);
+  expect(batches - warm.batches).toBe(1);
+  expect(singles - warm.singles).toBe(0);
+});
+
+test("cursor answers an estate wider than D1's compound SELECT limit", async () => {
+  // D1 refuses a compound SELECT of more than five terms; a cursor naming every
+  // table of a real estate (100+) must still be one request that D1 accepts.
+  const db = new LimitedD1();
+  try {
+    const tables = Array.from({ length: 7 }, (_, i) => `t${i}`);
+    for (const t of tables) await db.prepare(`CREATE TABLE ${t} (id TEXT PRIMARY KEY, updated_at TEXT, deleted_at TEXT, hub_at TEXT)`).run();
+    await db.prepare("INSERT INTO t6 VALUES ('a','2026-01-01T00:00:00.000Z',NULL,'2026-01-02T00:00:00.000Z')").run();
+    const out = await ROUTES["/v1/cursor"]({ tables }, db);
+    expect(out.tables.t6).toBe("2026-01-02T00:00:00.000Z");
+    expect(out.at_mark).toEqual({ t6: 1 });
+  } finally {
+    await db.close();
+  }
 });
 
 test("a fresh isolate ensures every hub_at index in batches", async () => {
@@ -343,8 +360,8 @@ test("a fresh isolate ensures every hub_at index in batches", async () => {
     return stmt;
   };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  expect(singles).toBe(2); // the table list and the cursor's one statement; everything per-table is batched
-  expect(batches).toBe(3); // table_info + create index, then the arrival-column probe
+  expect(singles).toBe(1); // the table list; everything per-table is batched
+  expect(batches).toBe(4); // table_info + create index, the arrival-column probe, then the cursor
   const made = await prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_hub_at'").all();
   expect(made.results.map((r) => r.name).sort()).toEqual(["catalog_properties_hub_at", "people_hub_at", "provenance_hub_at"]);
 });

@@ -7,7 +7,7 @@ __pycache__/
 *.egg-info/
 dist/
 result
-worker/.wrangler/
+.wrangler/
 node_modules
 
 # Added by ggshield
