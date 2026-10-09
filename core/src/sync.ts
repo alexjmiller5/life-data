@@ -16,6 +16,10 @@ export async function initCore(db: SqlDriver): Promise<void> {
   // An unfinished table pull: the first attempt's since and mark, and the last
   // applied page. Replay deletes it when the table's definition changes.
   await db.run('CREATE TABLE IF NOT EXISTS _core_pull_progress (tbl TEXT PRIMARY KEY, since TEXT NOT NULL, mark TEXT NOT NULL, after TEXT NOT NULL)');
+  // How many rows a table held at its own cursor mark when last pulled: the hub
+  // reports the same count with each cursor, so an unchanged table whose newest
+  // arrival is that mark needs no inclusive re-read.
+  await db.run('CREATE TABLE IF NOT EXISTS _core_pull_marks (tbl TEXT PRIMARY KEY, n INTEGER NOT NULL)');
   await initCoverage(db);
 }
 
@@ -90,19 +94,27 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     if(Number.isFinite(server)) clockSkew=Math.max(0,server-ended,started-server-1000);
     return reply.data as any;
   };
+  const userTables=async()=>(await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r=>String(r.name)).filter(t=>!t.startsWith('_')&&!t.startsWith('sqlite_')).sort((a,b)=>Number(!a.startsWith('catalog_'))-Number(!b.startsWith('catalog_'))||a.localeCompare(b));
+  const validMark=(value:unknown)=>value===''||validEditTimestamp(value);
+  const readCursor=async(tables:string[])=>{
+    const marks=await post('/v1/cursor',{tables}); // BEFORE pull; remote writes after this land next round.
+    if(!marks || !validMark(marks.max_hub_at) || !marks.tables || tables.some(t=>!validMark(marks.tables[t]))) throw new Error('invalid cursor response');
+    return marks;
+  };
+  const stateValue=async(key:string)=>(await db.all('SELECT value FROM _core_state WHERE key=?',[key]))[0]?.value;
+  // A quiet round is one request. The cursor carries the hub's newest schema
+  // entry id; with it and our own log unchanged since the last exchange there
+  // is nothing to pull or push, so the schema round trip is skipped.
+  let allTables=await userTables();
+  let marks=await readCursor(allTables);
+  const logMax=async()=>Number((await db.all('SELECT coalesce(max(id),0) AS m FROM _schema_log'))[0]?.m ?? 0);
+  const exchanged=String(await stateValue('schema_exchange') ?? '');
+  const localMax=await logMax();
+  if(exchanged!==JSON.stringify({hub:marks.schema ?? null,local:localMax})) {
   const local = await db.all('SELECT applied_at,ddl FROM _schema_log ORDER BY applied_at,id');
   const known = new Set(local.map(r=>r.ddl));
   const {entries} = await post('/v1/schema/pull');
   if (!Array.isArray(entries)) throw new Error('invalid schema response');
-  // Pin both clients before importing any data, including on a partial round.
-  // Binding an unbound CLI must not legitimize its unknown global cursors.
-  await db.transaction(async()=>{
-    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
-    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase',?)",[priorMetadataReady ? 'ready' : 'refreshing']);
-    if(!cliState) {
-      await db.run("INSERT OR REPLACE INTO _sync_state(key,value) VALUES ('hub_url',?),('checkpoint_version','')",[hub.endpoint]);
-    }
-  });
   const remoteKnown = new Set(entries.map(e=>e.ddl));
   const unsent = local.filter(e=>!remoteKnown.has(e.ddl));
   if (unsent.length) await post('/v1/schema/push',{entries:unsent});
@@ -128,17 +140,39 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     });
     known.add(entry.ddl);
   }
-  const allTables=(await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r=>String(r.name)).filter(t=>!t.startsWith('_')&&!t.startsWith('sqlite_')).sort((a,b)=>Number(!a.startsWith('catalog_'))-Number(!b.startsWith('catalog_'))||a.localeCompare(b));
-  const {tables:counts} = await post('/v1/stats');
+  // Our push moved the hub's log; its id is only known after the next cursor
+  // read, which this round takes anyway when the table list changed.
+  const before=allTables;
+  allTables=await userTables();
+  if(unsent.length || allTables.join('\n')!==before.join('\n')) marks=await readCursor(allTables);
+  await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('schema_exchange',?)",[JSON.stringify({hub:marks.schema ?? null,local:await logMax()})]);
+  }
+  // Pin both clients before importing any data, including on a partial round.
+  // Binding an unbound CLI must not legitimize its unknown global cursors.
+  await db.transaction(async()=>{
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase',?)",[priorMetadataReady ? 'ready' : 'refreshing']);
+    if(!cliState) {
+      await db.run("INSERT OR REPLACE INTO _sync_state(key,value) VALUES ('hub_url',?),('checkpoint_version','')",[hub.endpoint]);
+    }
+  });
+  // Table sizes drive the size rule only; the hub recounts daily, so a day-old
+  // answer that names every table is reused instead of asked for each round.
+  const counts:Record<string,number>=await (async()=>{
+    try {
+      const cached=JSON.parse(String(await stateValue('hub_stats') ?? 'null'));
+      if(cached && typeof cached.at==='string' && now().getTime()-Date.parse(cached.at)<86_400_000 && allTables.every(t=>Number.isFinite(cached.tables?.[t]))) return cached.tables;
+    } catch {}
+    const fresh=(await post('/v1/stats')).tables;
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub_stats',?)",[JSON.stringify({at:now().toISOString(),tables:fresh})]);
+    return fresh;
+  })();
   const tables=allTables.filter(t=>t.startsWith('catalog_') || (options.tables?.[t] ?? (Number.isFinite(counts?.[t]) && counts[t] <= (options.maxRows ?? 50_000))));
   tables.sort((a,b)=>Number(a==='history')-Number(b==='history'));
   result.skipped=allTables.filter(t=>!tables.includes(t));
   await db.transaction(async()=>{
     for(const table of result.skipped) await db.run('DELETE FROM _core_coverage WHERE tbl=?',[table]);
   });
-  const marks=await post('/v1/cursor',{tables}); // BEFORE pull; remote writes after this land next round.
-  const validMark=(value:unknown)=>value===''||validEditTimestamp(value);
-  if(!marks || !validMark(marks.max_hub_at) || !marks.tables || tables.some(t=>!validMark(marks.tables[t]))) throw new Error('invalid cursor response');
   // A hub that advertises pull_batch answers many table pages per request.
   const batch=marks.pull_batch, batching=[batch?.items,batch?.rows].every(n=>Number.isSafeInteger(n)&&n>0) ? {items:Number(batch.items),rows:Number(batch.rows)} : null;
   const states=new Map((await db.all('SELECT * FROM _core_sync')).map(r=>[String(r.tbl),r]));
@@ -179,14 +213,18 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   // and mark. Resuming keeps the first attempt's mark: rows changed since then
   // in pages already applied carry a later hub_at and arrive next round.
   const resumed=new Map((await db.all('SELECT tbl,since,mark,after FROM _core_pull_progress')).map(r=>[String(r.tbl),r]));
+  const held=new Map((await db.all('SELECT tbl,n FROM _core_pull_marks')).map(r=>[String(r.tbl),Number(r.n)]));
   const walks=new Map(tables.map(table=>{
     const since=pullSince.get(table)!, progress=resumed.get(table);
     const resume=progress && progress.since===since && validMark(progress.mark) && typeof progress.after==='string' && progress.after;
     // A table whose newest arrival never reached our cursor has nothing new
     // (the pull is inclusive, so is this test): no request for it at all. The
     // cursor is the round's newest arrival over every table, so only tables
-    // written since then are asked again.
-    const quiet=since!=='' && String(marks.tables[table])<since;
+    // written since then are asked again. A table whose newest arrival IS our
+    // cursor is quiet too while the hub holds as many rows at that mark as we
+    // pulled; a commit stamped in that millisecond after the cursor read adds one.
+    const mark=String(marks.tables[table]);
+    const quiet=since!=='' && (mark<since || (mark===since && !resume && Number.isSafeInteger(marks.at_mark?.[table]) && held.get(table)===marks.at_mark[table]));
     return [table,{since,mark:resume ? String(progress.mark) : quiet ? since : String(marks.max_hub_at),after:resume ? String(progress.after) : undefined,quiet}];
   }));
   const fullRows=tables.filter(t=>walks.get(t)!.since===''&&!walks.get(t)!.quiet);
@@ -328,6 +366,12 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       // retains only the already validated proof at its unchanged checkpoint.
       if(!deferred.has(table)) await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,pull,COVERAGE_VERSION]);
       await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[table]);
+      // Only a table whose newest arrival is the cursor it just took can be
+      // asked again by the inclusive pull; remember how much of that mark it holds.
+      if(!quiet) {
+        if(!deferred.has(table) && pull!=='' && String(marks.tables[table])===pull) await db.run('INSERT OR REPLACE INTO _core_pull_marks(tbl,n) VALUES (?,?)',[table,Number((await db.all(`SELECT count(*) AS n FROM ${qident(table)} WHERE hub_at=?`,[pull]))[0]?.n ?? 0)]);
+        else await db.run('DELETE FROM _core_pull_marks WHERE tbl=?',[table]);
+      }
     });
     if(!quiet) { progress.tablesDone++; report(); }
   }

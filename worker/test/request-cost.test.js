@@ -80,6 +80,8 @@ test("a write re-audits the generic state the reads had memoized, and reads re-a
 test("a cursor read after a schema replay still sees the new table", async () => {
   const { env, call } = await hub();
   for (const [p, b] of reads) await call(p, b);
+  // Asked before it exists: the isolate now remembers 'later' as missing.
+  expect((await (await rawCall(env, "/v1/cursor", { tables: ["people", "later"] })).json()).tables).toEqual({ people: "", later: "" });
   await call("/v1/schema/push", { entries: [{ applied_at: "2026-01-01T00:00:00.000Z", ddl: "CREATE TABLE later (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)" }] });
   env.DB.db.exec("INSERT INTO later VALUES ('a','A','2026-01-02T00:00:00.000Z',NULL,'2026-01-02T00:00:00.000Z')");
   const marks = await (await rawCall(env, "/v1/cursor", { tables: ["people", "later"] })).json();

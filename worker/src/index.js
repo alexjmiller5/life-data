@@ -71,6 +71,8 @@ function tokensMatch(a, b) {
 // Resolved once per request: the usage meter (src/usage.js) authenticates to
 // attribute a request before the hub routes it, and both get the same tenant.
 const tenants = new WeakMap();
+const lastUseStamped = new Map();
+const LAST_USE_STAMP_MS = 60_000;
 function authenticate(request, env, ctx) {
   if (!tenants.has(request)) tenants.set(request, resolveTenant(request, env, ctx));
   return tenants.get(request);
@@ -104,13 +106,18 @@ async function resolveTenant(request, env, ctx) {
     .bind(hash)
     .first();
   if (!row) return null;
-  if (!preview) ctx.waitUntil(
-    env.AUTH_DB.prepare(
-      "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE hash = ?"
-    )
-      .bind(hash)
-      .run()
-  );
+  // One D1 write per request for a timestamp nobody reads to the second: a
+  // replica polls every few seconds, so stamp a token at most once a minute.
+  if (!preview && Date.now() - (lastUseStamped.get(hash) ?? 0) >= LAST_USE_STAMP_MS) {
+    lastUseStamped.set(hash, Date.now());
+    ctx.waitUntil(
+      env.AUTH_DB.prepare(
+        "UPDATE _tokens SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE hash = ?"
+      )
+        .bind(hash)
+        .run()
+    );
+  }
   const governance=row.enrollment_profile || hasCreationScope(row.scopes.split(",")) ? null : await readGovernanceAuthority(env.AUTH_DB,hash);
   const enrollmentProfile=row.enrollment_profile ? {id:row.enrollment_profile,revision:row.enrollment_revision} : null;
   return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance, enrollmentProfile };
@@ -255,8 +262,30 @@ async function ensureReady(db) {
 // an un-upgraded client omits it and its rows would land unstamped, invisible
 // to every replica whose cursor has moved on.
 async function hasHubAt(db, table) {
-  const { results } = await db.prepare(`PRAGMA table_info(${qident(table)})`).all();
-  return (results ?? []).some((c) => c.name === "hub_at");
+  return (await arrivalColumns(db, [table])).get(table) === "hub_at";
+}
+
+// Each table's arrival column ("hub_at", the legacy "updated_at", or null for
+// a table the hub lacks), probed once per isolate: every cursor read and every
+// page of a download asked PRAGMA table_info for its tables in a round trip of
+// its own. A schema replay in this isolate clears it; one in another isolate
+// surfaces as a failed statement, and the caller probes again.
+const arrivalKinds = new WeakMap();
+async function arrivalColumns(db, tables) {
+  if (!arrivalKinds.has(db)) arrivalKinds.set(db, new Map());
+  const known = arrivalKinds.get(db);
+  const missing = [...new Set(tables.filter((t) => !known.has(t)))];
+  if (missing.length) {
+    // One table is one statement; a batch is for the many-table reads.
+    const infos = missing.length === 1
+      ? [await db.prepare(`PRAGMA table_info(${qident(missing[0])})`).all()]
+      : await db.batch(missing.map((t) => db.prepare(`PRAGMA table_info(${qident(t)})`)));
+    missing.forEach((t, i) => {
+      const info = infos[i].results ?? [];
+      known.set(t, !info.length ? null : info.some((c) => c.name === "hub_at") ? "hub_at" : "updated_at");
+    });
+  }
+  return known;
 }
 
 // Every sync round reads max(hub_at) and pulls `hub_at >= since` on EVERY
@@ -369,8 +398,8 @@ async function pullBatch(items, db) {
     return json({ error: `a batch reads at most ${PULL_BATCH.rows} rows` }, 400);
   }
   await ensureHubAtIndexes(db);
-  const infos = await db.batch(items.map((item) => db.prepare(`PRAGMA table_info(${qident(item.table)})`)));
-  const queries = items.map((item, i) => pullQuery(item, (infos[i].results ?? []).some((c) => c.name === "hub_at")));
+  const kinds = await arrivalColumns(db, items.map((item) => item.table));
+  const queries = items.map((item) => pullQuery(item, kinds.get(item.table) === "hub_at"));
   const pages = await db.batch(queries.map(({ sql, args }) => db.prepare(sql).bind(...args)));
   const batch = [];
   let bytes = 0;
@@ -443,6 +472,7 @@ const ROUTES = {
     }
     if (applied) {
       indexed.delete(db); // a replayed CREATE TABLE needs its index
+      arrivalKinds.delete(db);
       markChanged();
     }
     return { applied };
@@ -590,26 +620,37 @@ const ROUTES = {
     // The last entry is the schema log itself: its newest id lets a replica
     // whose own log has not moved skip the whole-log pull while this has not
     // moved either.
-    const names = [...tables, "_schema_log"];
-    const infos = await db.batch(names.map((t) => db.prepare(`PRAGMA table_info(${qident(t)})`)));
-    const maxes = await db.batch(
-      names.map((t, i) => {
-        const info = infos[i].results ?? [];
-        const log = i === tables.length;
-        // A table the hub lacks (renamed or dropped by a replay the caller has
-        // not run yet) has no arrivals.
-        if (!info.length) return db.prepare(log ? "SELECT 0 AS m" : "SELECT '' AS m");
-        if (log) return db.prepare("SELECT coalesce(max(id), 0) AS m FROM _schema_log");
-        const col = info.some((c) => c.name === "hub_at") ? "hub_at" : "updated_at";
-        return db.prepare(`SELECT max(${col}) AS m FROM ${qident(t)}`);
-      }),
-    );
+    const read = async () => {
+      const kinds = await arrivalColumns(db, [...tables, "_schema_log"]);
+      return db.batch([
+        ...tables.map((t) => {
+          const col = kinds.get(t);
+          // A table the hub lacks (renamed or dropped by a replay the caller has
+          // not run yet) has no arrivals. With the newest arrival comes how many
+          // rows share that stamp (index-only): a replica whose cursor sits on
+          // it can tell a same-millisecond late commit from nothing new.
+          if (!col) return db.prepare("SELECT '' AS m, NULL AS n");
+          if (col !== "hub_at") return db.prepare(`SELECT max(${col}) AS m, NULL AS n FROM ${qident(t)}`);
+          return db.prepare(`SELECT (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`);
+        }),
+        db.prepare(kinds.get("_schema_log") ? "SELECT coalesce(max(id), 0) AS m FROM _schema_log" : "SELECT 0 AS m"),
+      ]);
+    };
+    let maxes;
+    try { maxes = await read(); } catch (e) {
+      if (!arrivalKinds.has(db)) throw e;
+      arrivalKinds.delete(db);
+      maxes = await read();
+    }
     const schema = maxes.pop().results?.[0]?.m ?? 0;
     let top = "";
     const marks = {};
+    const at_mark = {};
     tables.forEach((t, i) => {
       const m = maxes[i].results?.[0]?.m ?? "";
       marks[t] = m;
+      const n = maxes[i].results?.[0]?.n;
+      if (m && Number.isSafeInteger(n)) at_mark[t] = n;
       if (m > top) top = m;
     });
     // `tables` is each table's own newest arrival: a replica pulls only the
@@ -617,7 +658,8 @@ const ROUTES = {
     // max_updated_at kept for clients from before the hub_at cursor: same value, so an
     // old client keeps syncing (full-pull semantics) until it is upgraded.
     // pull_batch: this hub answers `/v1/rows/pull` with many pages per request.
-    return { max_hub_at: top, max_updated_at: top, tables: marks, schema, pull_batch: PULL_BATCH };
+    // at_mark: rows stamped with each table's newest arrival.
+    return { max_hub_at: top, max_updated_at: top, tables: marks, at_mark, schema, pull_batch: PULL_BATCH };
   },
 };
 
@@ -928,6 +970,8 @@ export default {
 // Called every round or page. schema/pull (once per schema change) keeps the
 // full setup: it is what initializes governance storage on a fresh hub.
 const REPLICA_READS = new Set(["/v1/rows/pull", "/v1/cursor", "/v1/stats"]);
+const audited = new WeakMap();
+const AUDIT_MEMO_MS = 60_000;
 
 async function handle(request, env, ctx, url) {
   if (url.pathname === "/health") return json({ ok: true });
@@ -1072,11 +1116,18 @@ async function handle(request, env, ctx, url) {
       return json({ keys: await backup(env, new Date()) });
     }
     // Replica reads (each page of a cold download is one) skip the write path's
-    // governance setup; the generic-state check below still guards them.
-    await (REPLICA_READS.has(url.pathname) ? ensurePlumbing(tenant.db) : ensureReady(tenant.db));
+    // governance setup and reuse this isolate's last generic-state audit for a
+    // minute; every write audits afresh (a tamper arrives through a write or an
+    // operator, never a read) and a failed audit drops the memo.
+    const read = REPLICA_READS.has(url.pathname);
+    await (read ? ensurePlumbing(tenant.db) : ensureReady(tenant.db));
     const body=await request.json();
     assertGenericBody(body);
-    await assertGenericStateBatched(tenant.db);
+    if (!read || Date.now() - (audited.get(tenant.db) ?? -Infinity) >= AUDIT_MEMO_MS) {
+      audited.delete(tenant.db);
+      await assertGenericStateBatched(tenant.db);
+      audited.set(tenant.db, Date.now());
+    }
     const out = await ROUTES[url.pathname](body, tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {
