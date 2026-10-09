@@ -59,7 +59,8 @@ for a grant the hub cannot put in a profile. Every consumer grant is
 profileable: `full` is pattern B, and token administration exists only as the
 operator `HUB_TOKEN`, which no consumer holds. Pattern C therefore has no
 consumer use; an existing operator-minted consumer token moves to pattern A at
-its next rotation.
+its next rotation. Until then an exact token held in the consumer's own secure
+storage conforms; the deployment's consumer registry lists each one.
 
 ## File-prefix registry
 

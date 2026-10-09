@@ -1076,12 +1076,31 @@ storage credentials never leave this service.
 | Consumer | Prefixes |
 |---|---|
 | Flighty Sync | `raw/flighty/` |
-| Page Archiver | `captures/` |
+| Page Archiver | `captures/pages/` |
 | Screentime Dashboard | `raw/screentime/` |
 | Music Sync | `raw/spotify-pull/`, `raw/spotify-capture/` |
 | People Sync | `photos/people/`, `photos/records/`, `profiles/` |
 | Media Center YouTube offline (mini job) | `youtube/` |
 | Strava Sync | `raw/strava/` |
+| Synapse | `raw/synapse-executions/` |
+
+Consumer registry (one credential per caller, per `docs/consumer-access.md`).
+Profiles live in the ENV item's `ENROLLMENT_PROFILES`; tokens live where the
+consumer reads them, never in this repo.
+
+| Consumer | Credential | Held in |
+|---|---|---|
+| Networth | profile `networth-reader-v2` (broad `tables:read`: it reads `provenance` slices); operator token `networth-interim` until that enrollment is approved | Networth ENV `SOMA_HUB_TOKEN` (Worker secret) |
+| Task Burndown | profile `task-burndown-reader-v1` (projected tasks/projects reads); operator token `task-burndown-workflow-reader-v1` until that enrollment is approved | Task Burndown ENV `SOMA_HUB_TOKEN` (Worker secret) |
+| Bookmarks Sync | profile `bookmarks-sync-writer-v1` | Bookmarks Sync ENV `SOMA_HUB_TOKEN` (Worker secret) |
+| Media Center poller | profile `media-center-poller-v1` (broad read/write: it inserts `provenance`) | Media Center ENV `SOMA_HUB_TOKEN` (Modal secret) |
+| Media Center apps | profile `media-center`, one enrollment per device | device Keychain |
+| Music Sync | profile `music-sync-writer-v1` (broad read/write: catalog, derive, `provenance`) | Music Sync ENV `SOMA_HUB_TOKEN` (Modal secret) |
+| Screentime Dashboard | profile `screentime-dashboard-archive-v1` | Screentime Dashboard ENV `SOMA_HUB_TOKEN` (Worker secret) |
+| Synapse | profile `synapse-workspace-v1` (broad read/write: narrow writes are refused on its capture tables) | `synapse-state` workspace `default`, copy in Synapse ENV `SOMA_HUB_TOKEN` |
+| Reflex | profile `reflex-v2` | Reflex ENV |
+| Birthdays, Circle, Strava Sync | profiles `birthdays-reader-v1`, `birthdays-editor-v1`, `circle-reader`, `strava-sync-v1` | each app's own storage |
+| Flighty Sync, Page Archiver, Shared Album Reminders, Media Center YouTube offline, Bookmark Mirror, Birthdays task writer, Calendar Feeds, OwnTracks phone, People Sync files | pattern C exact operator tokens (`flighty-sync`, Page Archiver's, `shared-album-reminders-mini`, `media-center-youtube-offline`, `bookmark-mirror-macbook`, `birthdays-task-writer`, `calendar-feeds-*`, `phone`, `people-sync-files`); each moves to a profile at its next rotation | each consumer's native secure storage or settings |
 
 ## Durable change recording
 
