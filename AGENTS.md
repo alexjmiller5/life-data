@@ -709,8 +709,9 @@ falling back to an unconditional write.
 Profile enrollment and projected reads are specified in `docs/scoped-enrollment.md`.
 Optional service-owned `ENROLLMENT_PROFILES` holds named grant sets. Profiles
 carry column, whole-table, broad `tables:read`/`tables:write`/`streams:append`,
-named stream, capture, `rows:create` (current policy revision only), file-prefix
-and `subscriptions:consume` grants; never full, admin or token administration.
+named stream, capture, `rows:create` (current policy revision only), file-prefix,
+`provenance:create:<table>` (beside `tables:write:<table>`) and
+`subscriptions:consume` grants; never full, admin or token administration.
 `docs/consumer-access.md` is the standard for which consumer uses which pattern.
 Column patch grants require same-column and id/updated_at/hub_at reads, exclude
 lifecycle fields, and never authorize push/insert or caller-supplied history.
@@ -732,10 +733,18 @@ body.table before data access. Narrow consumers use bounded direct rows APIs;
 global schema/catalog/cursor/stats/history/provenance/internal/view/SQL routes stay
 denied. File grants remain independent. Narrow writes require a catalogued base
 table with safe defaults and no generated expressions, arbitrary triggers,
-derivations, unrecognized enforced SQL rules or physical foreign keys. Only the
-three fully anchored local invariant templates in `scopes.js` are eligible:
-row pattern rejection, conditional JSON-tag membership, and same-table
-uniqueness. Column patches additionally admit the incoming single/multi-reference
+derivations, ineligible enforced SQL rules or physical foreign keys. An enforced
+table invariant is eligible when it matches one of the three anchored templates
+in `scopes.js` (row pattern rejection, conditional JSON-tag membership,
+same-table uniqueness), or when `confinedInvariant` finds that its SQL names no
+other table, view or schema object in any quoting and has no `;` or comment.
+It then runs unchanged in the checked transaction, so a rejection reveals
+nothing outside the grant; a rule that fails to compile fails the request
+closed. `provenance:create:<table>` (with `tables:write:<table>`) admits
+insert-only `imported_from`/`evidence_of` edges onto live rows of that table
+through `/v1/rows/insert` (`authorizeEdges`, then `edgePolicy` over
+`scopedOrigin`), with canonical ids `<from_kind>:<from_ref>:<to_kind>:<to_ref>`;
+the contract is in `docs/scoped-enrollment.md`. Column patches additionally admit the incoming single/multi-reference
 deletion guards and derived tables when the patch touches no derived column or
 derivation input (`patch.js` passes the patched columns to the policy). Their columns and ownership are checked; validation remains
 transactional. `GET /v1/catalog/options?table=X&column=Y` exposes only static
@@ -1069,6 +1078,7 @@ storage credentials never leave this service.
 | Music Sync | `raw/spotify-pull/`, `raw/spotify-capture/` |
 | People Sync | `photos/people/`, `photos/records/`, `profiles/` |
 | Media Center YouTube offline (mini job) | `youtube/` |
+| Strava Sync | `raw/strava/` |
 
 ## Durable change recording
 

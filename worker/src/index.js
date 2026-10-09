@@ -32,7 +32,7 @@ import { backup } from "./backup.js";
 import { backupsAllowed, handleBackups } from "./backups.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
-import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, authorizeEdges, edgePolicy, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -912,7 +912,8 @@ async function handle(request, env, ctx, url) {
       const body = await request.json();
       if (!body || !(rowOperation === 'read' ? authorizeRowRead(tenant.scopes,body)
         : authorizeTable(tenant.scopes,rowOperation,body.table)
-          || (url.pathname === '/v1/rows/patch' && authorizeRowPatch(tenant.scopes,body))) || Object.hasOwn(body,"history")) {
+          || (url.pathname === '/v1/rows/patch' && authorizeRowPatch(tenant.scopes,body))
+          || (url.pathname === '/v1/rows/insert' && authorizeEdges(tenant.scopes,body))) || Object.hasOwn(body,"history")) {
         return json({error:"insufficient scope"},403);
       }
       if (rowOperation === "read") {
@@ -926,8 +927,10 @@ async function handle(request, env, ctx, url) {
       if (!Array.isArray(body.columns) || !body.columns.includes('id') || !Array.isArray(body.rows)) {
         return json({error:"insufficient scope"},403);
       }
-      await scopedTable(tenant.db,body.table,true,body.rows.map(row=>row?.id));
-      const out = await ROUTES[url.pathname](body,tenant.db,env,ctx,scopedTable);
+      // Only authorizeEdges admits provenance here (never an ordinary table grant).
+      const policy = body.table === 'provenance' ? edgePolicy(body.rows) : scopedTable;
+      await policy(tenant.db,body.table,true,body.rows.map(row=>row?.id));
+      const out = await ROUTES[url.pathname](body,tenant.db,env,ctx,policy);
       return out instanceof Response ? out : json(scopedResult(out));
     }
     if (url.pathname.startsWith("/v1/files/")) {

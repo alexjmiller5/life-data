@@ -21,6 +21,8 @@ is the grammar contract, checked by core, the Worker and the Python CLI:
   require reads for the same column plus `updated_at` and `hub_at`. Identity,
   creation/update timestamps, hub revisions and deletion fields cannot be patched.
 - Whole-table grants `tables:read:<table>` and `tables:write:<table>`.
+- `provenance:create:<table>`, only beside `tables:write:<table>`: insert-only
+  origin edges onto that table's rows (see Narrow writes and origin edges).
 - Broad grants `tables:read`, `tables:write` and `streams:append`. Broad
   `tables:read` adds schema access (`schema: full-ddl-v1`), never replica sync.
 - `streams:read:<name>`, `streams:append:<name>`, `captures:submit:<adapter>`
@@ -33,7 +35,8 @@ is the grammar contract, checked by core, the Worker and the Python CLI:
 - `backups:read` and `backups:write` ([backups.md](backups.md)), independent
   of every table grant.
 
-Internal, catalog, history, provenance and purge tables are not eligible.
+Internal, catalog, history, provenance and purge tables are not eligible for
+table grants.
 Full, admin and token administration are never profile grants; a profile that
 contains one is unavailable. Applications choose a public profile ID and exact
 expected grants; customers enter only the service URL.
@@ -128,6 +131,31 @@ write access.
 Canonical enrollment validation requires `conditional_patch: revision-v1`
 as well as the exact profile/scope receipt. Existing reader profiles and
 accepted credentials keep their original grants until explicit reenrollment.
+
+## Narrow writes and origin edges
+
+A `tables:write:<table>` holder writes through `/v1/rows/insert` and
+`/v1/rows/push` with the same validation as a full writer, once the table passes
+the scoped eligibility checks (AGENTS.md, Hub service). An enforced invariant of
+that table is eligible when it matches one of the anchored templates in
+`worker/src/scopes.js`, or when its SQL names no other table or view, no
+`sqlite_*`/`pragma_*` object and no `dbstat`, in any quoting, and contains no `;`
+or comment. A single-quoted literal equal to another table's name counts as
+naming it, because SQLite reads such a literal as a table name where one is
+expected. Eligible rules run unchanged inside the write transaction. A rule that
+fails to compile fails the request closed (400, nothing written). Rejections
+stay generic.
+
+`provenance:create:<table>` adds `POST /v1/rows/insert` with
+`table: "provenance"`. Every row carries nonempty string `id`, `from_kind`,
+`from_ref`, `to_kind`, `to_ref`, `rel` and `asserted_by`, optionally `field`,
+`detail` and `updated_at`, and no other column. `to_kind` is a table the caller
+holds both grants for, `rel` is `imported_from` or `evidence_of`, and `id` is
+`<from_kind>:<from_ref>:<to_kind>:<to_ref>`. `to_ref` must be a live row of
+`to_kind`, and `field`, when set, one of its columns. Any other row makes the
+whole request 403. An existing id is reported in `existing` and never changed.
+The provenance catalog (allowed `from_kind` values, required fields) and its
+invariants still apply. Push, patch and reads of provenance stay denied.
 
 ## Profile configuration and projected metadata
 

@@ -19,6 +19,9 @@ export function validEnrollmentScopes(scopes: unknown): scopes is string[] {
     if (simple.test(scope)) return true;
     const whole = /^tables:(?:read|write):([A-Za-z][A-Za-z0-9_]*)$/.exec(scope);
     if (whole) return !reserved(whole[1]!);
+    // Origin edges onto rows the same profile may write.
+    const edge = /^provenance:create:([A-Za-z][A-Za-z0-9_]*)$/.exec(scope);
+    if (edge) return !reserved(edge[1]!) && scopes.includes(`tables:write:${edge[1]}`);
     const p = /^(tables:read|tables:patch|catalog:read):([A-Za-z][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)$/.exec(scope);
     if (!p || reserved(p[2]!) || !scopes.includes(`tables:read:${p[2]}:id`)) return false;
     if (p[1] === 'catalog:read') return scopes.includes(`tables:read:${p[2]}:${p[3]}`);

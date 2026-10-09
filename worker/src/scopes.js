@@ -106,6 +106,82 @@ function scopedInvariant(rule, table, columns, livePatch) {
   return !!match && match[1] === table && names.has(match[2]);
 }
 
+// Any other enforced invariant of the table runs exactly as for full writers
+// when its SQL can read nothing else, so a rejection reveals nothing outside
+// the grant: no other table or view may be named in any quoting (SQLite also
+// takes a single-quoted string as a table name, so a literal equal to one
+// fails closed), and no ';' or comment may hide part of the statement.
+// ponytail: word screen, not a parser; a rule naming a column that shares a
+// name with another table stays ineligible.
+const schemaWord = /^(?:sqlite_|pragma_)|^dbstat$/i;
+function sqlWords(sql) {
+  const words=[],word=/[A-Za-z0-9_$\u0080-￿]+/y;
+  for (let i=0; i<sql.length;) {
+    const open=sql[i];
+    if (`'"\`[`.includes(open)) {
+      const close=open==='['?']':open;
+      let text='',j=i+1;
+      for (;;) {
+        if (j>=sql.length) return null;
+        if (sql[j]===close) { if (close!==']' && sql[j+1]===close) { text+=close;j+=2;continue; } break; }
+        text+=sql[j++];
+      }
+      words.push(text);i=j+1;continue;
+    }
+    if (open===';' || sql.startsWith('--',i) || sql.startsWith('/*',i)) return null;
+    word.lastIndex=i;
+    const match=word.exec(sql);
+    if (match) { words.push(match[0]);i+=match[0].length; } else i++;
+  }
+  return words;
+}
+async function confinedInvariant(view, rule, table) {
+  if (rule.scope !== 'table' || rule.tbl !== table || rule.enforce !== 1 || !supportedRuleSql(rule.sql)) return false;
+  const words=sqlWords(rule.sql);
+  if (!words) return false;
+  const {results}=await view.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')").all();
+  const others=new Set(results.map(r=>r.name.toLowerCase()).filter(name=>name!==table.toLowerCase()));
+  return !words.some(w=>schemaWord.test(w) || others.has(w.toLowerCase()));
+}
+
+// provenance:create:<table>, beside tables:write:<table>, inserts origin edges
+// onto live rows of that table through rows/insert, never changing an existing
+// edge. The id is canonical, so only edges onto the granted table are addressable.
+const edgeRequired=['id','from_kind','from_ref','to_kind','to_ref','rel','asserted_by'];
+const edgeColumns=new Set([...edgeRequired,'field','detail','updated_at']);
+export function authorizeEdges(scopes, body) {
+  if (!body || body.table !== 'provenance' || !Array.isArray(body.columns) || !Array.isArray(body.rows) || !body.rows.length
+    || new Set(body.columns).size !== body.columns.length || body.columns.some(c=>!edgeColumns.has(c))) return false;
+  return body.rows.every(row=>{
+    if (!row || typeof row !== 'object') return false;
+    const e=Object.fromEntries(body.columns.filter(c=>Object.hasOwn(row,c)).map(c=>[c,row[c]]));
+    return edgeRequired.every(c=>typeof e[c] === 'string' && e[c])
+      && ['imported_from','evidence_of'].includes(e.rel) && (e.field == null || identifier(e.field))
+      && authorizeTable(scopes,'write',e.to_kind) && scopes.includes(`provenance:create:${e.to_kind}`)
+      && e.id === [e.from_kind,e.from_ref,e.to_kind,e.to_ref].join(':');
+  });
+}
+export function edgePolicy(rows) {
+  const edges=new Map(rows.map(row=>[row.id,row]));
+  return async (view,table,write,ids) => {
+    const columns=await scopedOrigin(view,ids),targets=new Map();
+    for (const id of ids) {
+      const edge=edges.get(id);
+      if (!edge) deny();
+      targets.set(edge.to_kind,[...(targets.get(edge.to_kind) ?? []),edge]);
+    }
+    for (const [kind,list] of targets) {
+      const names=new Set((await scopedTable(view,kind)).map(c=>c.name));
+      if (!names.has('deleted_at') || list.some(e=>e.field != null && !names.has(e.field))) deny();
+      const refs=[...new Set(list.map(e=>e.to_ref))];
+      const {results:live}=await view.prepare(`SELECT id FROM ${qident(kind)} WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL`).bind(JSON.stringify(refs)).all();
+      const found=new Set(live.map(r=>r.id));
+      if (refs.some(ref=>!found.has(ref))) deny();
+    }
+    return columns;
+  };
+}
+
 // Internal origin construction has no caller-supplied SQL or edge fields.
 // Admit only these complete metadata SELECT shapes; ordinary narrow writes
 // still reject all SQL options and cannot address provenance.
@@ -184,7 +260,8 @@ async function inspectTable(view, table, write, rowIds, origin, livePatch=false,
   for (const prop of props) if (prop.ref_table) await scopedTable(view,prop.ref_table);
   if (await view.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_rules'").first()) {
     const {results:rules}=await view.prepare("SELECT * FROM catalog_rules WHERE deleted_at IS NULL AND kind='invariant' AND enforce != 0 AND (tbl=? OR scope='estate') ORDER BY id").bind(table).all();
-    for (const rule of rules) if (!(changeset && rule.tbl===table && rule.scope==='table' && supportedRuleSql(rule.sql)) && !scopedInvariant(rule,table,columns,livePatch) && !(origin && await originInvariant(view,rule))) deny();
+    for (const rule of rules) if (!(changeset && rule.tbl===table && rule.scope==='table' && supportedRuleSql(rule.sql)) && !scopedInvariant(rule,table,columns,livePatch)
+      && !(origin ? await originInvariant(view,rule) : await confinedInvariant(view,rule,table))) deny();
   }
   return columns;
 }

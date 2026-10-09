@@ -300,20 +300,64 @@ for(const route of ['insert','push']) test(`exact invariant templates enforce ${
   }
 });
 
-for(const sql of [
-  templates[2].replace('JOIN articles','JOIN secrets'),
-  ...['c.id','b.id','b.deleted_at','c.deleted_at'].map(part=>templates[2].replace(part,part.replace('.','X'))),
-  templates[2].replace('b.url = c.url','b.url = c.description'),
-  templates[2].replace('c.url IS NOT NULL','c.description IS NOT NULL'),
-  templates[0].replace('description','missing'),
-  templates[1].replace("coalesce(tags,","coalesce(missing,"),
-  ...[';',' -- comment','\n',' UNION SELECT id FROM secrets',' AND 1=1'].map(s=>templates[0]+s),
-  templates[0].replace("'%.'","'%.' OR 1=1"),
-  templates[0].replace("'%.'",'"%."'),
-  templates[0].replace("'%.'","'bad\\' OR 1=1 --'"),
-  'SELECT id FROM secrets',
-]) test(`unrecognized invariant denied: ${sql}`,async()=>{
+// Same-table invariants outside the templates run exactly as for full writers.
+const confined = [
+  ['SELECT c.id FROM changed c WHERE c.deleted_at IS NULL AND c.url IS NOT NULL AND EXISTS (SELECT 1 FROM articles w WHERE w.deleted_at IS NULL AND w.url=c.url AND w.id<>c.id)',
+    [{url:'https://example.test/a'}]],
+  ["SELECT id FROM changed WHERE deleted_at IS NULL AND ((description IS NOT NULL AND length(description) < 3) OR (substr(url,1,8) <> 'https://'))",
+    [{description:'ab'},{url:'http://source.test/c'}]],
+  ['SELECT c.id FROM changed c WHERE c.deleted_at IS NULL AND EXISTS (SELECT 1 FROM "Articles" w WHERE w.deleted_at IS NULL AND w.description = c.description AND w.id <> c.id)',
+    [{description:'A resource'}]],
+  [templates[0]+' AND 1=1', [{description:'Bad.'}]],
+  [templates[0].replace("'%.'","'%.' OR 1=1"), [{description:'Fine'}]],
+];
+for(const route of ['insert','push']) for(const [sql,bad] of confined) test(`same-table invariant enforced on ${route}: ${sql}`,async()=>{
   const db=captureDb();rule(db,sql);
+  const {call}=await setup(['tables:write:articles'],db);
+  const always=sql.includes('OR 1=1');
+  const first=await (await call(`/v1/rows/${route}`,'POST',capture())).json();
+  expect(first.rejected).toEqual(always?[{id:'b',col:null,rule:'validation',message:'Row rejected.'}]:[]);
+  expect(db.db.query("SELECT count(*) AS n FROM articles WHERE id='b'").get().n).toBe(always?0:1);
+  for(const values of bad) {
+    const response=await call(`/v1/rows/${route}`,'POST',capture({id:'c',url:'https://source.test/c',...values}));
+    expect(response.status).toBe(200);
+    expect((await response.json()).rejected).toEqual([{id:'c',col:null,rule:'validation',message:'Row rejected.'}]);
+    expect(db.db.query("SELECT id FROM articles WHERE id='c'").get()).toBeNull();
+  }
+});
+
+for(const sql of [
+  templates[0].replace('description','missing'),
+  templates[2].replace('c.id','cXid'),
+]) test(`broken same-table invariant fails closed: ${sql}`,async()=>{
+  const db=captureDb();rule(db,sql);
+  const {call}=await setup(['tables:write:articles'],db);
+  const response=await call('/v1/rows/insert','POST',capture());
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({error:'row request failed'});
+  expect(db.db.query("SELECT id FROM articles WHERE id='b'").get()).toBeNull();
+});
+
+const join = target => `SELECT c.id FROM changed c JOIN ${target} s ON s.id = c.id WHERE c.deleted_at IS NULL`;
+for(const [sql,setupSql] of [
+  [templates[2].replace('JOIN articles','JOIN secrets')],
+  [templates[0]+' UNION SELECT id FROM secrets'],
+  ['SELECT id FROM secrets'],
+  ...['"secrets"','[secrets]','`secrets`',"'secrets'",'main.secrets','SECRETS','"Secrets"','main."secrets"'].map(t=>[join(t)]),
+  [join('shadow'),'CREATE VIEW shadow AS SELECT id,value FROM secrets'],
+  ["SELECT id FROM changed WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'x')"],
+  ['SELECT id FROM changed WHERE EXISTS (SELECT 1 FROM sqlite_schema)'],
+  ['SELECT id FROM changed WHERE (SELECT count(*) FROM pragma_table_list) > 9'],
+  ['SELECT id FROM changed WHERE (SELECT count(*) FROM dbstat) > 9'],
+  // A single-quoted name is an identifier where SQLite expects a table, so a
+  // literal equal to another table's name is denied too (fail closed).
+  ["SELECT id FROM changed WHERE deleted_at IS NULL AND description = 'secrets'"],
+  ...[';',' -- comment',' /* comment */'].map(s=>[templates[0]+s]),
+  [templates[0].replace("'%.'","'bad\\' OR 1=1 --'")],
+  ["SELECT id FROM changed WHERE description = 'open"],
+  ['DELETE FROM articles RETURNING id'],
+]) test(`invariant reading outside the granted table denied: ${sql}`,async()=>{
+  const db=captureDb();if(setupSql)db.db.exec(setupSql);rule(db,sql);
   const {call}=await setup(['tables:write:articles'],db);
   const response=await call('/v1/rows/insert','POST',capture());
   expect(response.status).toBe(403);

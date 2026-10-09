@@ -40,6 +40,7 @@ _SIMPLE_SCOPE = re.compile(
     r"|files:(?:read|write):(?:[A-Za-z0-9_][A-Za-z0-9._-]*/)+"
 )
 _WHOLE_TABLE = re.compile(r"tables:(?:read|write):([A-Za-z][A-Za-z0-9_]*)")
+_EDGE = re.compile(r"provenance:create:([A-Za-z][A-Za-z0-9_]*)")
 _COLUMN = re.compile(
     r"(tables:read|tables:patch|catalog:read):([A-Za-z][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)"
 )
@@ -61,6 +62,8 @@ def valid_profile_scopes(scopes) -> bool:
             return True
         if whole := _WHOLE_TABLE.fullmatch(scope):
             return not _RESERVED.fullmatch(whole[1])
+        if edge := _EDGE.fullmatch(scope):  # origin edges onto rows the profile may write
+            return not _RESERVED.fullmatch(edge[1]) and f"tables:write:{edge[1]}" in scopes
         p = _COLUMN.fullmatch(scope)
         if not p or _RESERVED.fullmatch(p[2]) or f"tables:read:{p[2]}:id" not in scopes:
             return False
