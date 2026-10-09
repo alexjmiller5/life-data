@@ -7,6 +7,8 @@
 	"compatibility_flags": ["nodejs_als"],
 	"workers_dev": true,
 	"observability": { "enabled": true },
+	// Every hub request is a few D1 round trips; run the Worker next to the database (ENAM) rather than at the caller's edge.
+	"placement": { "mode": "smart" },
 	// The hub's storage. Declaring the bindings here IS the provisioning —
 	// nothing about D1 or R2 reaches the client.
 	"d1_databases": [
