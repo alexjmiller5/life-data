@@ -1654,6 +1654,10 @@ class RemoteChanges(threading.Thread):
         self._changed.clear()
         return True
 
+    def wait(self, timeout: float) -> bool:
+        """The loops' tick: sleeps up to `timeout`, ending early at a signal."""
+        return self._changed.wait(timeout)
+
     def stop(self) -> None:
         self._stopped.set()
 
@@ -1696,7 +1700,10 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
                 last_round = time.monotonic()
             if once:
                 return
-            time.sleep(TICK_SECONDS)
+            if remote is not None:
+                remote.wait(TICK_SECONDS)
+            else:
+                time.sleep(TICK_SECONDS)
     finally:
         if remote:
             remote.stop()

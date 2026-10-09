@@ -389,4 +389,10 @@ def run(data: Path, poll_seconds: int) -> int:
             if current != saved_status:
                 write_json(data / "background-status.json", current)
                 saved_status = current.copy()
-            time.sleep(1)
+            # While idle a hub signal ends the tick at once: remote edits start
+            # a round the moment they land. Any other state ignores signals, and
+            # an iteration that failed before taking one would never clear it.
+            if remote is not None and current.get("state") == "idle":
+                remote.wait(1)
+            else:
+                time.sleep(1)

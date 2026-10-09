@@ -688,7 +688,9 @@ the request reaches the Worker.
 (fingerprinting the db AND its `-wal`, since WAL mode leaves the main file
 untouched until checkpoint). Remote changes arrive through `RemoteChanges`, a
 thread holding `GET /v1/changes?since=<seq>&wait=25` on the hub: any new
-sequence (its first answer included) starts a round. While that channel fails
+sequence (its first answer included) starts a round, and ends the loop's 1 s
+tick at once (`RemoteChanges.wait`; the runner only while idle, since other
+states ignore signals and a failed iteration may never take one). While that channel fails
 the loops poll every `poll_seconds`; while it is live, `SAFETY_SECONDS` (600)
 is the only timer. The hub bumps the sequence through `markChanged()` from
 `withChangeSignal`, which wraps every request and cron run: `commitChecked`

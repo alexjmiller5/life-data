@@ -140,6 +140,7 @@ class FakeListener:
 
     def __init__(self, clock, at, live=True):
         self.clock, self.at, self.live, self.stopped = clock, list(at), live, False
+        self.spins = 0
 
     def start(self):
         pass
@@ -151,6 +152,17 @@ class FakeListener:
         if self.at and self.clock[0] >= self.at[0]:
             self.at.pop(0)
             return True
+        return False
+
+    def wait(self, seconds):
+        # Event.wait: returns at a signal due within the timeout, else at the timeout.
+        if self.at and self.at[0] < self.clock[0] + seconds:
+            if self.at[0] <= self.clock[0]:
+                self.spins += 1
+                assert self.spins < 50, "the loop waits again on a signal it never took"
+            soma.time.sleep(max(0.0, self.at[0] - self.clock[0]))
+            return True
+        soma.time.sleep(seconds)
         return False
 
 
@@ -192,6 +204,17 @@ def test_watch_syncs_on_a_remote_signal_and_drops_the_fixed_poll(db, clock, monk
         watch(db, SignalHub(), poll_seconds=30)
     assert [r - 1000 for r in rounds] == [0, 7, 50, 50 + soma.SAFETY_SECONDS]
     assert listener.stopped
+
+
+def test_watch_starts_a_round_the_moment_the_hub_signals(db, clock, monkeypatch):
+    rounds = []
+    monkeypatch.setattr(soma, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: FakeListener(clock, [1007.3]))
+    stop_at(monkeypatch, clock, 1010)
+    with pytest.raises(KeyboardInterrupt):
+        watch(db, SignalHub(), poll_seconds=30)
+    # not at the next whole-second tick (1008): a replica waits on the signal itself
+    assert [round(r - 1000, 1) for r in rounds] == [0, 7.3]
 
 
 def test_watch_falls_back_to_the_poll_while_the_channel_is_down(db, clock, monkeypatch):
@@ -301,6 +324,30 @@ def test_runner_syncs_on_a_remote_signal_and_polls_only_as_a_safety_net(
         hub=SignalHub(),
     )
     assert [a - 1000 for a in attempts] == [0, 7, 7 + soma.SAFETY_SECONDS]
+
+
+def test_runner_starts_a_round_the_moment_the_hub_signals(tmp_path, monkeypatch, clock):
+    listener = FakeListener(clock, [1007.3])
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: listener)
+    attempts = run_runner(tmp_path, monkeypatch, clock, 1010, lambda _: QUIET, hub=SignalHub())
+    assert [round(a - 1000, 1) for a in attempts] == [0, 7.3]
+
+
+def test_runner_never_spins_on_a_signal_a_failing_iteration_cannot_take(
+    tmp_path, monkeypatch, clock
+):
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: FakeListener(clock, [1003.5]))
+    real, ticks = soma.db_changed, []
+
+    def failing_after_the_first_round(path, fingerprint):
+        ticks.append(clock[0])
+        if clock[0] >= 1002:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(path, fingerprint)
+
+    monkeypatch.setattr(soma, "db_changed", failing_after_the_first_round)
+    run_runner(tmp_path, monkeypatch, clock, 1010, lambda _: QUIET, hub=SignalHub())
+    assert len(ticks) <= 12  # one iteration per second, never one per pending signal
 
 
 def test_runner_polls_while_the_change_channel_is_down(tmp_path, monkeypatch, clock):
