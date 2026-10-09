@@ -9,12 +9,13 @@ import { D1Shim } from "./d1shim.js";
 class Counting extends D1Shim {
   calls = 0;
   batching = false;
+  statements = []; // every statement's SQL, batched or not
   prepare(sql) {
     const stmt = super.prepare(sql);
     for (const name of ["all", "run", "first", "raw"]) {
       const inner = stmt[name].bind(stmt);
       // Statements inside a batch travel in the batch's one round trip.
-      stmt[name] = async (...args) => { if (!this.batching) this.calls++; return inner(...args); };
+      stmt[name] = async (...args) => { if (!this.batching) this.calls++; this.statements.push(sql); return inner(...args); };
     }
     return stmt;
   }
@@ -64,17 +65,77 @@ for (const [path, body] of reads.slice(1)) test(`a warm ${path} answers within a
   expect(await call(path, body)).toBeLessThanOrEqual(4);
 });
 
-test("a write re-audits the generic state the reads had memoized, and reads re-audit after a write", async () => {
+test("a read audits afresh as soon as the schema changes, and a write audits every time", async () => {
   const { env, call } = await hub();
   for (const [p, b] of reads) await call(p, b);
-  // A tamper that only a fresh audit sees: reads keep serving from the memo...
+  // A tamper only a fresh audit sees: the very next read is denied...
   env.DB.db.exec("CREATE VIEW _governance_fake AS SELECT 1");
-  expect((await (await rawCall(env, "/v1/stats", {})).json()).error).toBeUndefined();
-  // ...a write audits afresh and is denied...
+  expect((await rawCall(env, "/v1/stats", {})).status).toBe(403);
+  // ...and so is a write, which never relies on an earlier verification.
   const denied = await rawCall(env, "/v1/rows/push", { table: "people", columns, rows: [] });
   expect(denied.status).toBe(403);
-  // ...and the next read audits again too.
+  env.DB.db.exec("DROP VIEW _governance_fake");
+  expect((await rawCall(env, "/v1/stats", {})).status).toBe(200);
+});
+
+test("a write's failed audit makes the next read audit afresh too", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  // Catalog contents are data, so the schema stamp reads check does not move,
+  // and reads execute no catalog SQL...
+  env.DB.db.exec("INSERT INTO catalog_properties (id, tbl, col, type, options_sql) VALUES ('people.x', 'people', 'x', 'select', 'SELECT * FROM _governance_heads')");
+  expect((await rawCall(env, "/v1/stats", {})).status).toBe(200);
+  // ...but every write audits them, and its denial drops the isolate's verification.
+  expect((await rawCall(env, "/v1/rows/push", { table: "people", columns, rows: [] })).status).toBe(403);
   expect((await rawCall(env, "/v1/stats", {})).status).toBe(403);
+});
+
+const AUDIT = "SELECT name,type,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name";
+const setup = (env) => env.DB.statements.filter((sql) => /\bIF NOT EXISTS\b/.test(sql) && /_governance_/.test(sql));
+
+test("a warm read skips the generic-state audit while the schema is unchanged", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  env.DB.statements = [];
+  await call("/v1/cursor", { tables: ["people"] });
+  await call("/v1/rows/pull", { table: "people", columns, since: "", limit: 200 });
+  expect(env.DB.statements.filter((sql) => sql === AUDIT)).toEqual([]);
+});
+
+test("a warm write audits but skips governance setup while the schema is unchanged", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  const push = (name, at) => call("/v1/rows/push", { table: "people", columns: ["id", "name", "updated_at"], rows: [{ id: "a", name, updated_at: at }] });
+  // The hub creates its history table on the first push: DDL the next write
+  // sets up for, once.
+  await push("A", "2026-01-01T00:00:00.000Z");
+  await push("A2", "2026-01-01T00:00:00.500Z");
+  env.DB.statements = [];
+  env.DB.calls = env.AUTH_DB.calls = 0;
+  const trips = await push("B", "2026-01-01T00:00:01.000Z");
+  expect(env.DB.statements.filter((sql) => sql === AUDIT).length).toBe(1);
+  expect(setup(env)).toEqual([]);
+  // Before: 42, of which 19 re-ran governance setup that a fingerprint of the
+  // audited schema proves unnecessary.
+  expect(trips).toBeLessThanOrEqual(25);
+});
+
+test("a write after out-of-band DDL runs governance setup again", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  const push = (table, at) => call("/v1/rows/push", { table, columns: ["id", "name", "updated_at"], rows: [{ id: "a", name: "A", updated_at: at }] });
+  await push("people", "2026-01-01T00:00:00.000Z");
+  const guards = (t) => env.DB.db.query(`SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='${t}' AND name GLOB '_governance_rows_*'`).all().length;
+  expect(guards("people")).toBe(3);
+  // A guard removed behind the hub's back is back after the next write.
+  const guard = env.DB.db.query("SELECT name FROM sqlite_master WHERE name GLOB '_governance_rows_*_update' AND tbl_name='people'").get().name;
+  env.DB.db.exec(`DROP TRIGGER "${guard}"`);
+  await push("people", "2026-01-01T00:00:01.000Z");
+  expect(guards("people")).toBe(3);
+  // So is a guard for a table another isolate's replay created.
+  env.DB.db.exec("CREATE TABLE later2 (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)");
+  await push("people", "2026-01-01T00:00:02.000Z");
+  expect(guards("later2")).toBe(3);
 });
 
 test("a cursor read after a schema replay still sees the new table", async () => {

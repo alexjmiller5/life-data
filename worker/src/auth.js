@@ -56,8 +56,13 @@ export function authorityStatement(db,tokenHash,kind,afterRegistration=false) {
 
 export async function readGovernanceAuthority(db,tokenHash) {
   if (!authReady.has(db) && !await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_governance_authorities'").first()) return null;
-  const row=await db.prepare(`SELECT a.* FROM _governance_authorities a JOIN _tokens t ON t.hash=a.token_hash
-    WHERE a.token_hash=? AND a.revoked_at IS NULL AND t.revoked_at IS NULL`).bind(tokenHash).first();
+  return governanceAuthority(await governanceAuthorityStatement(db,tokenHash).first());
+}
+// The statement and its reading, apart, so a request can batch it with its
+// token lookup on an initialized registry.
+export const governanceAuthorityStatement=(db,tokenHash)=>db.prepare(`SELECT a.* FROM _governance_authorities a JOIN _tokens t ON t.hash=a.token_hash
+    WHERE a.token_hash=? AND a.revoked_at IS NULL AND t.revoked_at IS NULL`).bind(tokenHash);
+export function governanceAuthority(row) {
   if (!row || !row.principal_id || !['user','agent','service'].includes(row.kind)) return null;
   return {actor:{principalId:row.principal_id,kind:row.kind},propose:row.can_propose===1,approve:row.kind==='user' && row.can_approve===1};
 }

@@ -16,10 +16,10 @@ import { patchChecked } from "./patch.js";
 import { PURGES, applyPurges, markersFor, purgeIndex, uncovered } from "./purge.js";
 import { deriveRows, deriveStale, sweep } from "./derive.js";
 import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./validate.js";
-import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority } from "./auth.js";
+import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority, governanceAuthorityStatement, governanceAuthority } from "./auth.js";
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
 import { ensureEvidenceStorage } from './governance-evidence.js';
-import {assertGenericBody,assertGenericDDL,assertGenericStateBatched} from './governance-isolation.js';
+import {assertGenericBody,assertGenericDDL,assertGenericStateBatched,schemaStamp} from './governance-isolation.js';
 import {handleGovernance} from './governance.js';
 import {handleChangesetGovernance,canChangeset,changesetGovernanceLimits} from './changeset-governance.js';
 import {ensureChangesetStorage} from './changeset-store.js';
@@ -100,11 +100,12 @@ async function resolveTenant(request, env, ctx) {
     if (!await env.AUTH_DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_tokens'").first()) return null;
   } else await ensureAuthReady(env.AUTH_DB);
   const hash = await hashToken(token);
-  const row = await env.AUTH_DB.prepare(
-    "SELECT * FROM _tokens WHERE hash = ? AND revoked_at IS NULL"
-  )
-    .bind(hash)
-    .first();
+  const lookup = env.AUTH_DB.prepare("SELECT * FROM _tokens WHERE hash = ? AND revoked_at IS NULL").bind(hash);
+  // An initialized registry answers the token and its governance authority in
+  // one round trip; a preview may not initialize it, so it reads them apart.
+  const [row, authority] = preview
+    ? [await lookup.first(), undefined]
+    : (await env.AUTH_DB.batch([lookup, governanceAuthorityStatement(env.AUTH_DB, hash)])).map((r) => r.results?.[0] ?? null);
   if (!row) return null;
   // One D1 write per request for a timestamp nobody reads to the second: a
   // replica polls every few seconds, so stamp a token at most once a minute.
@@ -118,7 +119,8 @@ async function resolveTenant(request, env, ctx) {
         .run()
     );
   }
-  const governance=row.enrollment_profile || hasCreationScope(row.scopes.split(",")) ? null : await readGovernanceAuthority(env.AUTH_DB,hash);
+  const governance=row.enrollment_profile || hasCreationScope(row.scopes.split(",")) ? null
+    : authority === undefined ? await readGovernanceAuthority(env.AUTH_DB,hash) : governanceAuthority(authority);
   const enrollmentProfile=row.enrollment_profile ? {id:row.enrollment_profile,revision:row.enrollment_revision} : null;
   return { db: env.DB, authDb: env.AUTH_DB, archive: env.ARCHIVE, scopes: row.scopes.split(","), name: row.name, hash, admin: false, governance, enrollmentProfile };
 }
@@ -250,12 +252,45 @@ async function ensurePlumbing(db) {
 }
 
 // Governance storage guards writes (continuity triggers on tables created by
-// any replay), so write routes ensure it on every request.
+// any replay, by a DDL route or by DDL from outside the hub).
 async function ensureReady(db) {
   await ensurePlumbing(db);
   await ensureEvidenceStorage(db);
   await ensureProposalStorage(db);
   await ensureChangesetStorage(db);
+}
+
+// What this isolate last verified per database (assertGenericStateBatched's
+// exact schema and its stamp), and the exact schema governance setup last ran
+// against. A failed audit drops the verification.
+const verified = new WeakMap();
+const prepared = new WeakMap();
+async function audit(db) {
+  verified.delete(db);
+  const state = await assertGenericStateBatched(db);
+  verified.set(db, state);
+  return state;
+}
+
+// Every non-read route audits the generic state afresh. Governance setup is a
+// function of the schema, so it runs only when the audited schema differs from
+// the one it last ran against (always in a fresh isolate): ~20 round trips a
+// write no longer pays. A failed first audit gets setup and the second audit,
+// the order every request used to run them in.
+async function ready(db) {
+  let state = null;
+  try { state = await audit(db); } catch (e) { if (!(e instanceof ScopeDenied)) throw e; }
+  if (state && state.objects === prepared.get(db)) return;
+  await ensureReady(db);
+  prepared.set(db, (await audit(db)).objects);
+}
+
+// A replica read re-audits only when the schema stamp moved since this
+// isolate's last passing audit: reads execute no catalog SQL, and every write
+// re-checks the catalog contents.
+async function readReady(db) {
+  await ensurePlumbing(db);
+  if ((await schemaStamp(db)) !== verified.get(db)?.stamp) await audit(db);
 }
 
 // Does the HUB's own schema have hub_at? Never ask the pushed column list:
@@ -984,8 +1019,6 @@ export default {
 // Called every round or page. schema/pull (once per schema change) keeps the
 // full setup: it is what initializes governance storage on a fresh hub.
 const REPLICA_READS = new Set(["/v1/rows/pull", "/v1/cursor", "/v1/stats"]);
-const audited = new WeakMap();
-const AUDIT_MEMO_MS = 60_000;
 
 async function handle(request, env, ctx, url) {
   if (url.pathname === "/health") return json({ ok: true });
@@ -1102,7 +1135,7 @@ async function handle(request, env, ctx, url) {
       });
     }
     if (url.pathname === "/v1/catalog" && request.method === "GET") {
-      await ensureReady(tenant.db);
+      await ready(tenant.db);
       const out = {};
       for (const t of ["catalog_tables", "catalog_properties", "catalog_rules"]) {
         const exists = await tenant.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(t).first();
@@ -1130,18 +1163,10 @@ async function handle(request, env, ctx, url) {
       return json({ keys: await backup(env, new Date()) });
     }
     // Replica reads (each page of a cold download is one) skip the write path's
-    // governance setup and reuse this isolate's last generic-state audit for a
-    // minute; every write audits afresh (a tamper arrives through a write or an
-    // operator, never a read) and a failed audit drops the memo.
-    const read = REPLICA_READS.has(url.pathname);
-    await (read ? ensurePlumbing(tenant.db) : ensureReady(tenant.db));
+    // governance setup and the audit while the schema is unchanged.
+    await (REPLICA_READS.has(url.pathname) ? readReady(tenant.db) : ready(tenant.db));
     const body=await request.json();
     assertGenericBody(body);
-    if (!read || Date.now() - (audited.get(tenant.db) ?? -Infinity) >= AUDIT_MEMO_MS) {
-      audited.delete(tenant.db);
-      await assertGenericStateBatched(tenant.db);
-      audited.set(tenant.db, Date.now());
-    }
     const out = await ROUTES[url.pathname](body, tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {

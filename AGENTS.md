@@ -627,13 +627,18 @@ direct external writers retain the timestamp compatibility contract.
 
 **Every hub request pays its D1 round trips (~45 ms each from the edge).**
 Idempotent setup (auth registry, plumbing tables, each table's arrival column)
-runs once per isolate; replica reads (`rows/pull`, `cursor`, `stats`) skip the
-write path's governance storage setup (schema/pull keeps it: it initializes a
-fresh hub) and reuse the isolate's generic-state audit for a minute (every
-write audits afresh; a failed audit drops the memo). A token's last-use stamp
-is written at most once a minute. `worker/test/request-cost.test.js` holds the
-per-route budget (a warm read is one round trip plus the two after the
-response); a cold download is dozens of these requests.
+runs once per isolate. Governance setup (continuity guards, private storage) is
+a function of the schema: every other route runs the exact generic-state audit,
+and setup runs again only when the audited schema (all of `sqlite_master`)
+differs from the one setup last ran against - a replay, a DDL route or DDL from
+outside the hub (`ready` in `index.js`). Replica reads (`rows/pull`, `cursor`,
+`stats`) skip setup and re-audit only when a one-row schema stamp (object
+count, total SQL length) moved since the isolate's last passing audit; a failed
+audit drops that verification, and reads execute no catalog SQL. The token
+lookup and its governance authority are one AUTH_DB batch; a token's last-use
+stamp is written at most once a minute. `worker/test/request-cost.test.js`
+holds the per-route budgets (a warm read is three round trips plus the usage
+flush after the response); a cold download is dozens of these requests.
 
 **The hub owns a `hub_at` index per user table** (`<table>_hub_at`, unlogged
 like the engine indexes, ensured once per isolate on cursor/pull and again

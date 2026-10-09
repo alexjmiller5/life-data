@@ -42,15 +42,25 @@ export async function assertGenericState(view){
 // The same check in two batched round trips, for the generic routes that run it
 // on every request (each page of a replica download). Callers that capture reads
 // for a later write guard use assertGenericState.
+// Returns what it verified: `objects`, the exact schema, and `stamp`, the
+// cheap SCHEMA_STAMP fingerprint of it, read in the same round trip.
 export async function assertGenericStateBatched(db){
-  const [{results:objects},{results:columns}]=await db.batch([db.prepare(OBJECTS),db.prepare(CONTINUITY_COLUMNS)]);
+  const [{results:objects},{results:columns},{results:[stamp]}]=await db.batch([db.prepare(OBJECTS),db.prepare(CONTINUITY_COLUMNS),db.prepare(SCHEMA_STAMP)]);
   checkObjects(objects,continuityTables(columns));
   const catalog=CATALOG_SQL.map(([table,checked])=>[table,checked.filter(c=>columns.some(r=>r.tbl===table && r.col===c))])
     .filter(([table,selected])=>selected.length && objects.some(o=>o.type==='table' && o.name===table));
-  if(!catalog.length)return;
-  const contents=await db.batch(catalog.map(([table,selected])=>db.prepare(`SELECT ${selected.join(',')} FROM ${table}`)));
-  if(contents.some(({results})=>results.some(row=>Object.values(row).some(reserved))))deny();
+  if(catalog.length){
+    const contents=await db.batch(catalog.map(([table,selected])=>db.prepare(`SELECT ${selected.join(',')} FROM ${table}`)));
+    if(contents.some(({results})=>results.some(row=>Object.values(row).some(reserved))))deny();
+  }
+  return {objects:JSON.stringify(objects),stamp:stampKey(stamp)};
 }
+// One row: any added, dropped or resized schema object moves it.
+// ponytail: a rewrite that keeps both the object count and the total SQL length
+// passes a stamp check; only the exact audit (every write) sees it.
+const SCHEMA_STAMP="SELECT count(*) AS n,total(length(sql)) AS l FROM sqlite_master WHERE sql IS NOT NULL";
+const stampKey=row=>`${row?.n}:${row?.l}`;
+export const schemaStamp=async db=>stampKey(await db.prepare(SCHEMA_STAMP).first());
 const OBJECTS="SELECT name,type,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name";
 const CATALOG_SQL=[['catalog_properties',['options_sql','default_value','ref_table','derived_by']],['catalog_rules',['sql']]];
 function checkObjects(objects,schemas){
