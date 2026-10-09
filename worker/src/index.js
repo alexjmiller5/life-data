@@ -620,36 +620,40 @@ const ROUTES = {
     // The last entry is the schema log itself: its newest id lets a replica
     // whose own log has not moved skip the whole-log pull while this has not
     // moved either.
+    // One statement for the whole estate: D1 charges each statement of a
+    // batch its own few milliseconds, and a replica asks for every table.
     const read = async () => {
       const kinds = await arrivalColumns(db, [...tables, "_schema_log"]);
-      return db.batch([
-        ...tables.map((t) => {
-          const col = kinds.get(t);
-          // A table the hub lacks (renamed or dropped by a replay the caller has
-          // not run yet) has no arrivals. With the newest arrival comes how many
-          // rows share that stamp (index-only): a replica whose cursor sits on
-          // it can tell a same-millisecond late commit from nothing new.
-          if (!col) return db.prepare("SELECT '' AS m, NULL AS n");
-          if (col !== "hub_at") return db.prepare(`SELECT max(${col}) AS m, NULL AS n FROM ${qident(t)}`);
-          return db.prepare(`SELECT (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`);
-        }),
-        db.prepare(kinds.get("_schema_log") ? "SELECT coalesce(max(id), 0) AS m FROM _schema_log" : "SELECT 0 AS m"),
-      ]);
+      const parts = tables.map((t, i) => {
+        const col = kinds.get(t);
+        // A table the hub lacks (renamed or dropped by a replay the caller has
+        // not run yet) has no arrivals. With the newest arrival comes how many
+        // rows share that stamp (index-only): a replica whose cursor sits on
+        // it can tell a same-millisecond late commit from nothing new.
+        if (!col) return `SELECT ${i} AS i, '' AS m, NULL AS n`;
+        if (col !== "hub_at") return `SELECT ${i} AS i, max(${col}) AS m, NULL AS n FROM ${qident(t)}`;
+        return `SELECT ${i} AS i, (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`;
+      });
+      parts.push(kinds.get("_schema_log") ? `SELECT ${tables.length} AS i, coalesce(max(id), 0) AS m, NULL AS n FROM _schema_log` : `SELECT ${tables.length} AS i, 0 AS m, NULL AS n`);
+      const { results } = await db.prepare(parts.join(" UNION ALL ")).all();
+      const rows = [];
+      for (const row of results ?? []) rows[row.i] = row;
+      return rows;
     };
-    let maxes;
-    try { maxes = await read(); } catch (e) {
+    let rows;
+    try { rows = await read(); } catch (e) {
       if (!arrivalKinds.has(db)) throw e;
       arrivalKinds.delete(db);
-      maxes = await read();
+      rows = await read();
     }
-    const schema = maxes.pop().results?.[0]?.m ?? 0;
+    const schema = rows[tables.length]?.m ?? 0;
     let top = "";
     const marks = {};
     const at_mark = {};
     tables.forEach((t, i) => {
-      const m = maxes[i].results?.[0]?.m ?? "";
+      const m = rows[i]?.m ?? "";
       marks[t] = m;
-      const n = maxes[i].results?.[0]?.n;
+      const n = rows[i]?.n;
       if (m && Number.isSafeInteger(n)) at_mark[t] = n;
       if (m > top) top = m;
     });

@@ -317,12 +317,12 @@ test("cursor asks the database in batches, not once per table", async () => {
   };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  // after the one-time index and column passes, a cursor read is one batch and no per-table round trips
+  // after the one-time index and column passes, a cursor read is one statement: one round trip
   expect(batches).toBeGreaterThanOrEqual(2);
   const warm = { batches, singles };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  expect(batches - warm.batches).toBe(1);
-  expect(singles - warm.singles).toBe(0);
+  expect(batches - warm.batches).toBe(0);
+  expect(singles - warm.singles).toBe(1);
 });
 
 test("a fresh isolate ensures every hub_at index in batches", async () => {
@@ -343,8 +343,8 @@ test("a fresh isolate ensures every hub_at index in batches", async () => {
     return stmt;
   };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  expect(singles).toBe(1); // the table list; everything per-table is batched
-  expect(batches).toBe(4); // table_info + create index, then the cursor's two
+  expect(singles).toBe(2); // the table list and the cursor's one statement; everything per-table is batched
+  expect(batches).toBe(3); // table_info + create index, then the arrival-column probe
   const made = await prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE '%_hub_at'").all();
   expect(made.results.map((r) => r.name).sort()).toEqual(["catalog_properties_hub_at", "people_hub_at", "provenance_hub_at"]);
 });
