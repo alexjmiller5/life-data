@@ -119,3 +119,27 @@ test('a completed round with rejected rows still records its completion time', a
   expect(status.rejected).toBe(1);
   expect(status.lastSuccessfulSync! > before!).toBe(true);
 });
+
+test('rows the hub could not fit in one request are pushed again in smaller batches', async () => {
+  const { db, remote, hub } = setup();
+  await sync(db, hub);
+  const stamp = new Date(Date.now() + 5).toISOString();
+  for (let i = 0; i < 120; i++) await db.run('INSERT INTO items(id,name,updated_at) VALUES (?,?,?)', [`r${String(i).padStart(3, '0')}`, 'Local', stamp]);
+  // The hub's answer when one request exhausts its statement budget: earlier
+  // rows commit, the rest come back retryable in a smaller batch.
+  const budgeted = { ...hub, async post(route: string, body: any) {
+    if (route === '/v1/rows/push' && body.rows.length > 30) {
+      const fit = body.rows.slice(0, 10);
+      const reply = await hub.post(route, { ...body, rows: fit });
+      const rejected = body.rows.slice(10).map((r: any) => ({ id: r.id, col: null, rule: 'write-budget', message: 'Write budget reached; retry this row in a smaller batch.' }));
+      return { ...reply, data: { ...(reply.data as any), rejected } };
+    }
+    return hub.post(route, body);
+  } };
+  const out = await sync(db, budgeted);
+  expect(out.rejected).toEqual([]);
+  expect(out.pushed).toBe(120);
+  expect(remote.db.query("SELECT count(*) AS n FROM items WHERE name='Local'").get()).toEqual({ n: 120 });
+  expect(await db.all('SELECT * FROM _core_rejected')).toEqual([]);
+  expect((await syncStatus(db)).rejected).toBe(0);
+});

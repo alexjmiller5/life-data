@@ -272,7 +272,9 @@ metadata is logged or synced.
 
 Sync freezes candidate payloads and their original history in the main-database
 `_core_sync_snapshot` within one transaction, then reads 200 candidates per
-push batch. The private snapshot is cleared at startup and on exit; it never
+push batch. Rows the hub rejects as `write-budget` or `retryable` are pushed
+again in halved batches within the round; only a row that still fails alone
+enters the inbox. The private snapshot is cleared at startup and on exit; it never
 resumes an abandoned round or changes logged schema. Pending UI payloads are
 protected from incoming LWW replacement until their own receipt. Deferred
 tables retain their old pull checkpoint/proof for replay. Superseded rejection

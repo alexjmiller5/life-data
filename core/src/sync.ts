@@ -232,10 +232,22 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       if(!rows.length) continue;
       const ids=new Set(rows.map(r=>r.id));
       const history=(await db.all("SELECT payload FROM main._core_sync_snapshot WHERE kind='history' AND tbl=? AND row_id IN (SELECT value FROM json_each(?)) ORDER BY sequence",[table,JSON.stringify([...ids])])).map(r=>JSON.parse(String(r.payload)) as Row);
-      const out=await post('/v1/rows/push',{table,columns:cols,rows,...(history.length ? {history} : {})});
-      if(!out||!Number.isInteger(out.upserted)||out.upserted<0||out.upserted>rows.length||!Array.isArray(out.rejected)||out.rejected.some((r:Row)=>!r||!ids.has(r.id))) throw new Error('invalid push response');
+      const push=async(part: Row[]): Promise<{upserted: number, rejected: Row[]}>=>{
+        const partIds=new Set(part.map(r=>r.id));
+        const events=history.filter(e=>partIds.has(e.row_id));
+        const out=await post('/v1/rows/push',{table,columns:cols,rows:part,...(events.length ? {history:events} : {})});
+        if(!out||!Number.isInteger(out.upserted)||out.upserted<0||out.upserted>part.length||!Array.isArray(out.rejected)||out.rejected.some((r:Row)=>!r||!partIds.has(r.id))) throw new Error('invalid push response');
+        if(out.upserted+new Set(out.rejected.map((r:Row)=>r.id)).size!==part.length) throw new Error('invalid push response');
+        // The hub asks for a smaller batch when one request runs out of budget
+        // or history search; halve those rows until a single row still fails.
+        const retry=new Set(out.rejected.filter((r:Row)=>r.retryable===true||r.rule==='write-budget').map((r:Row)=>r.id));
+        if(part.length<2||!retry.size) return out;
+        const again=part.filter(r=>retry.has(r.id)), mid=Math.ceil(again.length/2);
+        const halves=[await push(again.slice(0,mid)),...(again.length>1 ? [await push(again.slice(mid))] : [])];
+        return {upserted:out.upserted+halves.reduce((n,h)=>n+h.upserted,0),rejected:[...out.rejected.filter((r:Row)=>!retry.has(r.id)),...halves.flatMap(h=>h.rejected)]};
+      };
+      const out=await push(rows);
       const rejectedIds=new Set(out.rejected.map((r:Row)=>r.id));
-      if(out.upserted+rejectedIds.size!==rows.length) throw new Error('invalid push response');
       result.pushed+=out.upserted;
       bad.push(...out.rejected);
       for(const event of history) if(rejectedIds.has(event.row_id)) withheld.add(event.id);

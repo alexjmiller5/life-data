@@ -386,7 +386,9 @@ reads never provision either store or rewrite saved definitions.
   precommit reads. Exhaustion preserves committed progress and reports pending
   work in failed; subsequent calls/sweeps resume. SQL text is bounded at D1's 100KB limit. Typed history uses bounded trigger bodies, keeping each cell's evidence sequence intact and all triggers in the same mutation transaction. Ordinary 500-row writes use bulk
   upserts. Budget exhaustion is retryable per row; sync leaves its push cursor
-  unchanged whenever any row rejects.
+  unchanged whenever any row rejects. Core sync re-pushes `write-budget` and
+  `retryable` rows in halved batches within the round, so only a row that
+  still fails alone reaches the inbox.
 - **Checks must be pure; producers may touch the world.** Invariant SQL is one
   SELECT. Core/Worker share `core/src/rule-sql.ts`; Python mirrors its fixture.
   The conservative text screen rejects date/time functions (even explicit-input
