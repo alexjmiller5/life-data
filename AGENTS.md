@@ -1036,9 +1036,10 @@ shapes and bounds live in `tests/fixtures/hub-subscriptions-contract.json`.
 Selected columns support TEXT, INTEGER and REAL, preserving numeric JSON values.
 Per-source `lifecycle: true` records live insertion/deletion/restoration even with
 empty changes; restoration is `restore`. Default subscriptions retain value-only
-events and `update` on restore. Stored trigger sources carry version 2; missing
-version regenerates the original SQL exactly. Never reinterpret persisted trigger
-definitions. `subscription_features: scalar-lifecycle-v1` advertises the extension.
+events and `update` on restore. New trigger sources carry version 3, whose change
+list uses `json_each` instead of one compound-SELECT term per column (D1 allows five),
+so a source may select up to 16 columns. Version 2 and missing version regenerate
+their persisted SQL exactly. Never reinterpret persisted trigger definitions. `subscription_features: scalar-lifecycle-v1` advertises the extension.
 Activation rejects custom source/outbox triggers; only complete canonical timestamp
 statements (quoted or unquoted CLI identifiers) and exact generated recording
 triggers are supported. Timestamp revisions use the same

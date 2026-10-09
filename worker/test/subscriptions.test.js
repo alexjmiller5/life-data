@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { D1Shim } from './d1shim.js';
+import { LimitedD1 } from './limited-d1.js';
 import { ScopeDenied } from '../src/scopes.js';
 import contract from '../../tests/fixtures/hub-subscriptions-contract.json';
 import { createSubscription } from '../src/subscriptions.js';
@@ -46,7 +47,7 @@ test('opt-in lifecycle events include all-null rows, logical restore and physica
   db.db.exec("INSERT INTO articles(id,deleted_at) VALUES ('dead','deleted'); UPDATE articles SET updated_at='changed'; DELETE FROM articles");
   expect(rows(db,sub.id)).toHaveLength(4);
   const stored=JSON.parse(db.db.query('SELECT trigger_sources_json FROM _change_subscriptions WHERE id=?').get(sub.id).trigger_sources_json);
-  expect(stored[0]).toMatchObject({version:2,lifecycle:true});
+  expect(stored[0]).toMatchObject({version:3,lifecycle:true});
 });
 
 test('default and explicit false subscriptions retain legacy null and restore behavior',async()=>{
@@ -244,6 +245,34 @@ test.each(['hub_at','rowid','_rowid_','oid'])('schema replay cannot add revision
   const response=await ROUTES['/v1/schema/push']({entries:[{applied_at:'2026-10-03T00:00:00.000Z',ddl:`ALTER TABLE articles ADD COLUMN "${column.toUpperCase()}" TEXT`}]},db);
   expect(response.status).toBe(409);
   expect(db.db.query('PRAGMA table_info(articles)').all().some(c=>c.name.toLowerCase()===column)).toBe(false);
+});
+
+test('a source wider than D1 compound SELECT terms activates and records every column',async()=>{
+  const db=new LimitedD1(),cols=['a','b','c','d','e','f','g'];
+  try {
+    for(const sql of [
+      'CREATE TABLE catalog_tables(id TEXT PRIMARY KEY,kind TEXT,deleted_at TEXT)',
+      'CREATE TABLE catalog_properties(id TEXT PRIMARY KEY,tbl TEXT,col TEXT,type TEXT,sort INTEGER,options TEXT,options_sql TEXT,derived_by TEXT,inputs TEXT,deleted_at TEXT)',
+      `CREATE TABLE wide(id TEXT PRIMARY KEY,${cols.map(c=>c+' TEXT').join(',')},created_at TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)`,
+      "INSERT INTO catalog_tables VALUES ('wide','table',NULL)",
+      ...cols.map(c=>`INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('wide.${c}','wide','${c}','text')`),
+    ])await db.prepare(sql).run();
+    const sub=await createSubscription(db,{label:'Wide',start:'now',sources:[{table:'wide',columns:cols,lifecycle:true}]});
+    await db.prepare(`INSERT INTO wide(id,${cols.join(',')}) VALUES ('w',${cols.map((_,i)=>`'${i+1}'`).join(',')})`).run();
+    await db.prepare("UPDATE wide SET g='8'").run();
+    await db.prepare("UPDATE wide SET updated_at='x'").run();
+    const events=(await db.prepare('SELECT payload_json FROM _change_events WHERE subscription_id=? ORDER BY seq').bind(sub.id).all()).results.map(r=>JSON.parse(r.payload_json));
+    expect(events.map(e=>[e.operation,e.changes])).toEqual([
+      ['insert',cols.map((column,i)=>({column,old_value:null,new_value:String(i+1)}))],
+      ['update',[{column:'g',old_value:'7',new_value:'8'}]],
+    ]);
+  } finally {await db.close();}
+});
+
+test('version 2 lifecycle trigger SQL stays byte-for-byte compatible',async()=>{
+  const sources=[{table:'articles',columns:['url','alternate'],lifecycle:true,version:2,hasClock:false,hasHubAt:true}];
+  expect(subscriptionTriggers('11111111-1111-4111-8111-111111111111',sources).map(t=>t.sql).join('\n')).not.toContain('json_each');
+  expect(subscriptionTriggers('11111111-1111-4111-8111-111111111111',sources).map(t=>t.sql).join('\n')).toContain('UNION ALL');
 });
 
 test('multi-column changes, empty URLs and restoration preserve exact accepted values',async()=>{

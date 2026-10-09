@@ -9,8 +9,8 @@ const revision = (alias, hasHubAt, updated=`${alias}.updated_at`) => `json_objec
 // writing transaction, including derives, direct SQL and physical deletions.
 export function subscriptionTriggers(id, sources) {
   return sources.flatMap((source, index) => ['INSERT','UPDATE','DELETE'].map(operation => {
-    if (source.version!==undefined && source.version!==2) throw new Error('invalid subscription trigger version');
-    const lifecycle=source.version===2 && source.lifecycle===true;
+    if (source.version!==undefined && source.version!==2 && source.version!==3) throw new Error('invalid subscription trigger version');
+    const lifecycle=source.version>=2 && source.lifecycle===true;
     const row = operation === 'DELETE' ? 'OLD' : 'NEW';
     const oldValue = column => operation === 'INSERT' ? 'NULL'
       : `CASE WHEN OLD.deleted_at IS NULL THEN OLD.${qident(column)} END`;
@@ -19,9 +19,15 @@ export function subscriptionTriggers(id, sources) {
     const transition=operation==='INSERT'?'NEW.deleted_at IS NULL':operation==='DELETE'?'OLD.deleted_at IS NULL'
       :'(OLD.deleted_at IS NULL) IS NOT (NEW.deleted_at IS NULL)';
     const observed=lifecycle?`${changed} OR (${transition})`:changed;
-    const changes = `(SELECT json_group_array(json(item)) FROM (${source.columns.map(column =>
-      `SELECT json_object('column',${literal(column)},'old_value',${oldValue(column)},'new_value',${newValue(column)}) AS item WHERE ${oldValue(column)} IS NOT ${newValue(column)}`
-    ).join(' UNION ALL ')}))`;
+    const item = column => `json_object('column',${literal(column)},'old_value',${oldValue(column)},'new_value',${newValue(column)})`;
+    // Version 3 avoids one compound-SELECT term per column: D1 allows five.
+    // Versions 2 and earlier keep their persisted SQL byte for byte.
+    const changes = source.version===3
+      ? `(SELECT json_group_array(json(value)) FROM json_each(json_array(${source.columns.map(column =>
+        `CASE WHEN ${oldValue(column)} IS NOT ${newValue(column)} THEN ${item(column)} END`).join(',')})) WHERE type<>'null')`
+      : `(SELECT json_group_array(json(item)) FROM (${source.columns.map(column =>
+        `SELECT ${item(column)} AS item WHERE ${oldValue(column)} IS NOT ${newValue(column)}`
+      ).join(' UNION ALL ')}))`;
     const kind = operation === 'UPDATE'
       ? (lifecycle?"CASE WHEN NEW.deleted_at IS NOT NULL THEN 'delete' WHEN OLD.deleted_at IS NOT NULL THEN 'restore' ELSE 'update' END"
         :"CASE WHEN NEW.deleted_at IS NOT NULL THEN 'delete' ELSE 'update' END")

@@ -54,7 +54,7 @@ export async function createSubscription(db,input) {
     }
     seen.add(source.table);
     sources.push({table:source.table,columns:[...source.columns],...(source.lifecycle?{lifecycle:true}:{})});
-    triggerSources.push({...sources.at(-1),version:2,hasClock,hasHubAt:columns.some(c=>c.name==='hub_at')});
+    triggerSources.push({...sources.at(-1),version:3,hasClock,hasHubAt:columns.some(c=>c.name==='hub_at')});
   }
   const id=crypto.randomUUID();
   await db.batch([
