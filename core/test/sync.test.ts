@@ -392,3 +392,10 @@ test('a commit stamped with the same millisecond as the cursor after its read is
   await sync(db,hub);
   expect(requests.map(r=>r.route)).toEqual(['/v1/cursor']);
 });
+
+test('a fresh replica reads the cursor once, after its schema exchange', async () => {
+  const {db,hub,requests}=setup();
+  await sync(db,hub);
+  expect(requests.filter(r=>r.route==='/v1/cursor').length).toBe(1);
+  expect(requests.map(r=>r.route).slice(0,2)).toEqual(['/v1/schema/pull','/v1/cursor']);
+});

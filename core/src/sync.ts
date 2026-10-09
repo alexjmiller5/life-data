@@ -106,11 +106,13 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   // entry id; with it and our own log unchanged since the last exchange there
   // is nothing to pull or push, so the schema round trip is skipped.
   let allTables=await userTables();
-  let marks=await readCursor(allTables);
+  // A replica without tables yet has nothing to ask the cursor about before
+  // the schema exchange; its one cursor read comes after it.
+  let marks=allTables.length ? await readCursor(allTables) : null;
   const logMax=async()=>Number((await db.all('SELECT coalesce(max(id),0) AS m FROM _schema_log'))[0]?.m ?? 0);
   const exchanged=String(await stateValue('schema_exchange') ?? '');
   const localMax=await logMax();
-  if(exchanged!==JSON.stringify({hub:marks.schema ?? null,local:localMax})) {
+  if(!marks || exchanged!==JSON.stringify({hub:marks.schema ?? null,local:localMax})) {
   const local = await db.all('SELECT applied_at,ddl FROM _schema_log ORDER BY applied_at,id');
   const known = new Set(local.map(r=>r.ddl));
   const {entries} = await post('/v1/schema/pull');
@@ -144,9 +146,10 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   // read, which this round takes anyway when the table list changed.
   const before=allTables;
   allTables=await userTables();
-  if(unsent.length || allTables.join('\n')!==before.join('\n')) marks=await readCursor(allTables);
+  if(!marks || unsent.length || allTables.join('\n')!==before.join('\n')) marks=await readCursor(allTables);
   await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('schema_exchange',?)",[JSON.stringify({hub:marks.schema ?? null,local:await logMax()})]);
   }
+  if(!marks) throw new Error('invalid cursor response');
   // Pin both clients before importing any data, including on a partial round.
   // Binding an unbound CLI must not legitimize its unknown global cursors.
   await db.transaction(async()=>{
