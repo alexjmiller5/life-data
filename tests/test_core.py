@@ -10,7 +10,7 @@ from typing import ClassVar
 
 import pytest
 
-from life_data import (
+from soma import (
     DEFAULT_HUB_URL,
     NOW,
     HttpHub,
@@ -36,7 +36,7 @@ from life_data import (
 
 @pytest.fixture()
 def db(tmp_path):
-    return init(tmp_path / "life.db")
+    return init(tmp_path / "soma.db")
 
 
 @pytest.fixture()
@@ -53,27 +53,27 @@ def _mk_people(path, names):
 
 
 def test_resolve_data_dir_env_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path / "custom"))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path / "custom"))
     assert resolve_data_dir() == tmp_path / "custom"
 
 
 def test_resolve_data_dir_xdg(monkeypatch, tmp_path):
-    monkeypatch.delenv("LIFE_DATA_DIR", raising=False)
+    monkeypatch.delenv("SOMA_DATA_DIR", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
-    assert resolve_data_dir() == tmp_path / "xdg" / "life-data"
+    assert resolve_data_dir() == tmp_path / "xdg" / "soma"
 
 
 def test_config_defaults_to_hosted_hub_without_a_config_file(monkeypatch, tmp_path):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "tok")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "tok")
     cfg = load_config()
     assert cfg["hub_url"] == DEFAULT_HUB_URL
     assert cfg["token"] == "tok"
 
 
 def test_config_file_overrides_url_and_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
     (tmp_path / "config.json").write_text(
         json.dumps({"hub_url": "https://self.hosted", "token": "abc"})
     )
@@ -83,15 +83,15 @@ def test_config_file_overrides_url_and_token(monkeypatch, tmp_path):
 
 
 def test_config_token_cmd_is_optional_shell_indirection(monkeypatch, tmp_path):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
     (tmp_path / "config.json").write_text(json.dumps({"token_cmd": "printf secret"}))
     assert load_config()["token"] == "secret"
 
 
 def test_env_token_wins_over_config(monkeypatch, tmp_path):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "fromenv")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "fromenv")
     (tmp_path / "config.json").write_text(json.dumps({"token": "fromfile"}))
     assert load_config()["token"] == "fromenv"
 
@@ -106,7 +106,7 @@ def test_auth_headers_are_generic_bearer_plus_optional_extras():
 
 
 def test_init_creates_plumbing_and_is_idempotent(tmp_path):
-    path = tmp_path / "nested" / "life.db"
+    path = tmp_path / "nested" / "soma.db"
     init(path)
     init(path)
     conn = sqlite3.connect(path)
@@ -162,7 +162,7 @@ def test_create_table_autofills_id_and_timestamps(db):
 
 
 def test_create_table_typed_syntax_writes_catalog_rows(db):
-    from life_data.catalog import properties
+    from soma.catalog import properties
 
     create_table(
         db,
@@ -181,7 +181,7 @@ def test_create_table_typed_syntax_writes_catalog_rows(db):
 
 
 def test_create_table_unknown_type_maps_storage_to_catalog_type(db):
-    from life_data.catalog import properties
+    from soma.catalog import properties
 
     create_table(db, "trips", ["lat:real", "n:integer"])
     cols = {r["name"]: r["type"] for r in execute_sql(db, "PRAGMA table_info(trips)")}
@@ -224,13 +224,13 @@ def test_dump_sql_roundtrips_schema_and_data(db):
     text = dump_sql(db)
     assert "CREATE TABLE" in text and "Ada" in text
     # The versioned dump shape core's validateBackup and the app's restore read.
-    assert text.startswith("-- life-data-dump: 1\nBEGIN TRANSACTION;\n")
+    assert text.startswith("-- soma-dump: 1\nBEGIN TRANSACTION;\n")
     copy = sqlite3.connect(":memory:")
     copy.executescript(text)
     assert copy.execute("SELECT name FROM people").fetchall() == [("Ada",)]
 
 
-# --- change detection (drives `life watch`) ---------------------------------
+# --- change detection (drives `soma watch`) ---------------------------------
 
 
 def test_db_version_changes_after_a_write(db):
@@ -255,8 +255,8 @@ def test_watch_survives_check_failure_but_logs_it(db, hub, monkeypatch, capsys):
     def boom(path, as_of=None):
         raise sqlite3.OperationalError("boom")
 
-    monkeypatch.setattr("life_data.catalog.check", boom)
-    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    monkeypatch.setattr("soma.catalog.check", boom)
+    monkeypatch.setattr("soma.db_changed", lambda path, previous: (True, previous))
     _mk_people(db, ["Ada"])
     watch(db, hub, once=True)  # must not raise
     assert "check failed" in capsys.readouterr().err
@@ -269,16 +269,16 @@ def test_watch_survives_any_check_error(db, hub, monkeypatch, capsys):
     def boom(path, as_of=None):
         raise TypeError("'NoneType' object is not subscriptable")
 
-    monkeypatch.setattr("life_data.catalog.check", boom)
-    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    monkeypatch.setattr("soma.catalog.check", boom)
+    monkeypatch.setattr("soma.db_changed", lambda path, previous: (True, previous))
     _mk_people(db, ["Ada"])
     watch(db, hub, once=True)  # must not raise
     assert "check failed" in capsys.readouterr().err
 
 
 def test_watch_prints_check_findings_to_stderr(db, hub, monkeypatch, capsys):
-    monkeypatch.setattr("life_data.catalog.check", lambda path, as_of=None: [{"rule": "options"}])
-    monkeypatch.setattr("life_data.db_changed", lambda path, previous: (True, previous))
+    monkeypatch.setattr("soma.catalog.check", lambda path, as_of=None: [{"rule": "options"}])
+    monkeypatch.setattr("soma.db_changed", lambda path, previous: (True, previous))
     _mk_people(db, ["Ada"])
     watch(db, hub, once=True)
     assert json.loads(capsys.readouterr().err)["check"] == [{"rule": "options"}]
@@ -338,7 +338,7 @@ def test_pull_cursor_does_not_skip_rows_written_during_the_pull(db, hub):
 def test_pull_cursor_does_not_skip_a_replica_pushing_an_older_stamp(db, hub, tmp_path):
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     execute_sql(other, "UPDATE people SET name = 'B edit'")  # stamped t1, still local to B
     time.sleep(0.002)
@@ -365,7 +365,7 @@ def test_late_push_with_old_stamp_is_pulled_by_other_replicas(db, hub, tmp_path)
     that pushes late with an old `updated_at` still reaches everyone else."""
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     execute_sql(other, "UPDATE people SET name = 'B edit'")  # stamped t1, offline
     time.sleep(0.002)
@@ -394,7 +394,7 @@ def test_hub_at_is_assigned_by_hub_not_client(db, hub):
 
 
 def test_ensure_hub_at_backfills_existing_tables_and_forces_one_full_pull(db, hub, tmp_path):
-    from life_data import ensure_hub_at
+    from soma import ensure_hub_at
 
     _mk_people(db, ["Ada"])
     # a replica upgraded from before hub_at existed: drop the column back off
@@ -413,7 +413,7 @@ def test_hub_stamps_from_its_own_schema_when_the_push_omits_hub_at(db, hub, tmp_
     cursor has moved on."""
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)  # `other` now has a non-empty pull cursor
     old_client_cols = ["id", "name", "updated_at"]
     out = hub.rows_push(
@@ -462,14 +462,14 @@ def test_upgrade_from_a_pre_hub_at_estate_converges(db, hub, tmp_path):
     with connect(hub.path) as conn:
         assert conn.execute("SELECT hub_at FROM people").fetchone()["hub_at"]
 
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada"}
     assert sync(db, hub) == {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
 
 def test_hub_rejects_bad_row_but_accepts_rest(db, hub):
-    from life_data.catalog import set_property
+    from soma.catalog import set_property
 
     create_table(db, "places", ["status:text"])
     set_property(db, "places", "status", type="select", options=[{"v": "want"}])
@@ -655,7 +655,7 @@ def test_hub_sql_failure_rolls_back_heterogeneous_accepted_rows(shape_hub):
 
 
 def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
-    from life_data.catalog import inputs_hash, set_property, value_hash
+    from soma.catalog import inputs_hash, set_property, value_hash
 
     create_table(db, "movies", ["title:text", "slug:text"])
     set_property(db, "movies", "slug", type="text", derived_by="http:slug", inputs=["title"])
@@ -683,8 +683,8 @@ def test_hub_rejects_derived_change_without_matching_provenance(db, hub):
 
 
 def test_sync_pushes_catalog_and_provenance_before_data(db, hub, monkeypatch):
-    from life_data import _user_tables
-    from life_data.catalog import ensure_catalog
+    from soma import _user_tables
+    from soma.catalog import ensure_catalog
 
     _mk_people(db, ["Ada"])
     ensure_catalog(db)
@@ -696,7 +696,7 @@ def test_sync_pushes_catalog_and_provenance_before_data(db, hub, monkeypatch):
 def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
     _mk_people(db, ["Ada", "Grace"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     stats = sync(other, hub)
     assert (
         stats["ddl_applied"] >= 1
@@ -709,7 +709,7 @@ def test_fresh_replica_pulls_schema_and_rows_without_echoing(db, hub, tmp_path):
 def test_lww_newer_edit_wins(db, hub, tmp_path):
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     execute_sql(other, "UPDATE people SET name = 'Ada Lovelace'")
     time.sleep(0.002)
@@ -724,7 +724,7 @@ def test_lww_newer_edit_wins(db, hub, tmp_path):
 def test_soft_delete_propagates(db, hub, tmp_path):
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     execute_sql(db, "UPDATE people SET deleted_at = updated_at")
     sync(db, hub)
@@ -735,7 +735,7 @@ def test_soft_delete_propagates(db, hub, tmp_path):
 def test_added_column_replays_to_other_replica(db, hub, tmp_path):
     _mk_people(db, ["Ada"])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     execute_sql(db, "ALTER TABLE people ADD COLUMN nickname TEXT")
     sync(db, hub)
@@ -877,12 +877,12 @@ def test_cli_backdated_import_reaches_http_hub(tmp_path, http_hub, monkeypatch):
     replica = tmp_path / "cli"
     replica.mkdir()
     (replica / "config.json").write_text(json.dumps({"hub_url": http_hub.base}))
-    monkeypatch.setenv("LIFE_DATA_DIR", str(replica))
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(replica))
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
 
     def cli(*args, rows=None):
         result = subprocess.run(
-            [sys.executable, "-c", "from life_data import main; main()", *args],
+            [sys.executable, "-c", "from soma import main; main()", *args],
             input=json.dumps(rows) if rows is not None else "",
             text=True,
             capture_output=True,
@@ -905,7 +905,7 @@ def test_cli_backdated_import_reaches_http_hub(tmp_path, http_hub, monkeypatch):
 def test_sync_works_end_to_end_over_http(db, http_hub, tmp_path):
     _mk_people(db, ["Ada", "Grace"])
     assert sync(db, http_hub)["pushed"] == 2 + _catalog_rows(db)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     assert sync(other, http_hub)["pulled"] == 2 + _catalog_rows(db)
     assert {r["name"] for r in execute_sql(other, "SELECT name FROM people")} == {"Ada", "Grace"}
 
@@ -923,7 +923,7 @@ def test_http_hub_rejects_bad_credentials(db, tmp_path):
 
 
 def test_cli_init_table_insert_sql_roundtrip(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
     assert main(["init"]) == 0
     assert main(["table", "create", "pets", "name:text"]) == 0
     monkeypatch.setattr("sys.stdin", io.StringIO('[{"name": "Rex"}]'))
@@ -934,13 +934,13 @@ def test_cli_init_table_insert_sql_roundtrip(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_path_prints_db_path(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
     assert main(["path"]) == 0
-    assert capsys.readouterr().out.strip() == str(tmp_path / "life.db")
+    assert capsys.readouterr().out.strip() == str(tmp_path / "soma.db")
 
 
 def test_cli_export_writes_sql_to_stdout(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
     main(["init"])
     main(["table", "create", "pets", "name:text"])
     capsys.readouterr()
@@ -959,14 +959,14 @@ def test_http_hub_sends_a_real_user_agent(db, http_hub):
     """Cloudflare's edge bot-protection 403s the default Python-urllib agent."""
     _mk_people(db, ["Ada"])
     sync(db, http_hub)
-    assert _Handler.last_user_agent.startswith("life-data/")
+    assert _Handler.last_user_agent.startswith("soma/")
 
 
 # --- streams & archive -------------------------------------------------------
 
 
 def test_expand_stream_sql_unions_parquet_and_landing():
-    from life_data import expand_stream_sql
+    from soma import expand_stream_sql
 
     manifest = {
         "parquet": ["https://hub/v1/archive/parquet/location/year%3D2026/part-0.parquet"],
@@ -978,7 +978,7 @@ def test_expand_stream_sql_unions_parquet_and_landing():
 
 
 def test_expand_stream_sql_parquet_only():
-    from life_data import expand_stream_sql
+    from soma import expand_stream_sql
 
     manifest = {"parquet": ["https://hub/p.parquet"], "landing": []}
     sql = expand_stream_sql("SELECT * FROM stream('location')", {"location": manifest})
@@ -986,7 +986,7 @@ def test_expand_stream_sql_parquet_only():
 
 
 def test_expand_stream_sql_empty_stream_raises():
-    from life_data import expand_stream_sql
+    from soma import expand_stream_sql
 
     with pytest.raises(RuntimeError, match="empty"):
         expand_stream_sql("SELECT * FROM stream('x')", {"x": {"parquet": [], "landing": []}})
@@ -994,9 +994,9 @@ def test_expand_stream_sql_empty_stream_raises():
 
 def test_cli_stream_append_posts_body_and_tail_reads_back(monkeypatch, tmp_path, capsys):
     server = _serve(tmp_path / "server3.db")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
     monkeypatch.setattr("sys.stdin", io.StringIO('{"lat": 42.36, "lon": -71.09}'))
     assert main(["stream", "append", "location"]) == 0
     capsys.readouterr()
@@ -1007,10 +1007,10 @@ def test_cli_stream_append_posts_body_and_tail_reads_back(monkeypatch, tmp_path,
 
 def test_cli_archive_query_proxies_sql_through_hub(monkeypatch, tmp_path, capsys):
     server = _serve(tmp_path / "server4.db")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
-    assert main(["archive", "query", "SELECT count(*) AS n FROM life.events"]) == 0
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
+    assert main(["archive", "query", "SELECT count(*) AS n FROM soma.events"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["result"]["rows"][0]["n"] == 4
     server.shutdown()
@@ -1021,9 +1021,9 @@ def test_cli_archive_query_proxies_sql_through_hub(monkeypatch, tmp_path, capsys
 
 def test_cli_token_create_list_revoke(monkeypatch, tmp_path, capsys):
     server = _serve(tmp_path / "server5.db")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
     assert main(["token", "create", "phone", "--scopes", "streams:append"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["name"] == "phone" and out["token"].startswith("lt_")
@@ -1037,9 +1037,9 @@ def test_cli_token_create_list_revoke(monkeypatch, tmp_path, capsys):
 
 def test_cli_stream_import_batches_ndjson(monkeypatch, tmp_path, capsys):
     server = _serve(tmp_path / "server6.db")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
     ndjson = "\n".join(json.dumps({"n": i}) for i in range(1205))
     monkeypatch.setattr("sys.stdin", io.StringIO(ndjson))
     assert main(["stream", "import", "history"]) == 0
@@ -1054,9 +1054,9 @@ def test_cli_stream_import_batches_ndjson(monkeypatch, tmp_path, capsys):
 
 def test_cli_derive_chunks_by_50_and_reports_totals(monkeypatch, tmp_path, capsys):
     server = _serve(tmp_path / "server7.db")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
     _Handler.derive_calls = []
     _Handler.derive_fail_id = None
     main(["init"])
@@ -1076,9 +1076,9 @@ def test_cli_derive_chunks_by_50_and_reports_totals(monkeypatch, tmp_path, capsy
 
 def test_cli_derive_reports_failures_and_exits_1(monkeypatch, tmp_path, capsys):
     server = _serve(tmp_path / "server8.db")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "testtoken")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "testtoken")
     _Handler.derive_calls = []
     _Handler.derive_fail_id = "m2"
     main(["init"])
@@ -1099,9 +1099,9 @@ def test_cli_derive_reports_failures_and_exits_1(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_derive_without_hub_token_fails_clearly(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     main(["init"])
     main(["table", "create", "movies", "title:text"])
     capsys.readouterr()
@@ -1109,14 +1109,14 @@ def test_cli_derive_without_hub_token_fails_clearly(monkeypatch, tmp_path, capsy
     out, err = capsys.readouterr()
     assert out == ""
     assert "token" in err.lower()
-    assert execute_sql(tmp_path / "life.db", "SELECT count(*) AS n FROM movies")[0]["n"] == 0
+    assert execute_sql(tmp_path / "soma.db", "SELECT count(*) AS n FROM movies")[0]["n"] == 0
 
 
 # --- quoted identifiers ------------------------------------------------------
 
 
 def test_qi_quotes_and_rejects_unsafe_identifiers():
-    from life_data import qi
+    from soma import qi
 
     assert qi("cast") == '"cast"'
     for bad in ("", "1col", "a-b", "x; DROP TABLE y", 'a"b'):
@@ -1128,7 +1128,7 @@ def test_reserved_word_columns_round_trip_through_sync(db, hub, tmp_path):
     create_table(db, "movies", ["cast:text", "order:int", "group:text", "select:text"])
     insert_rows(db, "movies", [{"cast": "Ada", "order": 1, "group": "g", "select": "s"}])
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     assert sync(other, hub)["pulled"] >= 1
     row = execute_sql(other, 'SELECT "cast", "order", "group", "select" FROM movies')[0]
     assert row == {"cast": "Ada", "order": 1, "group": "g", "select": "s"}
@@ -1139,7 +1139,7 @@ def test_schema_replay_skips_a_rename_already_applied(db, tmp_path):
     """A fresh replica creates engine tables in their CURRENT shape, then
     replays the log - a logged RENAME COLUMN of a column it never had is
     already applied, not an error (same idempotent-by-skip as CREATE/ADD)."""
-    from life_data import _apply_local_ddl
+    from soma import _apply_local_ddl
 
     execute_sql(db, "CREATE TABLE t (id TEXT PRIMARY KEY, b TEXT)")
     entry = {"applied_at": "2026-09-07T00:00:00.000Z", "ddl": "ALTER TABLE t RENAME COLUMN a TO b"}
@@ -1268,7 +1268,7 @@ def test_rename_table_refuses_bad_targets(db):
 def test_rename_table_replays_to_the_hub_and_every_replica(db, hub, tmp_path):
     _mk_estate(db)
     sync(db, hub)
-    other = init(tmp_path / "other" / "life.db")
+    other = init(tmp_path / "other" / "soma.db")
     sync(other, hub)
     rename_table(db, "people", "humans")
     sync(db, hub)
@@ -1285,7 +1285,7 @@ def test_rename_table_replays_to_the_hub_and_every_replica(db, hub, tmp_path):
         "humans.status",
     }
     assert {r["tbl"] for r in execute_sql(other, "SELECT tbl FROM history")} == {"humans"}
-    fresh = init(tmp_path / "fresh" / "life.db")
+    fresh = init(tmp_path / "fresh" / "soma.db")
     sync(fresh, hub)
     assert execute_sql(fresh, "SELECT name FROM humans") == [{"name": "Ada"}]
     # an edit on the renamed table round-trips with its history
@@ -1298,22 +1298,22 @@ def test_rename_table_replays_to_the_hub_and_every_replica(db, hub, tmp_path):
 
 def test_sql_rename_table_is_refused_but_rename_column_is_not(db):
     _mk_people(db, ["Ada"])
-    with pytest.raises(ValueError, match="life table rename"):
+    with pytest.raises(ValueError, match="soma table rename"):
         execute_sql(db, "ALTER TABLE people RENAME TO humans")
-    with pytest.raises(ValueError, match="life table rename"):
+    with pytest.raises(ValueError, match="soma table rename"):
         execute_sql(db, "alter table people rename to humans")
     execute_sql(db, "ALTER TABLE people RENAME COLUMN name TO full_name")
     assert execute_sql(db, "SELECT full_name FROM people") == [{"full_name": "Ada"}]
 
 
 def test_cli_table_rename(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
     assert main(["init"]) == 0
     assert main(["table", "create", "pets", "name:text"]) == 0
     assert main(["table", "rename", "pets", "animals"]) == 0
     assert "renamed pets -> animals" in capsys.readouterr().out
     assert main(["sql", "ALTER TABLE animals RENAME TO x"]) == 1
-    assert "life table rename" in capsys.readouterr().err
+    assert "soma table rename" in capsys.readouterr().err
     assert main(["sql", "SELECT count(*) AS n FROM animals"]) == 0
 
 
@@ -1345,7 +1345,7 @@ def test_watch_survives_a_sync_crash(db, hub, monkeypatch, capsys):
     def boom(path, hub):
         raise sqlite3.OperationalError("unable to open database file")
 
-    monkeypatch.setattr("life_data.sync", boom)
+    monkeypatch.setattr("soma.sync", boom)
     _mk_people(db, ["Ada"])
     watch(db, hub, once=True)  # must not raise: a launchd restart costs a credential read
     assert "sync deferred" in capsys.readouterr().err

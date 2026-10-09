@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Life Core JSON boundary",
-  "description": "Owned by life-data. Wire shapes and current operations only; platform dependencies and sync policy are implemented in TypeScript.",
+  "title": "Soma Core JSON boundary",
+  "description": "Owned by soma. Wire shapes and current operations only; platform dependencies and sync policy are implemented in TypeScript.",
   "$defs": {
     "JSONValue": true,
     "Row": {
@@ -5926,7 +5926,7 @@
       "result": {
         "$ref": "#/$defs/BackupSummary"
       },
-      "description": "Streams the portable SQL dump (the life export shape) to a host destination."
+      "description": "Streams the portable SQL dump (the soma export shape) to a host destination."
     },
     "hubBackups": {
       "args": {

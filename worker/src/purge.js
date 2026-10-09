@@ -1,6 +1,6 @@
 // Purge markers: the one sanctioned hard delete. A row in `purges` names a row
 // (col NULL) or one column's history, never its content, and syncs like any
-// row. Mirrors purge/apply_purges/_uncovered in src/life_data/__init__.py.
+// row. Mirrors purge/apply_purges/_uncovered in src/soma/__init__.py.
 import { qident } from "./validate.js";
 import { redactReceipts } from './governance-store.js';
 import {ScopeDenied} from './scopes.js';

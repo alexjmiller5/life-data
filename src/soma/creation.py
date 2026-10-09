@@ -1,6 +1,6 @@
 """Canonical create-only consumer checks, without an embedded JS runtime.
 
-Conforms with life-core/creation through the shared wire corpus. Hosts own
+Conforms with soma-core/creation through the shared wire corpus. Hosts own
 transport, credentials and retries. None never proves a prior attempt failed.
 """
 

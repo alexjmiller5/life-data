@@ -94,7 +94,7 @@ test("operator delivery test uses the feed, deduplicates retries, and deletes on
   const feed = await (await call(env, "/v1/notifications")).json();
   expect(feed.notifications).toHaveLength(2);
   expect(feed.notifications[1]).toMatchObject({id: created.id, producer: "delivery-test",
-    type: "notification.test", title: "Life notification test", read_at: null, data: {}});
+    type: "notification.test", title: "Soma notification test", read_at: null, data: {}});
   expect((await call(env, path, {method: "DELETE"})).status).toBe(200);
   expect((await call(env, path, {method: "DELETE"})).status).toBe(200);
   expect((await call(env, path)).status).toBe(404);

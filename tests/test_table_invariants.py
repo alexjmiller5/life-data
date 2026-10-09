@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from test_core import _serve
 
-from life_data import (
+from soma import (
     NOW,
     HttpHub,
     catalog,

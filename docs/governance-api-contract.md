@@ -26,7 +26,7 @@ offline approval are unavailable in this slice.
   auth registry. Operator-minted credentials establish agent proposal authority;
   legacy credentials without a recorded authority remain ineligible. A token
   name, `origin`, `full`, or table-write scope never grants approval authority.
-- Life Data owns validation, inverse derivation, scope enforcement, proposal
+- Soma owns validation, inverse derivation, scope enforcement, proposal
   storage, approval, history linkage, and receipts. Clients own selection,
   review presentation, explicit confirmation, and stale-response invalidation.
 

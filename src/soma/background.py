@@ -151,8 +151,8 @@ def command(args, data: Path) -> int:
         if action == "enable":
             if args.hub_url:
                 previous = load_config(data, resolve_auth=False)["hub_url"]
-                endpoint = os.environ.get("LIFE_HUB_URL", args.hub_url).rstrip("/")
-                db = data / "life.db"
+                endpoint = os.environ.get("SOMA_HUB_URL", args.hub_url).rstrip("/")
+                db = data / "soma.db"
                 if (
                     endpoint != previous
                     and db.exists()
@@ -169,13 +169,13 @@ def command(args, data: Path) -> int:
 
                 cfg = load_config(data, resolve_auth=False)
                 endpoint = os.environ.get(
-                    "LIFE_HUB_URL", changes.get("hub_url", cfg["hub_url"])
+                    "SOMA_HUB_URL", changes.get("hub_url", cfg["hub_url"])
                 ).rstrip("/")
                 try:
                     if sys.stdin.isatty():
                         import getpass
 
-                        token = getpass.getpass("Life device token: ")
+                        token = getpass.getpass("Soma device token: ")
                     else:
                         token = sys.stdin.read().strip()
                 except RuntimeError as exc:
@@ -213,14 +213,20 @@ def _stamp() -> str:
 
 def _credential(data: Path, cfg: dict, prefs: dict) -> str:
     # Background auth is independent from the interactive token command.
-    if token := os.environ.get("LIFE_HUB_TOKEN"):
+    if token := os.environ.get("SOMA_HUB_TOKEN"):
         return token
     if prefs.get("signed_out"):
         return ""
     if prefs.get("keychain"):
+        from . import DEFAULT_HUB_URL, legacy
         from .credentials import read_token
 
-        return read_token(keychain_account(data, cfg["hub_url"]), interactive=False) or ""
+        account = keychain_account(data, cfg["hub_url"])
+        return (
+            read_token(account, interactive=False)
+            or legacy.adopt_token(data, cfg["hub_url"], DEFAULT_HUB_URL, interactive=False)
+            or ""
+        )
     cmd = prefs.get("token_cmd", cfg.get("background_token_cmd"))
     if cmd:
         result = subprocess.run(
@@ -264,7 +270,7 @@ def run(data: Path, poll_seconds: int) -> int:
         lock.flush()
         current = read_json(data / "background-status.json")
         saved_status = None
-        path = data / "life.db"
+        path = data / "soma.db"
         hub = None
         # The hub's change long poll (RemoteChanges) for the current hub only.
         remote = listening = None

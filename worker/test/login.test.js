@@ -365,5 +365,5 @@ test("device management describes API-token revocation and separate browser auth
     env,
     ctx,
   );
-  expect(await revoked.text()).toContain("Life API token revoked");
+  expect(await revoked.text()).toContain("Soma API token revoked");
 });

@@ -2,17 +2,17 @@
 
 import pytest
 
-from life_data import connect, create_table, execute_sql, init, main
-from life_data.catalog import ValidationError, check, rm_property, set_property, set_rule
+from soma import connect, create_table, execute_sql, init, main
+from soma.catalog import ValidationError, check, rm_property, set_property, set_rule
 
 
 def test_first_command_can_create_documented_table_in_empty_data_directory(tmp_path, monkeypatch):
     directory = tmp_path / "new" / "data"
-    monkeypatch.setenv("LIFE_DATA_DIR", str(directory))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(directory))
     assert (
         main(["table", "create", "items", "name:text", "--description", "name=Display name."]) == 0
     )
-    path = directory / "life.db"
+    path = directory / "soma.db"
     assert execute_sql(
         path, "SELECT description FROM catalog_properties WHERE id='items.name'"
     ) == [{"description": "Display name."}]
@@ -21,7 +21,7 @@ def test_first_command_can_create_documented_table_in_empty_data_directory(tmp_p
 
 @pytest.fixture
 def db(tmp_path):
-    path = init(tmp_path / "life.db")
+    path = init(tmp_path / "soma.db")
     create_table(path, "items", ["name:text"])
     set_rule(
         path,
@@ -85,7 +85,7 @@ def test_table_creation_and_catalog_are_one_transaction(db):
 
 
 def test_cli_descriptions_and_unknown_columns(db, monkeypatch, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(db.parent))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(db.parent))
     main(["table", "create", "documented", "name:text", "--description", "name=Name = label."])
     assert "created table documented" in capsys.readouterr().out
     with pytest.raises(ValueError, match="description"):
@@ -114,7 +114,7 @@ def test_rule_can_reject_invalid_names_without_renaming_existing_definitions(db)
 
 
 def test_local_hub_applies_same_metadata_policy(db):
-    from life_data import LocalHub
+    from soma import LocalHub
 
     hub = LocalHub(db)
     edit = {"id": "items.name", "label": "Name", "updated_at": "2099-01-01T00:00:00.000Z"}
@@ -126,7 +126,7 @@ def test_local_hub_applies_same_metadata_policy(db):
 
 
 def test_purge_initialization_remains_usable_under_description_policy(db):
-    from life_data import purge
+    from soma import purge
 
     execute_sql(db, "INSERT INTO items(id,name) VALUES ('one','Item')")
     purge(db, "items", "one")

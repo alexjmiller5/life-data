@@ -1,5 +1,5 @@
 // The catalog row validator: one implementation for the hub and every UI
-// client. Mirror of life_data.catalog.validate_row (Python); the shared fixture
+// client. Mirror of soma.catalog.validate_row (Python); the shared fixture
 // tests/fixtures/validation-cases.json is the contract both run.
 
 import type { Row, OptionDef, Property, Violation } from './contract.generated.ts';

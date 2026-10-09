@@ -57,7 +57,7 @@ def rules() -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--bucket", default="life-data-backups")
+    ap.add_argument("--bucket", default="soma-backups")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 

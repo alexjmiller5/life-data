@@ -11,7 +11,7 @@ SECURITY = "/usr/bin/security"
 
 @pytest.fixture
 def credentials(monkeypatch):
-    module = importlib.import_module("life_data.credentials")
+    module = importlib.import_module("soma.credentials")
     monkeypatch.setattr(module.sys, "platform", "darwin")
     return module
 

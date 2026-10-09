@@ -1,5 +1,5 @@
-# Installs Life and a supervised runner. Sync stays off until the user runs
-# `life background enable`; preferences and credentials are app state.
+# Installs Soma and a supervised runner. Sync stays off until the user runs
+# `soma background enable`; preferences and credentials are app state.
 self:
 {
   config,
@@ -8,24 +8,24 @@ self:
   ...
 }:
 let
-  cfg = config.lifeData;
+  cfg = config.services.soma;
   watchBin = pkgs.writeShellApplication {
-    name = "life-data-watch";
+    name = "soma-watch";
     runtimeInputs = [ cfg.package ] ++ cfg.watch.packages;
     text = ''
-      exec life background run
+      exec soma background run
     '';
   };
 in
 {
-  options.lifeData = {
-    enable = lib.mkEnableOption "life-data (local-first personal data store: `life` CLI + continuous sync)";
+  options.services.soma = {
+    enable = lib.mkEnableOption "soma (local-first personal data store: `soma` CLI + continuous sync)";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "life-data.packages.<system>.default";
-      description = "The life-data package providing the `life` CLI.";
+      defaultText = lib.literalExpression "soma.packages.<system>.default";
+      description = "The soma package providing the `soma` CLI.";
     };
 
     hubUrl = lib.mkOption {
@@ -39,9 +39,9 @@ in
       default = null;
       example = "credential-tool read hub-token";
       description = ''
-        Credential command for INTERACTIVE `life` use, written to config.json
+        Credential command for INTERACTIVE `soma` use, written to config.json
         as token_cmd and run in the calling shell's environment. Null
-        configures none; hub commands then need LIFE_HUB_TOKEN set.
+        configures none; hub commands then need SOMA_HUB_TOKEN set.
       '';
     };
 
@@ -49,7 +49,7 @@ in
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Install the supervised background runner. Sync stays disabled until `life background enable`. (launchd; macOS only.)";
+        description = "Install the supervised background runner. Sync stays disabled until `soma background enable`. (launchd; macOS only.)";
       };
       tokenCommand = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -58,7 +58,7 @@ in
         description = ''
           Optional default credential command for background sync. Users may
           instead supply a token through the CLI and macOS Keychain, or provide
-          LIFE_HUB_TOKEN in the runner environment. Independent of cli.tokenCommand.
+          SOMA_HUB_TOKEN in the runner environment. Independent of cli.tokenCommand.
           Commands run only while sync is enabled, with bounded retries on failure.
         '';
       };
@@ -71,7 +71,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # duckdb powers `life archive query --raw` (analytical fallback over raw
+    # duckdb powers `soma archive query --raw` (analytical fallback over raw
     # stream objects)
     home.packages = [
       cfg.package
@@ -80,22 +80,22 @@ in
 
     # Read-only by design: this is machine config; all of the app's mutable
     # state lives in the database, never here.
-    xdg.dataFile."life-data/config.json".text = builtins.toJSON (
+    xdg.dataFile."soma/config.json".text = builtins.toJSON (
       lib.optionalAttrs (cfg.cli.tokenCommand != null) { token_cmd = cfg.cli.tokenCommand; }
       // lib.optionalAttrs (cfg.hubUrl != null) { hub_url = cfg.hubUrl; }
       // lib.optionalAttrs (cfg.watch.tokenCommand != null) { background_token_cmd = cfg.watch.tokenCommand; }
     );
 
-    launchd.agents.life-data-watch = lib.mkIf (cfg.watch.enable && pkgs.stdenv.hostPlatform.isDarwin) {
+    launchd.agents.soma-watch = lib.mkIf (cfg.watch.enable && pkgs.stdenv.hostPlatform.isDarwin) {
       enable = true;
       config = {
-        Label = "sh.life-data.watch";
-        ProgramArguments = [ "${watchBin}/bin/life-data-watch" ];
+        Label = "com.alexmiller.soma.watch";
+        ProgramArguments = [ "${watchBin}/bin/soma-watch" ];
         RunAtLoad = true;
         KeepAlive = true;
         ThrottleInterval = 30;
-        StandardOutPath = "${config.home.homeDirectory}/Library/Logs/life-data-watch.log";
-        StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/life-data-watch.log";
+        StandardOutPath = "${config.home.homeDirectory}/Library/Logs/soma-watch.log";
+        StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/soma-watch.log";
       };
     };
   };

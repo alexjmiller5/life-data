@@ -14,7 +14,7 @@ pipe (stdin on store, stdout on read) - never argv, the environment or disk.
 import subprocess
 import sys
 
-_SERVICE = "life-data"
+_SERVICE = "soma"
 _SECURITY = "/usr/bin/security"
 _NOT_FOUND = -25300
 _INTERACTION = -25308
@@ -74,8 +74,8 @@ def _validate(token: str) -> None:
         raise ValueError("Token must not contain quotes or backslashes.")
 
 
-def store_token(account: str, token: str) -> None:
-    """Create or replace the caller's token under service life-data.
+def store_token(account: str, token: str, service: str = _SERVICE) -> None:
+    """Create or replace the caller's token under `service`.
 
     Replaces rather than updates: only a freshly added item gets the
     any-application access list, so an item stored by an earlier build (with
@@ -85,14 +85,14 @@ def store_token(account: str, token: str) -> None:
     _validate(token)
     # `security -i` reads commands from stdin: the token never appears in argv.
     script = (
-        f"delete-generic-password -s {_SERVICE} -a {_quote(account)}\n"
-        f"add-generic-password -s {_SERVICE} -a {_quote(account)} -w {_quote(token)} -A\n"
+        f"delete-generic-password -s {service} -a {_quote(account)}\n"
+        f"add-generic-password -s {service} -a {_quote(account)} -w {_quote(token)} -A\n"
     )
     result = _run(["-i"], stdin=script)
     # Interactive mode reports each command on stderr; the add is the last one.
     if "could not be added" in result.stderr or _unauthorized(result.stderr):
         _check(_status(result.returncode) if result.returncode else _INTERACTION)
-    if read_token(account, interactive=True) != token:
+    if read_token(account, interactive=True, service=service) != token:
         _check(_status(result.returncode) if result.returncode else -25299)
 
 
@@ -108,11 +108,11 @@ def _quote(value: str) -> str:
     return f'"{value}"'
 
 
-def read_token(account: str, *, interactive: bool = True) -> str | None:
+def read_token(account: str, *, interactive: bool = True, service: str = _SERVICE) -> str | None:
     """Read a token; noninteractive reads fail if native consent or unlocking is needed."""
     _require_macos()
     result = _run(
-        ["find-generic-password", "-s", _SERVICE, "-a", account, "-w"],
+        ["find-generic-password", "-s", service, "-a", account, "-w"],
         timeout=None if interactive else _NONINTERACTIVE_TIMEOUT,
     )
     if result.returncode:
@@ -123,9 +123,9 @@ def read_token(account: str, *, interactive: bool = True) -> str | None:
     return result.stdout.rstrip("\n")
 
 
-def delete_token(account: str) -> None:
+def delete_token(account: str, service: str = _SERVICE) -> None:
     """Delete the caller's token, returning successfully when it is absent."""
     _require_macos()
-    result = _run(["delete-generic-password", "-s", _SERVICE, "-a", account])
+    result = _run(["delete-generic-password", "-s", service, "-a", account])
     if result.returncode and _status(result.returncode) != _NOT_FOUND:
         _check(_status(result.returncode))

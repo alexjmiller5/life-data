@@ -18,7 +18,7 @@ def ensure(conn: sqlite3.Connection) -> None:
 
 
 def track(conn: sqlite3.Connection) -> None:
-    from life_data import qi
+    from soma import qi
 
     ensure(conn)
     tables = [

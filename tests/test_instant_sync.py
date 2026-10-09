@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-import life_data
-from life_data import (
+import soma
+from soma import (
     HttpHub,
     LocalHub,
     RemoteChanges,
@@ -29,7 +29,7 @@ from life_data import (
 
 @pytest.fixture()
 def db(tmp_path):
-    return init(tmp_path / "life.db")
+    return init(tmp_path / "soma.db")
 
 
 @pytest.fixture()
@@ -157,7 +157,7 @@ class FakeListener:
 @pytest.fixture()
 def clock(monkeypatch):
     now = [1000.0]
-    monkeypatch.setattr(life_data.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(soma.time, "monotonic", lambda: now[0])
     return now
 
 
@@ -167,7 +167,7 @@ def stop_at(monkeypatch, clock, until):
         if clock[0] > until:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(life_data.time, "sleep", sleep)
+    monkeypatch.setattr(soma.time, "sleep", sleep)
 
 
 def gaps(times):
@@ -184,21 +184,21 @@ QUIET = {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
 def test_watch_syncs_on_a_remote_signal_and_drops_the_fixed_poll(db, clock, monkeypatch, capsys):
     rounds = []
-    monkeypatch.setattr(life_data, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
+    monkeypatch.setattr(soma, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
     listener = FakeListener(clock, [1007, 1050])
-    monkeypatch.setattr(life_data, "RemoteChanges", lambda hub, retry: listener)
-    stop_at(monkeypatch, clock, 1000 + 50 + life_data.SAFETY_SECONDS + 10)
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: listener)
+    stop_at(monkeypatch, clock, 1000 + 50 + soma.SAFETY_SECONDS + 10)
     with pytest.raises(KeyboardInterrupt):
         watch(db, SignalHub(), poll_seconds=30)
-    assert [r - 1000 for r in rounds] == [0, 7, 50, 50 + life_data.SAFETY_SECONDS]
+    assert [r - 1000 for r in rounds] == [0, 7, 50, 50 + soma.SAFETY_SECONDS]
     assert listener.stopped
 
 
 def test_watch_falls_back_to_the_poll_while_the_channel_is_down(db, clock, monkeypatch):
     rounds = []
-    monkeypatch.setattr(life_data, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
+    monkeypatch.setattr(soma, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
     monkeypatch.setattr(
-        life_data, "RemoteChanges", lambda hub, retry: FakeListener(clock, [], live=False)
+        soma, "RemoteChanges", lambda hub, retry: FakeListener(clock, [], live=False)
     )
     stop_at(monkeypatch, clock, 1095)
     with pytest.raises(KeyboardInterrupt):
@@ -208,18 +208,18 @@ def test_watch_falls_back_to_the_poll_while_the_channel_is_down(db, clock, monke
 
 def run_runner(tmp_path, monkeypatch, clock, until, sync_result, hub=None):
     """Drive the launchd runner on the fake clock; returns each attempt's time."""
-    from life_data import background
+    from soma import background
 
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "synthetic")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "synthetic")
     background.write_json(tmp_path / "background.json", {"enabled": True})
-    monkeypatch.setattr(life_data, "hub_from_config", lambda _: hub or object())
+    monkeypatch.setattr(soma, "hub_from_config", lambda _: hub or object())
     attempts = []
 
     def fake_sync(*_):
         attempts.append(clock[0])
         return sync_result(len(attempts))
 
-    monkeypatch.setattr(life_data, "sync", fake_sync)
+    monkeypatch.setattr(soma, "sync", fake_sync)
     stop_at(monkeypatch, clock, until)
     with pytest.raises(KeyboardInterrupt):
         background.run(tmp_path, 30)
@@ -266,7 +266,7 @@ def test_a_locked_database_retries_in_seconds(tmp_path, monkeypatch, clock):
 
 
 def test_credential_failures_keep_the_long_backoff(tmp_path, monkeypatch, clock):
-    from life_data import background
+    from soma import background
 
     reads = []
 
@@ -291,21 +291,21 @@ def test_runner_syncs_on_a_remote_signal_and_polls_only_as_a_safety_net(
     tmp_path, monkeypatch, clock
 ):
     listener = FakeListener(clock, [1007])
-    monkeypatch.setattr(life_data, "RemoteChanges", lambda hub, retry: listener)
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: listener)
     attempts = run_runner(
         tmp_path,
         monkeypatch,
         clock,
-        1000 + life_data.SAFETY_SECONDS + 20,
+        1000 + soma.SAFETY_SECONDS + 20,
         lambda _: QUIET,
         hub=SignalHub(),
     )
-    assert [a - 1000 for a in attempts] == [0, 7, 7 + life_data.SAFETY_SECONDS]
+    assert [a - 1000 for a in attempts] == [0, 7, 7 + soma.SAFETY_SECONDS]
 
 
 def test_runner_polls_while_the_change_channel_is_down(tmp_path, monkeypatch, clock):
     monkeypatch.setattr(
-        life_data, "RemoteChanges", lambda hub, retry: FakeListener(clock, [], live=False)
+        soma, "RemoteChanges", lambda hub, retry: FakeListener(clock, [], live=False)
     )
     attempts = run_runner(tmp_path, monkeypatch, clock, 1000 + 95, lambda _: QUIET, SignalHub())
     assert gaps(attempts) == [30, 30, 30]
@@ -313,10 +313,10 @@ def test_runner_polls_while_the_change_channel_is_down(tmp_path, monkeypatch, cl
 
 def test_watch_runs_again_at_once_when_a_write_landed_during_its_round(db, clock, monkeypatch):
     rounds = []
-    monkeypatch.setattr(life_data, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
+    monkeypatch.setattr(soma, "sync", lambda *_: rounds.append(clock[0]) or QUIET)
     answers = iter([True])  # the first round missed a write; the second did not
-    monkeypatch.setattr(life_data, "pending_local_writes", lambda _: next(answers, False))
-    monkeypatch.setattr(life_data, "RemoteChanges", lambda hub, retry: FakeListener(clock, []))
+    monkeypatch.setattr(soma, "pending_local_writes", lambda _: next(answers, False))
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: FakeListener(clock, []))
     stop_at(monkeypatch, clock, 1010)
     with pytest.raises(KeyboardInterrupt):
         watch(db, SignalHub(), poll_seconds=30)
@@ -327,8 +327,8 @@ def test_runner_runs_again_at_once_when_a_write_landed_during_its_round(
     tmp_path, monkeypatch, clock
 ):
     answers = iter([True])
-    monkeypatch.setattr(life_data, "pending_local_writes", lambda _: next(answers, False))
-    monkeypatch.setattr(life_data, "RemoteChanges", lambda hub, retry: FakeListener(clock, []))
+    monkeypatch.setattr(soma, "pending_local_writes", lambda _: next(answers, False))
+    monkeypatch.setattr(soma, "RemoteChanges", lambda hub, retry: FakeListener(clock, []))
     attempts = run_runner(tmp_path, monkeypatch, clock, 1010, lambda _: QUIET, SignalHub())
     assert [a - 1000 for a in attempts] == [0, 1]
 
@@ -341,11 +341,11 @@ def test_writes_made_while_a_round_ran_are_pending_until_the_next_round(db, hub)
     insert_rows(db, "people", [{"name": "Ada"}])
     sync(db, hub)
     assert not pending_local_writes(db)
-    execute_sql(db, "UPDATE people SET name = 'Grace'")  # a `life sql` write
+    execute_sql(db, "UPDATE people SET name = 'Grace'")  # a `soma sql` write
     assert pending_local_writes(db)
     sync(db, hub)
     assert not pending_local_writes(db)
-    with sqlite3.connect(db) as other:  # a writer without dirty receipts (Life UI)
+    with sqlite3.connect(db) as other:  # a writer without dirty receipts (Iris)
         other.execute(
             "UPDATE people SET name = 'Lin', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
         )
@@ -410,7 +410,7 @@ def settle(path, hub):
 
 def test_quiet_rounds_skip_the_schema_log_until_either_side_changes(tmp_path):
     hub = CountingHub(tmp_path / "hub.db")
-    a, b = init(tmp_path / "a" / "life.db"), init(tmp_path / "b" / "life.db")
+    a, b = init(tmp_path / "a" / "soma.db"), init(tmp_path / "b" / "soma.db")
     create_table(a, "people", ["name:text"])
     settle(a, hub)
     settle(b, hub)
@@ -446,18 +446,18 @@ def test_push_candidates_come_from_an_unlogged_updated_at_index(db, hub):
 
 
 def test_pulled_rows_commit_chunk_by_chunk(tmp_path, hub, monkeypatch):
-    a, b = init(tmp_path / "a" / "life.db"), init(tmp_path / "b" / "life.db")
+    a, b = init(tmp_path / "a" / "soma.db"), init(tmp_path / "b" / "soma.db")
     create_table(a, "people", ["name:text"])
     sync(a, hub)
     sync(b, hub)  # past the first-sync recovery, which pages anyway
-    insert_rows(a, "people", [{"name": f"p{i}"} for i in range(2 * life_data.CHUNK + 50)])
+    insert_rows(a, "people", [{"name": f"p{i}"} for i in range(2 * soma.CHUNK + 50)])
     sync(a, hub)
 
     probes = []
-    upsert_sql = life_data._upsert_sql
+    upsert_sql = soma._upsert_sql
 
     def probe(table, columns):
-        # Another writer (a `life sql` edit) must get in between chunks.
+        # Another writer (a `soma sql` edit) must get in between chunks.
         other = sqlite3.connect(b, timeout=0)
         try:
             other.execute("BEGIN IMMEDIATE")
@@ -469,7 +469,7 @@ def test_pulled_rows_commit_chunk_by_chunk(tmp_path, hub, monkeypatch):
             other.close()
         return upsert_sql(table, columns)
 
-    monkeypatch.setattr(life_data, "_upsert_sql", probe)
+    monkeypatch.setattr(soma, "_upsert_sql", probe)
     sync(b, hub)
     people = [ok for table, ok in probes if table == "people"]
     assert len(people) == 3 and all(people), probes

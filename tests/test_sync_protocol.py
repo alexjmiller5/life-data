@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from life_data import HttpHub, LocalHub, connect, create_table, execute_sql, init, sync
+from soma import HttpHub, LocalHub, connect, create_table, execute_sql, init, sync
 
 CASES = json.loads((Path(__file__).parent / "fixtures/sync-protocol/revisions.json").read_text())
 DDL = "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)"

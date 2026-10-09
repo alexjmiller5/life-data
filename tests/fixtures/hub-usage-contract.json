@@ -93,7 +93,7 @@
         "producer": "usage",
         "type": "usage.threshold",
         "severity": "info",
-        "title": "Life Data used 20% of its monthly D1 reads",
+        "title": "Soma used 20% of its monthly D1 reads",
         "body": "5B of 25B rows this period (resets Nov 1). Sync pauses at 25B.",
         "data": null,
         "read_at": null

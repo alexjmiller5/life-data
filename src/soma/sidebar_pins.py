@@ -8,7 +8,7 @@ from . import catalog
 
 
 def manifest():
-    return json.loads(files("life_data").joinpath("schema/sidebar-pins.json").read_text())
+    return json.loads(files("soma").joinpath("schema/sidebar-pins.json").read_text())
 
 
 def recognized(conn):

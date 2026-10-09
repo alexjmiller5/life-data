@@ -43,19 +43,19 @@ class Client:
 def test_desired_access_app_targets_only_login_with_email_otp():
     script = module()
     result = script.desired_app(
-        "life-login", "https://life.example", ["alex@example.test"], "otp-id"
+        "soma-login", "https://soma.example", ["alex@example.test"], "otp-id"
     )
     assert result == {
-        "name": "life-login",
+        "name": "soma-login",
         "type": "self_hosted",
-        "destinations": [{"type": "public", "uri": "https://life.example/login"}],
+        "destinations": [{"type": "public", "uri": "https://soma.example/login"}],
         "session_duration": "24h",
         "allowed_idps": ["otp-id"],
         "auto_redirect_to_identity": True,
         "app_launcher_visible": False,
         "policies": [
             {
-                "name": "life-login allowed email",
+                "name": "soma-login allowed email",
                 "decision": "allow",
                 "include": [{"email": {"email": "alex@example.test"}}],
             }
@@ -65,7 +65,7 @@ def test_desired_access_app_targets_only_login_with_email_otp():
 
 def test_converge_is_idempotent_and_preserves_existing_audience_on_update():
     script = module()
-    want = script.desired_app("life-login", "https://life.example", ["alex@example.test"], "otp-id")
+    want = script.desired_app("soma-login", "https://soma.example", ["alex@example.test"], "otp-id")
     existing = {**want, "id": "app-id", "aud": "existing-aud", "app_launcher_visible": True}
     client = Client([Response([existing]), Response([existing])])
     assert script.converge(client, "account", want, dry_run=True) == {

@@ -1,4 +1,4 @@
-// life-data hub: the sync service. Speaks the narrow sync protocol over HTTP,
+// soma hub: the sync service. Speaks the narrow sync protocol over HTTP,
 // keeps the canonical replica in D1, and writes tiered SQL backups to R2.
 //
 // Auth is deliberately behind one seam (`authenticate`): today a shared bearer
@@ -469,7 +469,7 @@ const ROUTES = {
     return deriveRows(db,env,table,body.ids,{col,expectedUpdatedAt:body.expectedUpdatedAt});
   },
 
-  // Synchronous derivation for a named set of rows: `life derive` and the
+  // Synchronous derivation for a named set of rows: `soma derive` and the
   // migration backfill. Capped so one call stays inside a request's budget.
   "/v1/derive": async (body, db, env) => {
     const table = ident(body.table);
@@ -617,7 +617,7 @@ async function streamAppend(env, stream, body, now) {
   await env.ARCHIVE.put(`state/${stream}/latest.json`, body, {
     httpMetadata: { contentType: "application/json" },
   });
-  // tee into the managed pipeline (→ Iceberg table life.events in the data
+  // tee into the managed pipeline (→ Iceberg table soma.events in the data
   // catalog). Landing is the source of truth; the pipeline is the queryable
   // projection, so its failure must never fail an append — everything is
   // rebuildable from landing.
@@ -937,7 +937,7 @@ async function handle(request, env, ctx, url) {
     }
     if (url.pathname === "/v1/archive/query" && request.method === "POST") {
       // proxy to R2 SQL with the hub's own service credential, so clients
-      // never hold a provider token. Table: life.events (stream, ingested_at, record.*)
+      // never hold a provider token. Table: soma.events (stream, ingested_at, record.*)
       const { sql } = await request.json();
       const resp = await fetch(
         `https://api.sql.cloudflarestorage.com/api/v1/accounts/${env.ACCOUNT_ID}/r2-sql/query/${env.ARCHIVE_BUCKET}`,

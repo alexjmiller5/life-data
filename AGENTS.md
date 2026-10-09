@@ -1,6 +1,6 @@
-# life-data - agent instructions
+# soma - agent instructions
 
-Schema-agnostic personal data store: local-first SQLite + the `life` CLI,
+Schema-agnostic personal data store: local-first SQLite + the `soma` CLI,
 plus an optional sync hub (a Cloudflare Worker in `worker/`). The client is
 Python 3.12+, standard library only - **no runtime dependencies, keep it that
 way**. Built with uv; packaged as a Nix flake app.
@@ -12,7 +12,7 @@ columns, and rows are STATE in the data dir, created through the installed
 CLI.
 
 - Operating on the owner's data ("add a property", "query people", "create a
-  table", "import from X") = **user op**: use the installed `life` CLI. Never
+  table", "import from X") = **user op**: use the installed `soma` CLI. Never
   open this repo for it, and NEVER add user-table schema (migrations, table
   definitions, seed data) or source-specific importers to this codebase.
 - New capabilities and bug fixes = **dev work**: happens here, TDD, generic.
@@ -45,14 +45,25 @@ reads never provision either store or rewrite saved definitions.
 
 ## Layout
 
-- `src/life_data/__init__.py` - CLI, sync engine and hubs.
-- `src/life_data/background.py` - persistent CLI toggle, status and supervised loop.
-- `src/life_data/credentials.py` - native macOS Keychain storage; stdlib only.
-- `src/life_data/login.py` - browser enrollment and device-token lifecycle.
-- `src/life_data/catalog.py` - the catalog engine: typed properties, rules,
+- `src/soma/__init__.py` - CLI, sync engine and hubs.
+- `src/soma/background.py` - persistent CLI toggle, status and supervised loop.
+- `src/soma/credentials.py` - native macOS Keychain storage; stdlib only.
+- `src/soma/legacy.py` - adopts a pre-rename install on first use: the old
+  `<data home>/life-data` dir (`life.db` -> `soma.db`, files already in the new dir
+  win), the hosted hub's previous hostname in prefs and `_sync_state`, and a
+  device token under Keychain service `life-data`. Tests isolate `XDG_DATA_HOME`
+  (tests/conftest.py) because `main()` runs the adoption against the real home.
+- Persisted protocol identifiers keep their original spelling: the
+  `source=life-core` catalog marker of the views/pins/defaults manifests, the
+  `life_*` SQL error codes raised by installed triggers, the `-- life-data-dump:`
+  header old dumps carry (still read), and the `life-notification-v1` /
+  `life-governance-v1` crypto domain tags. Renaming any of them strands existing
+  estates, backups or tokens.
+- `src/soma/login.py` - browser enrollment and device-token lifecycle.
+- `src/soma/catalog.py` - the catalog engine: typed properties, rules,
   derivations, provenance, check/audit/infer/doc. Pure over a sqlite3
   connection.
-- `src/life_data/changes.py` - Python's local dirty-identity receipts. Temporary
+- `src/soma/changes.py` - Python's local dirty-identity receipts. Temporary
   triggers exist only on supported local writer connections; no tracking trigger
   or receipt schema is logged or shipped to the hub or shared core.
 - `worker/src/main.js` - the deployed entry: `worker/src/index.js` wrapped
@@ -104,7 +115,7 @@ reads never provision either store or rewrite saved definitions.
   Python login behavior and hub routes are independent of these pure UI operations.
   `core/src/enrollment-scopes.ts` owns the profile grant grammar;
   `tests/fixtures/enrollment-scopes.json` is its contract with the Worker and with
-  `valid_profile_scopes` in `src/life_data/login.py`.
+  `valid_profile_scopes` in `src/soma/login.py`.
 - `core/contract/core.json` owns the client JSON shapes and current operation
   pairs. `scripts/generate-core-contract.ts` emits TS types and prefixed Swift
   codecs, including named discriminated object unions; `--check` verifies
@@ -116,7 +127,7 @@ reads never provision either store or rewrite saved definitions.
   TypeScript; hosts inject credentials, transport, locking and storage.
 - `core/schema/sidebar-pins.json` owns durable table-pin storage. The contract
   generator packages its byte-exact Python resource; do not edit that copy.
-  `life table provision sidebar-pins` installs logged DDL/catalog metadata and
+  `soma table provision sidebar-pins` installs logged DDL/catalog metadata and
   refuses foreign collisions. Pin operations use ordinary validated writes,
   deterministic identities, revision guards and tombstones; reorder is locally
   atomic, while sync retains ordinary row-level LWW semantics. Recognized pins
@@ -307,18 +318,18 @@ reads never provision either store or rewrite saved definitions.
   An optional `where` object (column → string or number) adds equality
   filters, so a consumer can pull one slice of a large table.
 
-- Data dir: `$LIFE_DATA_DIR` > `$XDG_DATA_HOME/life-data` >
-  `~/.local/share/life-data`; the database is `life.db`. Nothing else may
+- Data dir: `$SOMA_DATA_DIR` > `$XDG_DATA_HOME/soma` >
+  `~/.local/share/soma`; the database is `soma.db`. Nothing else may
   hardcode a path.
-- `life table create` injects sync columns (`id` hex PK, `created_at`,
+- `soma table create` injects sync columns (`id` hex PK, `created_at`,
   `updated_at` + trigger, `deleted_at`) and writes a `catalog_properties` row
   per column from its typed `col:type[!][(a|b|c)]` syntax. Repeatable
   `--description COLUMN=TEXT` supplies descriptions in the same transaction
   as the table, trigger, catalog rows and DDL log. Explicit enforced table
   invariants on `catalog_properties` check local setters, raw edits and hub
-  pushes; user-specific policies stay in runtime catalog rows. `life check`
+  pushes; user-specific policies stay in runtime catalog rows. `soma check`
   supplies the full table as `changed` for an estate audit, while mutations
-  supply only actual changed identities. DDL through `life sql` is recorded verbatim in
+  supply only actual changed identities. DDL through `soma sql` is recorded verbatim in
   `_schema_log`; ordered replay is how schema syncs. Underscore-prefixed
   tables are plumbing - created by `init()`, never logged.
 - Timestamps: ISO 8601 UTC with milliseconds via SQLite
@@ -328,7 +339,7 @@ reads never provision either store or rewrite saved definitions.
   the venv outside iCloud (`UV_PROJECT_ENVIRONMENT`). Bare `uv run` uses
   `./.venv` under iCloud, where macOS intermittently stamps the editable
   install's `.pth` UF_HIDDEN and Python 3.13+ silently ignores it
-  (`ModuleNotFoundError: life_data`). If it strikes anyway:
+  (`ModuleNotFoundError: soma`). If it strikes anyway:
   `chflags nohidden .venv/lib/python*/site-packages/*.pth`.
 - `just` verbs: `run`, `test`, `check`, `fmt`, `deploy`.
 - **Writes are validated.** `execute_sql` and `insert_rows` run inside
@@ -397,7 +408,7 @@ reads never provision either store or rewrite saved definitions.
   `changed`/`before` are engine contexts. This is not a parser or proof of
   determinism through views/custom functions; rule authors must keep those
   dependencies deterministic. Defaults are separate from invariant SQL. Audits run
-  via `life audit`. **Derivations are `http:<name>` and run on the hub only**:
+  via `soma audit`. **Derivations are `http:<name>` and run on the hub only**:
   a client never writes a derived column (any write that changes one is
   rejected locally and again at the hub), and the hub verifies
   `provenance.inputs_hash`/`value_hash` against the pushed row. **A
@@ -444,7 +455,7 @@ reads never provision either store or rewrite saved definitions.
   duplicate aggregate/original history until upgraded. Never infer away or
   delete original events, add client registries/gates, or require new endpoints.
   The one exception is a purge marker (below).
-- **`purges` is the only hard delete.** `life purge <tbl> <id> [--col c]` writes
+- **`purges` is the only hard delete.** `soma purge <tbl> <id> [--col c]` writes
   a content-free marker (id `json([tbl, row_id, col])`, `purged_at`) and
   deletes, wherever a marker is applied, the row, its history and its
   provenance edges (col NULL) or that column's history - only what is stamped
@@ -456,7 +467,7 @@ reads never provision either store or rewrite saved definitions.
   would pin an old replica's cursor. After accepting a push the hub re-applies
   the markers covering those rows (its own logged event for the edit carries
   the old value), and replicas filter covered rows out of every pull. Inserts are not filtered. Purging again
-  moves `purged_at` forward to cover a re-import. Only `life purge` writes
+  moves `purged_at` forward to cover a re-import. Only `soma purge` writes
   `purges`; engine tables are never purge targets. Keep both implementations
   in step.
 - **A soft-deleted row is never validated** (its cells are history, not a
@@ -492,12 +503,12 @@ reads never provision either store or rewrite saved definitions.
   current-shape engine table never had).
 - **`with connect(...)` CLOSES the connection** (`_Connection.__exit__`).
   The stdlib context manager only commits, and a sqlite3 connection sits in a
-  reference cycle, so an un-closed one holds `life.db`/`-wal`/`-shm` until
+  reference cycle, so an un-closed one holds `soma.db`/`-wal`/`-shm` until
   the cyclic GC runs; a sync opens hundreds, and launchd caps a daemon at
   256 files. Never hold a connection past its `with` block.
-- **Background sync is opt-in app state.** `life background enable|disable|status`
+- **Background sync is opt-in app state.** `soma background enable|disable|status`
   operates independently from the immutable installation defaults in config.json.
-  The exported module runs `life background run`, which waits without contacting
+  The exported module runs `soma background run`, which waits without contacting
   the hub or credential provider while disabled. Credentials are generic env,
   a background-only command, or an explicitly saved macOS Keychain token.
   Never inherit an interactive token command into the runner. Retry failures
@@ -511,9 +522,9 @@ reads never provision either store or rewrite saved definitions.
   advances last_success. Status holds counts and sanitized error classes; the
   log adds a transient failure's bounded message (300 characters, e.g. a hub
   5xx body). Neither holds token values or rejected row payloads.
-- **Device login is app-owned.** `life login` opens an Access-gated approval
+- **Device login is app-owned.** `soma login` opens an Access-gated approval
   page and saves the resulting scoped device token in the macOS Keychain;
-  `life logout` revokes it at the saved hub before deleting the local item.
+  `soma logout` revokes it at the saved hub before deleting the local item.
   `--profile <id>` enrolls with a hub-configured profile instead of full access.
   Server consumers use the headless two-step form: `--profile <id> --start
   <state>` writes a candidate token to a new 0600 state file and prints the
@@ -641,7 +652,7 @@ acknowledgment is safe to retry but does not preserve creation attribution.
 protection 403s the default `Python-urllib/x.y` agent (error 1010) before
 the request reaches the Worker.
 
-`life watch` and `life background run` push within ~1s of a local write
+`soma watch` and `soma background run` push within ~1s of a local write
 (fingerprinting the db AND its `-wal`, since WAL mode leaves the main file
 untouched until checkpoint). Remote changes arrive through `RemoteChanges`, a
 thread holding `GET /v1/changes?since=<seq>&wait=25` on the hub: any new
@@ -668,7 +679,7 @@ first and skips `schema/pull` while `schema` has not moved either
 a replay is never stored (another replica's DDL may land in between), so each
 schema change costs two full-log rounds. Push candidates scan an unlogged
 `<table>_updated_at` index each replica creates for itself, and pulled rows
-commit per 200-row chunk so a `life sql` writer never waits a whole pull.
+commit per 200-row chunk so a `soma sql` writer never waits a whole pull.
 
 ## Hub service
 
@@ -699,7 +710,7 @@ capped at 5.1 kB, so the deploy step sends `ENROLLMENT_PROFILES` as
 Requested unknown profiles never fall back to full. Auth storage binds
 the approved profile revision and scopes to the fingerprint atomically. Profile
 tokens get no governance authority. Core owns the optional profile expectation
-and receipt DTOs and the pure `life-core/enrollment` entry; hosts own JSC,
+and receipt DTOs and the pure `soma-core/enrollment` entry; hosts own JSC,
 cryptography, HTTP, clocks and secure storage. Existing full enrollment remains
 available without a profile. Projected reads authorize returned columns and
 predicates before data access, require ID access and reject timestamp cursors.
@@ -740,8 +751,8 @@ unchanged; missing adopted targets fail closed. Creation grants confer no
 governance authority. `scopedOrigin` is an internal, bounded provenance dependency
 validator, never a general provenance grant. The canonical contract and limits
 are in `docs/superpowers/specs/2026-10-06-create-only-origin.md`; portable consumer
-types and strict checks export from `life-core/creation`.
-Python consumers import `life_data.creation` from the pinned library package;
+types and strict checks export from `soma-core/creation`.
+Python consumers import `soma.creation` from the pinned library package;
 it needs no JavaScript engine. Shared wire fixtures and actual Worker response
 tests keep its receipt/readiness checks aligned with the TypeScript boundary.
 Neither entry point owns credentials, HTTP, scheduling or automatic retries.
@@ -763,7 +774,7 @@ unready service state is unavailable. The protocol remains unadvertised until
 all documented operations and writer guarantees exist.
 
 Backups (`worker/src/backup.js`): the cron exports each database in the
-`BACKUP_DATABASES` var (`life` = DB, `auth` = AUTH_DB) through D1's export
+`BACKUP_DATABASES` var (`soma` = DB, `auth` = AUTH_DB) through D1's export
 API, polling with the returned bookmark until the signed URL appears, and
 streams that SQL file through gzip into one R2 multipart upload per retention
 prefix today qualifies for (`<prefix>/<name>-<stamp>.sql.gz`, 8 MiB parts),
@@ -806,7 +817,7 @@ Runs three ways: after `/v1/rows/push` or actual `/v1/rows/insert` creations via
 response; a failure is retried by the sweep), on the 15-minute sweep
 (underived or `inputs_hash`-stale, 50 per property), and synchronously via
 `POST /v1/derive {table, ids, col?}` (>50 ids → 400). Routes take
-`(body, db, env, ctx)` and may return a `Response` of their own. `life derive
+`(body, db, env, ctx)` and may return a `Response` of their own. `soma derive
 <tbl>.<col> [--where <sql>]` is a client-side wrapper around that route: it
 selects ids locally, calls `/v1/derive` in chunks of 50, and reports totals -
 it never computes a derived value itself. Requires a hub token with
@@ -909,9 +920,9 @@ Append grants authorize only append; read grants authorize tail and bounded
 are not source-time incrementals, a snapshot or per-person latest state.
 
 Managed platform (all open beta, Workers Paid): Pipelines stream
-`life_events` (explicit schema: stream string, ingested_at string, record
-json) → pipeline `life_pipeline` (SQL passthrough) → Iceberg sink →
-table `life.events` in the R2 Data Catalog on `life-data-archive`, managed
+`soma_events` (explicit schema: stream string, ingested_at string, record
+json) → pipeline `soma_pipeline` (SQL passthrough) → Iceberg sink →
+table `soma.events` in the R2 Data Catalog on `soma-archive`, managed
 compaction enabled. `POST /v1/archive/query` proxies SQL to R2 SQL
 (`api.sql.cloudflarestorage.com/api/v1/accounts/<acct>/r2-sql/query/<bucket>`)
 with the Worker's `R2_SQL_TOKEN` secret - clients never hold a provider
@@ -927,7 +938,7 @@ Beta gotchas, all hit at build time (2026-09-02):
   existing Catalog tables is not yet supported" blocks fixing it without
   dropping the table (Iceberg REST: get `prefix` from
   `catalog.cloudflarestorage.com/<acct>/<bucket>/v1/config`, then DELETE
-  `/v1/<prefix>/namespaces/life/tables/events?purgeRequested=true`).
+  `/v1/<prefix>/namespaces/soma/tables/events?purgeRequested=true`).
 - Schema-less streams declare ONE required `value` field: events sent as
   `{stream, ...}` fail validation SILENTLY (binding send still succeeds).
 - The wrangler `pipelines` binding wants the stream **ID**, not name; the
@@ -937,7 +948,7 @@ Beta gotchas, all hit at build time (2026-09-02):
   failed", pipeline → failed state). Recreate sink + pipeline.
 - The stream BUFFERS across sink failures/recreation - buffered events
   redeliver once a working sink exists. Landing remains the true raw record.
-- **Delivery into `life.events` is AT-LEAST-ONCE and eventually consistent**:
+- **Delivery into `soma.events` is AT-LEAST-ONCE and eventually consistent**:
   a send can land in the table minutes later and can be duplicated by
   redelivery (a 23-record replay once materialized as 46 rows). Never
   "verify" a tee by querying the table right away, and never re-send/replay
@@ -950,7 +961,7 @@ Beta gotchas, all hit at build time (2026-09-02):
   retry (retrying a landed batch duplicates both landing and events).
 
 Credentials have separate owners:
-- Consumer devices enroll through `life login` and store their app-issued
+- Consumer devices enroll through `soma login` and store their app-issued
   tokens in native Keychain. Never distribute operator/provider tokens to them.
 - Services enroll with a named profile (`docs/consumer-access.md`, pattern A)
   and keep the token in their own project's secrets. The auth registry stores
@@ -966,7 +977,7 @@ Credentials have separate owners:
 ## Bounded consumer queries
 
 `worker/src/rows-query.js` owns `/v1/rows/query`, advertised as
-`row_query: bounded-v1`. The pure `life-core/query` entry owns request validation.
+`row_query: bounded-v1`. The pure `soma-core/query` entry owns request validation.
 Projected, predicate and sort columns require read grants. Cursors bind request,
 schema/catalog shape and profile revision, with native SQLite collation and
 null-last ordering. Text identities and safe scalar sort values are supported.
@@ -980,7 +991,7 @@ schemas own query indexes; no consumer table names belong in service code.
 `POST /v1/catalog/projection`. Config is installation-owned state inside
 `ENROLLMENT_PROFILES`, included in the canonical profile revision. Changed
 bindings require reenrollment; config-less legacy hashes remain stable.
-Canonical config checks export from `life-core/consumer-config`; generated
+Canonical config checks export from `soma-core/consumer-config`; generated
 Swift/TypeScript DTOs come from `core/contract/core.json`. Profiles admit up to
 256 distinct grants. Metadata grants require matching row read grants;
 projection never executes or discloses dynamic option SQL. These endpoints
@@ -1007,11 +1018,11 @@ revocation and requests against an in-memory archive.
 `GET /v1/files?prefix=&cursor=&limit=` lists `{objects:[{key,size,uploaded,etag}],cursor}`
 (limit 1-1000, default 100; opaque cursor, `null` on the last page). A
 `files:read:<prefix>/` holder lists only inside its prefix; full/admin list the
-whole archive. `life files list <prefix>` follows every page.
+whole archive. `soma files list <prefix>` follows every page.
 
 File-consumer registry (every file consumer and prefix is listed here, per
 `docs/consumer-access.md`). Consumers depend on this supported service contract
-only; each keeps its operational recovery state in its own store, and Life Data
+only; each keeps its operational recovery state in its own store, and Soma
 storage credentials never leave this service.
 
 | Consumer | Prefixes |
@@ -1060,9 +1071,9 @@ sources at creation and can pause/resume or permanently retire recording.
 
 `worker/src/capture-gateway.js` is a stateless supported consumer API. Synapse
 owns the media resolver, category/field restrictions, durable receipts and
-serialized writes. Life Data holds its own independently minted Synapse gateway
+serialized writes. Soma holds its own independently minted Synapse gateway
 credential in `CAPTURE_ADAPTERS`, never in a native client. Consumers hold only
-their scoped Life Data session. The gateway delegates an opaque credential-bound
+their scoped Soma session. The gateway delegates an opaque credential-bound
 subject; receipt namespaces belong to gateway-client plus subject plus UUID.
 Replacing either credential changes that receipt namespace. Revoking the gateway
 stops captures but leaves ordinary catalog reads and edits available. Deploying

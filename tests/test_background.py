@@ -10,19 +10,19 @@ from pathlib import Path
 import pytest
 from test_core import _serve
 
-from life_data import execute_sql
+from soma import execute_sql
 
 
 def cli(data, *args, **kwargs):
     env = {
         **os.environ,
-        "LIFE_DATA_DIR": str(data),
-        "PYTHONPATH": os.environ.get("LIFE_TEST_SRC", str(Path("src").resolve())),
+        "SOMA_DATA_DIR": str(data),
+        "PYTHONPATH": os.environ.get("SOMA_TEST_SRC", str(Path("src").resolve())),
     }
-    env.pop("LIFE_HUB_TOKEN", None)
-    env.pop("LIFE_HUB_URL", None)
+    env.pop("SOMA_HUB_TOKEN", None)
+    env.pop("SOMA_HUB_URL", None)
     return subprocess.run(
-        [sys.executable, "-c", "from life_data import main; raise SystemExit(main())", *args],
+        [sys.executable, "-c", "from soma import main; raise SystemExit(main())", *args],
         env=env,
         capture_output=True,
         text=True,
@@ -62,16 +62,16 @@ def test_cli_toggle_controls_real_runner_and_persists_across_restart(tmp_path):
         def start():
             env = {
                 **os.environ,
-                "LIFE_DATA_DIR": str(data),
-                "PYTHONPATH": os.environ.get("LIFE_TEST_SRC", str(Path("src").resolve())),
+                "SOMA_DATA_DIR": str(data),
+                "PYTHONPATH": os.environ.get("SOMA_TEST_SRC", str(Path("src").resolve())),
             }
-            env.pop("LIFE_HUB_TOKEN", None)
-            env.pop("LIFE_HUB_URL", None)
+            env.pop("SOMA_HUB_TOKEN", None)
+            env.pop("SOMA_HUB_URL", None)
             return subprocess.Popen(
                 [
                     sys.executable,
                     "-c",
-                    "from life_data import main; raise SystemExit(main())",
+                    "from soma import main; raise SystemExit(main())",
                     "background",
                     "run",
                     "--poll",
@@ -131,7 +131,7 @@ def test_cli_toggle_controls_real_runner_and_persists_across_restart(tmp_path):
 
 
 def test_disabled_runner_never_reads_credentials_and_errors_back_off(tmp_path, monkeypatch):
-    from life_data import background
+    from soma import background
 
     (tmp_path / "config.json").write_text(json.dumps({"token_cmd": "exit 99"}))
     # Break this by resolving credentials before checking enabled, or by
@@ -168,21 +168,25 @@ def test_keychain_enable_stores_no_plaintext_and_status_does_not_unlock(
 ):
     import io
 
-    from life_data import credentials, load_config, main
+    from soma import credentials, load_config, main
 
     saved = {}
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     monkeypatch.setattr(
         credentials, "store_token", lambda account, token: saved.update({account: token})
     )
-    monkeypatch.setattr(credentials, "read_token", saved.get)
+    monkeypatch.setattr(
+        credentials,
+        "read_token",
+        lambda account, service="soma", **_: saved.get(account) if service == "soma" else None,
+    )
     monkeypatch.setattr(sys, "stdin", io.StringIO("private-test-value\n"))
     assert main(["background", "enable", "--token-stdin", "--hub-url", "https://hub.example"]) == 0
     assert list(saved.values()) == ["private-test-value"]
     assert "private-test-value" not in (tmp_path / "background.json").read_text()
-    monkeypatch.setattr(credentials, "read_token", lambda account: saved[account])
+    monkeypatch.setattr(credentials, "read_token", lambda account, **_: saved[account])
     assert load_config()["token"] == "private-test-value"
     monkeypatch.setattr(
         credentials,
@@ -197,14 +201,14 @@ def test_keychain_enable_stores_no_plaintext_and_status_does_not_unlock(
 def test_rejected_rows_are_not_a_success_and_do_not_leak(tmp_path, monkeypatch):
     import pytest
 
-    import life_data
-    from life_data import background
+    import soma
+    from soma import background
 
     background.write_json(tmp_path / "background.json", {"enabled": True})
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "test-credential")
-    monkeypatch.setattr(life_data, "hub_from_config", lambda _: object())
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "test-credential")
+    monkeypatch.setattr(soma, "hub_from_config", lambda _: object())
     monkeypatch.setattr(
-        life_data,
+        soma,
         "sync",
         lambda *_: {
             "pushed": 0,
@@ -230,13 +234,13 @@ def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monk
 
     import pytest
 
-    import life_data
-    from life_data import background
+    import soma
+    from soma import background
 
     background.write_json(tmp_path / "background.json", {"enabled": True})
     calls = []
     monkeypatch.setattr(background, "_credential", lambda *_: calls.append("read") or "test-token")
-    monkeypatch.setattr(life_data, "hub_from_config", lambda _: object())
+    monkeypatch.setattr(soma, "hub_from_config", lambda _: object())
 
     def sync(*_):
         try:
@@ -244,7 +248,7 @@ def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monk
         except urllib.error.HTTPError as exc:
             raise RuntimeError("private body") from exc
 
-    monkeypatch.setattr(life_data, "sync", sync)
+    monkeypatch.setattr(soma, "sync", sync)
     ticks = []
     monkeypatch.setattr(background.time, "monotonic", lambda: len(ticks) * 61)
 
@@ -265,12 +269,12 @@ def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monk
 def test_server_error_detail_reaches_daemon_log_not_status(tmp_path, monkeypatch, capsys):
     import urllib.error
 
-    import life_data
-    from life_data import background
+    import soma
+    from soma import background
 
     background.write_json(tmp_path / "background.json", {"enabled": True})
     monkeypatch.setattr(background, "_credential", lambda *_: "test-token")
-    monkeypatch.setattr(life_data, "hub_from_config", lambda _: object())
+    monkeypatch.setattr(soma, "hub_from_config", lambda _: object())
 
     def sync(*_):
         try:
@@ -278,7 +282,7 @@ def test_server_error_detail_reaches_daemon_log_not_status(tmp_path, monkeypatch
         except urllib.error.HTTPError as exc:
             raise RuntimeError('hub HTTP 500: {"error":"D1_ERROR: storage timeout"}') from exc
 
-    monkeypatch.setattr(life_data, "sync", sync)
+    monkeypatch.setattr(soma, "sync", sync)
     ticks = []
     monkeypatch.setattr(background.time, "monotonic", lambda: len(ticks) * 61)
 
@@ -297,18 +301,22 @@ def test_server_error_detail_reaches_daemon_log_not_status(tmp_path, monkeypatch
 def test_keychain_save_uses_same_env_endpoint_as_lookup(tmp_path, monkeypatch):
     import io
 
-    from life_data import credentials, load_config, main
-    from life_data.background import keychain_account
+    from soma import credentials, load_config, main
+    from soma.background import keychain_account
 
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("LIFE_HUB_URL", "https://env.example/")
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_HUB_URL", "https://env.example/")
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO("test-token"))
     saved = {}
     monkeypatch.setattr(
         credentials, "store_token", lambda account, token: saved.update({account: token})
     )
-    monkeypatch.setattr(credentials, "read_token", saved.get)
+    monkeypatch.setattr(
+        credentials,
+        "read_token",
+        lambda account, service="soma", **_: saved.get(account) if service == "soma" else None,
+    )
     assert (
         main(["background", "enable", "--hub-url", "https://config.example", "--token-stdin"]) == 0
     )
@@ -319,7 +327,7 @@ def test_keychain_save_uses_same_env_endpoint_as_lookup(tmp_path, monkeypatch):
 def test_changing_hubs_requires_a_fresh_data_directory(tmp_path):
     import pytest
 
-    from life_data import HttpHub, create_table, init, insert_rows, sync
+    from soma import HttpHub, create_table, init, insert_rows, sync
 
     path = init(tmp_path / "client.db")
     create_table(path, "items", ["name:text"])
@@ -350,21 +358,21 @@ def test_changing_hubs_requires_a_fresh_data_directory(tmp_path):
 
 
 def test_legacy_cursor_cannot_be_repointed_by_enable(tmp_path, monkeypatch):
-    from life_data import _set_state, init, main
-    from life_data.background import read_json
+    from soma import _set_state, init, main
+    from soma.background import read_json
 
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
     (tmp_path / "config.json").write_text(json.dumps({"hub_url": "https://first.example"}))
-    path = init(tmp_path / "life.db")
+    path = init(tmp_path / "soma.db")
     _set_state(path, "last_push", "2026-01-01T00:00:00.000Z")
     assert main(["background", "enable", "--hub-url", "https://second.example"]) == 1
     assert read_json(tmp_path / "background.json") == {}
 
 
 def test_legacy_http_cursors_are_not_trusted_without_an_endpoint(tmp_path):
-    from life_data import HttpHub, _set_state, create_table, init, insert_rows, sync
+    from soma import HttpHub, _set_state, create_table, init, insert_rows, sync
 
     path = init(tmp_path / "client.db")
     create_table(path, "items", ["name:text"])
@@ -387,13 +395,13 @@ def test_legacy_http_cursors_are_not_trusted_without_an_endpoint(tmp_path):
 
 
 def test_background_auth_respects_native_selection_signout_and_explicit_env(tmp_path, monkeypatch):
-    from life_data import background, credentials
+    from soma import background, credentials
 
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
     cfg = {"hub_url": "https://hub.example", "background_token_cmd": "exit 99", "token": "old"}
     token = "native-token"
 
-    def read(account, *, interactive=True):
+    def read(account, *, interactive=True, service="soma"):
         assert interactive is False
         return token
 
@@ -406,16 +414,16 @@ def test_background_auth_respects_native_selection_signout_and_explicit_env(tmp_
     )
     for prefs in ({"signed_out": True}, {"signed_out": True, "keychain": True}):
         assert background._credential(tmp_path, cfg, prefs) == ""
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "operator-override")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "operator-override")
     assert background._credential(tmp_path, cfg, prefs) == "operator-override"
 
 
 def test_native_failure_reports_auth_phase_code_and_then_observes_disable(tmp_path, monkeypatch):
-    import life_data
-    from life_data import background, credentials
+    import soma
+    from soma import background, credentials
 
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     background.write_json(tmp_path / "background.json", {"enabled": True, "keychain": True})
     success = "2026-01-01T00:00:00.000Z"
     background.write_json(
@@ -429,7 +437,7 @@ def test_native_failure_reports_auth_phase_code_and_then_observes_disable(tmp_pa
     )
     reads = []
 
-    def read(account, *, interactive=True):
+    def read(account, *, interactive=True, service="soma"):
         reads.append(interactive)
         current = background.read_json(tmp_path / "background-status.json")
         assert current["state"] == "authenticating"
@@ -438,7 +446,7 @@ def test_native_failure_reports_auth_phase_code_and_then_observes_disable(tmp_pa
         credentials._check(-25293)
 
     monkeypatch.setattr(credentials, "read_token", read)
-    monkeypatch.setattr(life_data, "sync", lambda *_: pytest.fail("sync before authentication"))
+    monkeypatch.setattr(soma, "sync", lambda *_: pytest.fail("sync before authentication"))
     ticks = []
 
     def sleep(_):
@@ -457,18 +465,18 @@ def test_native_failure_reports_auth_phase_code_and_then_observes_disable(tmp_pa
     assert ticks[-1]["state"] == "disabled"
     assert ticks[-1]["last_success"] == success
     assert ticks[-1]["stats"] is None
-    assert not (tmp_path / "life.db").exists()
+    assert not (tmp_path / "soma.db").exists()
 
 
 def test_authentication_transitions_to_sync_and_preserves_success_until_completion(
     tmp_path, monkeypatch
 ):
-    import life_data
-    from life_data import background
+    import soma
+    from soma import background
 
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "synthetic")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "synthetic")
     background.write_json(tmp_path / "background.json", {"enabled": True})
-    monkeypatch.setattr(life_data, "hub_from_config", lambda _: object())
+    monkeypatch.setattr(soma, "hub_from_config", lambda _: object())
 
     def sync(*_):
         current = background.read_json(tmp_path / "background-status.json")
@@ -476,7 +484,7 @@ def test_authentication_transitions_to_sync_and_preserves_success_until_completi
         assert current.get("last_success") is None
         return {"pushed": 1, "pulled": 0, "ddl_applied": 0, "rejected": []}
 
-    monkeypatch.setattr(life_data, "sync", sync)
+    monkeypatch.setattr(soma, "sync", sync)
     monkeypatch.setattr(
         background.time, "sleep", lambda _: (_ for _ in ()).throw(KeyboardInterrupt)
     )
@@ -491,7 +499,7 @@ def test_preference_updates_serialize_with_another_process_and_return_merged_sta
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from life_data import background
+    from soma import background
 
     update = background.update_preferences
     background.write_json(tmp_path / "background.json", {"enabled": True, "revision": 1})
@@ -504,7 +512,7 @@ def test_preference_updates_serialize_with_another_process_and_return_merged_sta
 
     code = """from pathlib import Path
 import json, sys
-from life_data.background import update_preferences
+from soma.background import update_preferences
 print('ready', flush=True)
 print(json.dumps(update_preferences(Path(sys.argv[1]), lambda p: p.update(enabled=False))), flush=True)
 """
@@ -547,11 +555,11 @@ def test_enable_merges_after_keychain_work_without_holding_preference_lock(tmp_p
     import fcntl
     import io
 
-    from life_data import background, credentials, main
+    from soma import background, credentials, main
 
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     background.write_json(
         tmp_path / "background.json",
         {
@@ -567,7 +575,7 @@ def test_enable_merges_after_keychain_work_without_holding_preference_lock(tmp_p
         background.update_preferences(tmp_path, lambda p: p.update(other_preference="preserved"))
 
     monkeypatch.setattr(credentials, "store_token", store)
-    monkeypatch.setattr(credentials, "read_token", lambda _: None)
+    monkeypatch.setattr(credentials, "read_token", lambda *_, **__: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO("synthetic-token"))
     assert main(["background", "enable", "--token-stdin"]) == 0
     prefs = background.read_json(tmp_path / "background.json")
@@ -585,18 +593,22 @@ def native_lifecycle(tmp_path, monkeypatch):
     import io
     from types import SimpleNamespace
 
-    from life_data import background, credentials, login
+    from soma import background, credentials, login
 
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(sys, "stdin", io.StringIO("fixture-compatibility"))
     monkeypatch.setattr(ctypes, "CDLL", lambda *_: pytest.fail("native access forbidden"))
     endpoint = "https://hub.example"
     account = background.keychain_account(tmp_path, endpoint)
     tokens = {account: "fixture-existing"}
-    monkeypatch.setattr(credentials, "read_token", tokens.get)
+    monkeypatch.setattr(
+        credentials,
+        "read_token",
+        lambda account, service="soma", **_: tokens.get(account) if service == "soma" else None,
+    )
     monkeypatch.setattr(credentials, "store_token", lambda key, value: tokens.update({key: value}))
     monkeypatch.setattr(credentials, "delete_token", lambda key: tokens.pop(key, None))
     monkeypatch.setattr(
@@ -629,7 +641,7 @@ def test_stdin_lock_contention_preserves_native_credential_and_preferences(
     import io
     from unittest.mock import patch
 
-    from life_data import background, main
+    from soma import background, main
 
     prefs_path = tmp_path / "background.json"
     before = prefs_path.read_bytes()
@@ -655,7 +667,7 @@ def test_stdin_install_excludes_login_logout_through_preference_commit(
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from life_data import background, credentials, login, main
+    from soma import background, credentials, login, main
 
     entered, release = Event(), Event()
     module, method = (
@@ -700,7 +712,7 @@ def test_stdin_preference_failure_restores_native_item_or_reports_rollback_failu
 ):
     import fcntl
 
-    from life_data import credentials, main
+    from soma import credentials, main
 
     if not existing:
         native_lifecycle.tokens.clear()

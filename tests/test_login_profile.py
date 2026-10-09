@@ -7,8 +7,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from life_data import login, main
-from life_data.background import keychain_account
+from soma import login, main
+from soma.background import keychain_account
 
 HUB = "https://hub.example"
 PROFILE = "flight-sync-v1"
@@ -40,8 +40,8 @@ def hub(monkeypatch):
 
     state["session"] = session
     monkeypatch.setattr(login, "_request_json", request)
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     return state
 
 
@@ -56,12 +56,16 @@ def approve_url(hub, url, **overrides):
 def keychain(monkeypatch):
     import ctypes
 
-    from life_data import credentials
+    from soma import credentials
 
     monkeypatch.setattr(ctypes, "CDLL", lambda *_: pytest.fail("native access forbidden"))
     monkeypatch.setattr(sys, "platform", "darwin")
     tokens = {}
-    monkeypatch.setattr(credentials, "read_token", tokens.get)
+    monkeypatch.setattr(
+        credentials,
+        "read_token",
+        lambda account, service="soma", **_: tokens.get(account) if service == "soma" else None,
+    )
     monkeypatch.setattr(
         credentials, "store_token", lambda account, token: tokens.update({account: token})
     )
@@ -109,7 +113,7 @@ def test_start_writes_a_private_state_file_and_prints_only_the_approval_url(
     tmp_path, hub, monkeypatch, capsys
 ):
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path / "data"))
     state_file = tmp_path / "pending.json"
     args = ["login", "--hub-url", HUB, "--profile", PROFILE, "--name", "Flighty server"]
     assert main([*args, "--start", str(state_file)]) == 0
@@ -140,7 +144,7 @@ def test_start_writes_a_private_state_file_and_prints_only_the_approval_url(
     ],
 )
 def test_headless_flags_reject_ambiguous_combinations(tmp_path, monkeypatch, capsys, argv):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     assert main(["login", "--hub-url", HUB, *argv]) == 1
     assert "error:" in capsys.readouterr().err
@@ -149,7 +153,7 @@ def test_headless_flags_reject_ambiguous_combinations(tmp_path, monkeypatch, cap
 
 def start(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path / "data"))
     state_file = tmp_path / "pending.json"
     result = login.start_enrollment(
         tmp_path / "data", state_file, hub_url=HUB, profile=PROFILE, name="Flighty server"

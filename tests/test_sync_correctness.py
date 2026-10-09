@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import life_data as life
+import soma
 
 T0 = "2026-01-01T00:00:00.000Z"
 T1 = "2026-01-01T00:00:01.000Z"
@@ -17,28 +17,28 @@ FUTURE = "2099-01-01T00:00:00.000Z"
 @pytest.fixture
 def clock(monkeypatch):
     ticks = [T0]
-    connect = life.connect
+    connect = soma.connect
 
     def clocked_connect(path, manual_tx=False):
         conn = connect(path, manual_tx)
         conn.create_function("strftime", 2, lambda *_: ticks[0])
         return conn
 
-    monkeypatch.setattr(life, "connect", clocked_connect)
+    monkeypatch.setattr(soma, "connect", clocked_connect)
     return ticks
 
 
 @pytest.fixture
 def estate(tmp_path, clock):
-    path = life.init(tmp_path / "replica.db")
-    life.create_table(path, "items", ["name:text"])
-    hub = life.LocalHub(tmp_path / "hub.db")
-    life.sync(path, hub)
+    path = soma.init(tmp_path / "replica.db")
+    soma.create_table(path, "items", ["name:text"])
+    hub = soma.LocalHub(tmp_path / "hub.db")
+    soma.sync(path, hub)
     return path, hub
 
 
 def state(path):
-    return {r["key"]: r["value"] for r in life.execute_sql(path, "SELECT * FROM _sync_state")}
+    return {r["key"]: r["value"] for r in soma.execute_sql(path, "SELECT * FROM _sync_state")}
 
 
 def ids(hub):
@@ -47,29 +47,29 @@ def ids(hub):
 
 def test_raw_nonsyncable_table_does_not_block_supported_writes(estate):
     path, _ = estate
-    life.execute_sql(path, 'CREATE TABLE "raw-table" (value TEXT)')
-    life.insert_rows(path, "items", [{"id": "after-raw"}])
-    life.execute_sql(path, 'DROP TABLE "raw-table"')
-    assert life.execute_sql(path, "SELECT id FROM items") == [{"id": "after-raw"}]
+    soma.execute_sql(path, 'CREATE TABLE "raw-table" (value TEXT)')
+    soma.insert_rows(path, "items", [{"id": "after-raw"}])
+    soma.execute_sql(path, 'DROP TABLE "raw-table"')
+    assert soma.execute_sql(path, "SELECT id FROM items") == [{"id": "after-raw"}]
 
 
 def test_virtual_table_does_not_block_supported_writes(estate):
     path, _ = estate
-    life.execute_sql(path, "CREATE VIRTUAL TABLE lookup USING fts5(id, updated_at)")
-    life.insert_rows(path, "items", [{"id": "after-virtual"}])
-    life.execute_sql(path, "DROP TABLE lookup")
-    assert life.execute_sql(path, "SELECT id FROM items") == [{"id": "after-virtual"}]
+    soma.execute_sql(path, "CREATE VIRTUAL TABLE lookup USING fts5(id, updated_at)")
+    soma.insert_rows(path, "items", [{"id": "after-virtual"}])
+    soma.execute_sql(path, "DROP TABLE lookup")
+    assert soma.execute_sql(path, "SELECT id FROM items") == [{"id": "after-virtual"}]
 
 
 def test_purge_during_temporary_clock_rollback_still_reaches_hub(estate, clock):
     path, hub = estate
-    life.insert_rows(path, "items", [{"id": "purged"}])
+    soma.insert_rows(path, "items", [{"id": "purged"}])
     clock[0] = T2
-    life.sync(path, hub)
+    soma.sync(path, hub)
     clock[0] = T1
-    life.purge(path, "items", "purged")
+    soma.purge(path, "items", "purged")
     clock[0] = "2026-01-01T00:00:03.000Z"
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "purged" not in ids(hub)
     assert hub.rows_pull("purges", ["tbl", "row_id"], "") == [{"tbl": "items", "row_id": "purged"}]
 
@@ -78,12 +78,12 @@ def test_purge_during_temporary_clock_rollback_still_reaches_hub(estate, clock):
 def test_backdated_new_rows_are_local_changes(estate, clock, writer):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
+    soma.sync(path, hub)
     if writer == "insert":
-        life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+        soma.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
     else:
-        life.execute_sql(path, f"INSERT INTO items (id,updated_at) VALUES ('old','{T0}')")
-    assert not life.sync(life.init(path), hub)["rejected"]
+        soma.execute_sql(path, f"INSERT INTO items (id,updated_at) VALUES ('old','{T0}')")
+    assert not soma.sync(soma.init(path), hub)["rejected"]
     assert "old" in ids(hub)
     assert hub.rows_pull("items", ["updated_at"], "")[0]["updated_at"] == T0
 
@@ -92,8 +92,8 @@ def test_backdated_new_rows_are_local_changes(estate, clock, writer):
 def test_backdated_changes_retry_after_failure(estate, clock, monkeypatch, failure):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
-    life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    soma.sync(path, hub)
+    soma.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
     original = hub.rows_push
 
     def failing(table, cols, rows, **kwargs):
@@ -107,31 +107,31 @@ def test_backdated_changes_retry_after_failure(estate, clock, monkeypatch, failu
         m.setattr(hub, "rows_push", failing)
         if failure == "interrupt":
             with pytest.raises(OSError, match="synthetic"):
-                life.sync(path, hub)
+                soma.sync(path, hub)
         else:
-            assert life.sync(path, hub)["rejected"]
-    assert not life.sync(life.init(path), hub)["rejected"]
+            assert soma.sync(path, hub)["rejected"]
+    assert not soma.sync(soma.init(path), hub)["rejected"]
     assert "old" in ids(hub)
 
 
 def test_backdated_edit_during_push_survives_old_receipt(estate, clock, monkeypatch):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
-    life.insert_rows(path, "items", [{"id": "old", "name": "first", "updated_at": T0}])
+    soma.sync(path, hub)
+    soma.insert_rows(path, "items", [{"id": "old", "name": "first", "updated_at": T0}])
     original = hub.rows_push
 
     def pushing(table, cols, rows, **kwargs):
         if table == "items":
-            life.execute_sql(
+            soma.execute_sql(
                 path, f"UPDATE items SET name='second', updated_at='{T1}' WHERE id='old'"
             )
         return original(table, cols, rows, **kwargs)
 
     with monkeypatch.context() as m:
         m.setattr(hub, "rows_push", pushing)
-        assert not life.sync(path, hub)["rejected"]
-    assert not life.sync(path, hub)["rejected"]
+        assert not soma.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("items", ["id", "name", "updated_at"], "") == [
         {"id": "old", "name": "second", "updated_at": T1}
     ]
@@ -140,44 +140,44 @@ def test_backdated_edit_during_push_survives_old_receipt(estate, clock, monkeypa
 def test_backdated_changes_follow_table_rename(estate, clock):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
-    life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
-    life.rename_table(path, "items", "renamed")
-    assert not life.sync(path, hub)["rejected"]
+    soma.sync(path, hub)
+    soma.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    soma.rename_table(path, "items", "renamed")
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("renamed", ["id"], "") == [{"id": "old"}]
 
 
 def test_backdated_changes_follow_remote_table_rename(estate, clock):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
-    life.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
+    soma.sync(path, hub)
+    soma.insert_rows(path, "items", [{"id": "old", "updated_at": T0}])
     hub.schema_push([{"applied_at": T2, "ddl": 'ALTER TABLE "items" RENAME TO "renamed"'}])
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("renamed", ["id"], "") == [{"id": "old"}]
 
 
 def test_rename_reusing_dropped_table_merges_dirty_receipts(estate, clock):
     path, hub = estate
     for table in ("first", "second"):
-        life.execute_sql(
+        soma.execute_sql(
             path,
             f"CREATE TABLE {table} (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)",
         )
     clock[0] = T2
-    life.sync(path, hub)
+    soma.sync(path, hub)
     for table in ("first", "second"):
-        life.insert_rows(path, table, [{"id": "same", "updated_at": T0}])
-    before = life.execute_sql(path, "SELECT max(seq) AS seq FROM _sync_dirty")[0]["seq"]
-    life.execute_sql(path, "DROP TABLE second")
-    life.rename_table(path, "first", "second")
+        soma.insert_rows(path, table, [{"id": "same", "updated_at": T0}])
+    before = soma.execute_sql(path, "SELECT max(seq) AS seq FROM _sync_dirty")[0]["seq"]
+    soma.execute_sql(path, "DROP TABLE second")
+    soma.rename_table(path, "first", "second")
     assert (
-        life.execute_sql(path, "SELECT seq FROM _sync_dirty WHERE tbl='second' AND row_id='same'")[
+        soma.execute_sql(path, "SELECT seq FROM _sync_dirty WHERE tbl='second' AND row_id='same'")[
             0
         ]["seq"]
         > before
     )
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("second", ["id", "updated_at"], "") == [{"id": "same", "updated_at": T0}]
 
 
@@ -186,9 +186,9 @@ def test_backdated_conflict_keeps_newer_hub_value(estate, clock):
     row = {"id": "same", "name": "newer", "updated_at": T1}
     hub.rows_push("items", list(row), [row])
     clock[0] = T2
-    life.sync(path, hub)
-    life.execute_sql(path, f"UPDATE items SET name='older', updated_at='{T0}' WHERE id='same'")
-    assert not life.sync(path, hub)["rejected"]
+    soma.sync(path, hub)
+    soma.execute_sql(path, f"UPDATE items SET name='older', updated_at='{T0}' WHERE id='same'")
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("items", ["name", "updated_at"], "") == [
         {"name": "newer", "updated_at": T1}
     ]
@@ -197,15 +197,15 @@ def test_backdated_conflict_keeps_newer_hub_value(estate, clock):
 def test_ignore_upsert_and_delete_preserve_dirty_generation(estate, clock, monkeypatch):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
-    life.execute_sql(
+    soma.sync(path, hub)
+    soma.execute_sql(
         path, f"INSERT OR IGNORE INTO items (id,name,updated_at) VALUES ('old','first','{T0}')"
     )
     original = hub.rows_push
 
     def pushing(table, cols, rows, **kwargs):
         if table == "items":
-            life.execute_sql(
+            soma.execute_sql(
                 path,
                 f"UPDATE OR IGNORE items SET deleted_at='{T1}', updated_at='{T1}' WHERE id='old'",
             )
@@ -213,51 +213,51 @@ def test_ignore_upsert_and_delete_preserve_dirty_generation(estate, clock, monke
 
     with monkeypatch.context() as m:
         m.setattr(hub, "rows_push", pushing)
-        life.sync(path, hub)
-    assert not life.sync(path, hub)["rejected"]
+        soma.sync(path, hub)
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("items", ["deleted_at"], "") == [{"deleted_at": T1}]
 
 
 def test_backdated_changes_on_uncataloged_table(estate, clock):
     path, hub = estate
-    life.execute_sql(path, "CREATE TABLE raw (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)")
+    soma.execute_sql(path, "CREATE TABLE raw (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)")
     clock[0] = T2
-    life.sync(path, hub)
-    life.execute_sql(path, f"INSERT INTO raw VALUES ('old','{T0}',NULL)")
-    assert not life.sync(path, hub)["rejected"]
+    soma.sync(path, hub)
+    soma.execute_sql(path, f"INSERT INTO raw VALUES ('old','{T0}',NULL)")
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("raw", ["id"], "") == [{"id": "old"}]
 
 
 def test_rollback_and_remote_pulls_do_not_queue_local_changes(estate, clock):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
-    life.catalog.set_property(path, "items", "name", required=1)
-    life.sync(path, hub)
-    with pytest.raises(life.catalog.ValidationError):
-        life.insert_rows(path, "items", [{"id": "bad", "updated_at": T0}])
-    assert life.execute_sql(path, "SELECT * FROM _sync_dirty") == []
+    soma.sync(path, hub)
+    soma.catalog.set_property(path, "items", "name", required=1)
+    soma.sync(path, hub)
+    with pytest.raises(soma.catalog.ValidationError):
+        soma.insert_rows(path, "items", [{"id": "bad", "updated_at": T0}])
+    assert soma.execute_sql(path, "SELECT * FROM _sync_dirty") == []
     row = {"id": "remote", "name": "value", "updated_at": T0}
     hub.rows_push("items", list(row), [row])
     clock[0] = "2026-01-01T00:00:03.000Z"
-    assert not life.sync(path, hub)["rejected"]
-    assert life.execute_sql(path, "SELECT * FROM _sync_dirty") == []
-    assert life.sync(path, hub)["pushed"] == 0
-    assert not life.execute_sql(
+    assert not soma.sync(path, hub)["rejected"]
+    assert soma.execute_sql(path, "SELECT * FROM _sync_dirty") == []
+    assert soma.sync(path, hub)["pushed"] == 0
+    assert not soma.execute_sql(
         path, "SELECT * FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_dirty_%'"
     )
-    assert not life.execute_sql(path, "SELECT * FROM _schema_log WHERE ddl LIKE '%_sync_dirty%'")
+    assert not soma.execute_sql(path, "SELECT * FROM _schema_log WHERE ddl LIKE '%_sync_dirty%'")
 
 
 def test_checkpoint_upgrade_recovers_preexisting_backdated_import(estate, clock):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
+    soma.sync(path, hub)
     # Simulate an older writer and a persisted v2 checkpoint.
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute(f"INSERT INTO items (id,updated_at) VALUES ('old','{T0}')")
         conn.execute("UPDATE _sync_state SET value='2' WHERE key='checkpoint_version'")
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "old" in ids(hub)
 
 
@@ -265,16 +265,16 @@ def test_checkpoint_upgrade_recovers_preexisting_backdated_import(estate, clock)
 def test_equal_checkpoint_insert_is_not_lost(estate, clock, deleted):
     path, hub = estate
     boundary = state(path)["last_push"]
-    life.insert_rows(
+    soma.insert_rows(
         path,
         "items",
         [{"id": "boundary", "name": "value", "updated_at": boundary, "deleted_at": deleted}],
     )
     clock[0] = T1
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "boundary" in ids(hub)
     clock[0] = T2
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "boundary" in ids(hub)
 
 
@@ -283,11 +283,11 @@ def test_remote_future_revision_cannot_poison_push_checkpoint(estate, clock):
     remote = {"id": "remote", "name": "future", "updated_at": FUTURE}
     assert not hub.rows_push("items", list(remote), [remote])["rejected"]
     clock[0] = T1
-    life.sync(path, hub)
-    life.sync(path, hub)
-    life.insert_rows(path, "items", [{"id": "local", "name": "normal"}])
+    soma.sync(path, hub)
+    soma.sync(path, hub)
+    soma.insert_rows(path, "items", [{"id": "local", "name": "normal"}])
     clock[0] = T2
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "local" in ids(hub)
     assert state(path)["last_push"] == T2
 
@@ -301,15 +301,15 @@ def test_existing_checkpoint_repair_retries_and_recovers_missed_rows(
     # Model an already-used pre-fix database, including a consumed pull cursor.
     # The short poison is already in the past at repair time, so checking only
     # last_push > now would not recover this omission.
-    life.insert_rows(path, "items", [{"id": "missed-local", "name": "local"}])
+    soma.insert_rows(path, "items", [{"id": "missed-local", "name": "local"}])
     row = {"id": "missed-remote", "name": "remote", "updated_at": T0}
     hub.rows_push("items", list(row), [row])
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute("DELETE FROM _sync_state")
         conn.executemany(
             "INSERT INTO _sync_state VALUES (?, ?)", [("last_push", poison), ("last_pull", T1)]
         )
-    path = life.init(path)  # Persisted state, not a fresh database success.
+    path = soma.init(path)  # Persisted state, not a fresh database success.
     before = state(path)
     clock[0] = T2
     original = hub.rows_push
@@ -326,22 +326,22 @@ def test_existing_checkpoint_repair_retries_and_recovers_missed_rows(
             m.setattr(hub, "rows_push", failing)
             if failure == "interrupt":
                 with pytest.raises(OSError, match="synthetic"):
-                    life.sync(path, hub)
+                    soma.sync(path, hub)
                 kept = {k: v for k, v in state(path).items() if not k.startswith("recovery")}
                 assert kept == before  # only resume progress was saved
             else:
-                assert life.sync(path, hub)["rejected"]
+                assert soma.sync(path, hub)["rejected"]
                 assert state(path)["last_push"] == poison
                 assert "checkpoint_version" not in state(path)
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "missed-local" in ids(hub)
-    assert life.execute_sql(path, "SELECT id FROM items WHERE id='missed-remote'")
+    assert soma.execute_sql(path, "SELECT id FROM items WHERE id='missed-remote'")
     assert state(path)["last_push"] == T2
 
 
 def test_writer_cannot_commit_below_a_snapshot_checkpoint(estate, clock, monkeypatch):
     path, hub = estate
-    connect = life.connect
+    connect = soma.connect
     attempted = False
     blocked = []
 
@@ -368,29 +368,29 @@ def test_writer_cannot_commit_below_a_snapshot_checkpoint(estate, clock, monkeyp
         return conn
 
     with monkeypatch.context() as m:
-        m.setattr(life, "connect", traced_connect)
-        life.sync(path, hub)
+        m.setattr(soma, "connect", traced_connect)
+        soma.sync(path, hub)
     assert attempted
     assert blocked == ["database is locked"]
     # Ordinary writes are available once the short snapshot finishes.
-    life.insert_rows(path, "items", [{"id": "after", "name": "value"}])
+    soma.insert_rows(path, "items", [{"id": "after", "name": "value"}])
     clock[0] = T2
-    life.sync(path, hub)
+    soma.sync(path, hub)
     assert "after" in ids(hub)
 
 
-class BoundHub(life.LocalHub, life.HttpHub):
+class BoundHub(soma.LocalHub, soma.HttpHub):
     """Real local hub operations with the HTTP endpoint-binding identity."""
 
     def __init__(self, path, base):
-        life.LocalHub.__init__(self, path)
+        soma.LocalHub.__init__(self, path)
         self.base = base
 
 
 def test_overlapping_first_sync_is_busy_before_second_hub_is_contacted(tmp_path):
-    path = life.init(tmp_path / "replica.db")
-    life.create_table(path, "items", ["name:text"])
-    life.insert_rows(path, "items", [{"id": "local", "name": "value"}])
+    path = soma.init(tmp_path / "replica.db")
+    soma.create_table(path, "items", ["name:text"])
+    soma.insert_rows(path, "items", [{"id": "local", "name": "value"}])
     first = BoundHub(tmp_path / "first.db", "https://first.example")
     second = BoundHub(tmp_path / "second.db", "https://second.example")
     entered, release = threading.Event(), threading.Event()
@@ -403,27 +403,27 @@ def test_overlapping_first_sync_is_busy_before_second_hub_is_contacted(tmp_path)
 
     first.ensure_ready = paused_ready
     with ThreadPoolExecutor(max_workers=1) as pool:
-        running = pool.submit(life.sync, path, first)
+        running = pool.submit(soma.sync, path, first)
         try:
             assert entered.wait(5)
             with pytest.raises(RuntimeError, match="sync.*already|sync.*progress"):
-                life.sync(path, second)
+                soma.sync(path, second)
             assert not second.path.exists()
             # The sync lock must not block local edits during network work.
-            life.insert_rows(path, "items", [{"id": "during", "name": "value"}])
+            soma.insert_rows(path, "items", [{"id": "during", "name": "value"}])
         finally:
             release.set()
         assert not running.result(timeout=5)["rejected"]
     assert state(path)["hub_url"] == first.base
     assert ids(first) == {"local", "during"}
     with pytest.raises(ValueError, match="hub changed"):
-        life.sync(path, second)
+        soma.sync(path, second)
     assert not second.path.exists()
 
 
 def test_snapshot_waits_for_an_already_writing_transaction(estate, clock, monkeypatch):
     path, hub = estate
-    connect = life.connect
+    connect = soma.connect
     snapshot_started = threading.Event()
 
     def traced_connect(p, manual_tx=False):
@@ -438,8 +438,8 @@ def test_snapshot_waits_for_an_already_writing_transaction(estate, clock, monkey
         writer.execute("BEGIN IMMEDIATE")
         writer.execute("INSERT INTO items(id,name) VALUES ('pending','value')")
         with monkeypatch.context() as m:
-            m.setattr(life, "connect", traced_connect)
-            running = pool.submit(life.sync, path, hub)
+            m.setattr(soma, "connect", traced_connect)
+            running = pool.submit(soma.sync, path, hub)
             try:
                 assert snapshot_started.wait(5)
                 assert not running.done()
@@ -457,16 +457,16 @@ def test_sync_lock_releases_after_failure_and_is_per_database(estate, tmp_path, 
 
     def failed_ready():
         # Another local database can sync while this one's round is active.
-        other = life.init(tmp_path / "other.db")
-        life.sync(other, life.LocalHub(tmp_path / "other-hub.db"))
+        other = soma.init(tmp_path / "other.db")
+        soma.sync(other, soma.LocalHub(tmp_path / "other-hub.db"))
         raise OSError("synthetic failure")
 
     with monkeypatch.context() as m:
         m.setattr(hub, "ensure_ready", failed_ready)
         with pytest.raises(OSError, match="synthetic"):
-            life.sync(path, hub)
+            soma.sync(path, hub)
     assert hub.ensure_ready == ready
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
 
 
 def test_sync_lock_is_cross_process_and_canonicalizes_symlinks(estate, tmp_path):
@@ -482,15 +482,15 @@ def test_sync_lock_is_cross_process_and_canonicalizes_symlinks(estate, tmp_path)
     script = """
 import sys
 from pathlib import Path
-import life_data as life
-class Paused(life.LocalHub):
+import soma
+class Paused(soma.LocalHub):
     def ensure_ready(self):
         print('ready', flush=True)
         sys.stdin.readline()
         super().ensure_ready()
-life.sync(Path(sys.argv[1]), Paused(Path(sys.argv[2])))
+soma.sync(Path(sys.argv[1]), Paused(Path(sys.argv[2])))
 """
-    env = {**os.environ, "PYTHONPATH": str(Path(life.__file__).parents[1])}
+    env = {**os.environ, "PYTHONPATH": str(Path(soma.__file__).parents[1])}
     proc = subprocess.Popen(
         [sys.executable, "-c", script, str(path), str(hub.path)],
         stdin=subprocess.PIPE,
@@ -503,28 +503,28 @@ life.sync(Path(sys.argv[1]), Paused(Path(sys.argv[2])))
         assert select.select([proc.stdout], [], [], 5)[0]
         assert proc.stdout.readline() == "ready\n"
         with pytest.raises(RuntimeError, match="sync.*already|sync.*progress"):
-            life.sync(alias, hub)
+            soma.sync(alias, hub)
     finally:
         _, errors = proc.communicate("\n", timeout=5)
     assert proc.returncode == 0, errors
-    assert not life.sync(alias, hub)["rejected"]
+    assert not soma.sync(alias, hub)["rejected"]
 
 
 def test_cursor_and_binding_commit_roll_back_together(tmp_path):
-    path = life.init(tmp_path / "replica.db")
-    life.create_table(path, "items", ["name:text"])
-    life.insert_rows(path, "items", [{"id": "a", "name": "value"}])
+    path = soma.init(tmp_path / "replica.db")
+    soma.create_table(path, "items", ["name:text"])
+    soma.insert_rows(path, "items", [{"id": "a", "name": "value"}])
     hub = BoundHub(tmp_path / "hub.db", "https://hub.example")
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute("""CREATE TRIGGER fail_state BEFORE INSERT ON _sync_state
             WHEN NEW.key = 'hub_url' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END""")
     before = state(path)
     with pytest.raises(sqlite3.IntegrityError, match="synthetic failure"):
-        life.sync(path, hub)
+        soma.sync(path, hub)
     assert state(path) == before
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute("DROP TRIGGER fail_state")
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert state(path)["hub_url"] == hub.base
     assert ids(hub) == {"a"}
 
@@ -538,8 +538,8 @@ def test_table_created_before_snapshot_cannot_be_skipped_by_checkpoint(estate, c
         clock[0] = T1
         # SQL DDL is a supported writer too. It lands after schema replay and
         # table discovery, but before the snapshot's newer clock checkpoint.
-        life.execute_sql(path, life.table_ddl("late", ["name:text"])[0])
-        life.insert_rows(path, "late", [{"id": "late-row", "name": "value"}])
+        soma.execute_sql(path, soma.table_ddl("late", ["name:text"])[0])
+        soma.insert_rows(path, "late", [{"id": "late-row", "name": "value"}])
         clock[0] = T2
         return result
 
@@ -547,26 +547,26 @@ def test_table_created_before_snapshot_cannot_be_skipped_by_checkpoint(estate, c
     with monkeypatch.context() as m:
         m.setattr(hub, "marks", create_after_cursor)
         try:
-            life.sync(path, hub)
+            soma.sync(path, hub)
         except sqlite3.OperationalError as exc:
             # Discovering the new table may require retrying schema replay;
             # it must not advance a checkpoint past the unsent row.
             assert "no such table" in str(exc)
             assert state(path) == before
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.rows_pull("late", ["id"], "") == [{"id": "late-row"}]
 
 
 def test_checkpoint_recovery_is_announced_once_across_restarts(estate, capsys):
     path, hub = estate
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute("DELETE FROM _sync_state WHERE key='checkpoint_version'")
     capsys.readouterr()
-    life.sync(path, hub)
+    soma.sync(path, hub)
     messages = capsys.readouterr().err
     assert "sync checkpoint recovery: full pull" in messages
     assert "checkpoint recovery complete" in messages
-    life.sync(life.init(path), hub)
+    soma.sync(soma.init(path), hub)
     assert "checkpoint recovery" not in capsys.readouterr().err
 
 
@@ -576,10 +576,10 @@ def test_observed_clock_rollback_recovers_even_if_clock_catches_up_before_retry(
 ):
     path, hub = estate
     clock[0] = T2
-    life.sync(path, hub)
+    soma.sync(path, hub)
     assert state(path)["checkpoint_version"] == "3"
     clock[0] = T1  # A normal supported insert while the wall clock is behind.
-    life.insert_rows(path, "items", [{"id": "rollback", "name": "value"}])
+    soma.insert_rows(path, "items", [{"id": "rollback", "name": "value"}])
     original = hub.rows_push
 
     def fail(table, columns, rows, **kwargs):
@@ -594,20 +594,20 @@ def test_observed_clock_rollback_recovers_even_if_clock_catches_up_before_retry(
             m.setattr(hub, "rows_push", fail)
         if failure == "interrupt":
             with pytest.raises(OSError, match="synthetic"):
-                life.sync(path, hub)
+                soma.sync(path, hub)
         else:
-            out = life.sync(path, hub)
+            out = soma.sync(path, hub)
             assert bool(out["rejected"]) == bool(failure)
     if failure:
         assert state(path)["last_push"] == T2
         assert state(path).get("checkpoint_version") != "3"
         clock[0] = T2
-        assert not life.sync(path, hub)["rejected"]
+        assert not soma.sync(path, hub)["rejected"]
     assert "rollback" in ids(hub)
     assert state(path)["checkpoint_version"] == "3"
 
 
-class Counting(life.LocalHub):
+class Counting(soma.LocalHub):
     """A hub that records which tables a replica actually pulled."""
 
     def __init__(self, path):
@@ -620,48 +620,48 @@ class Counting(life.LocalHub):
 
 
 def test_quiet_round_pulls_only_tables_the_hub_reports_changed(tmp_path, clock):
-    path = life.init(tmp_path / "replica.db")
-    other = life.init(tmp_path / "other.db")
+    path = soma.init(tmp_path / "replica.db")
+    other = soma.init(tmp_path / "other.db")
     for name in ("items", "notes", "places"):
-        life.create_table(path, name, ["name:text"])
+        soma.create_table(path, name, ["name:text"])
     hub = Counting(tmp_path / "hub.db")
-    life.sync(path, hub)
-    life.sync(path, hub)  # the first round's cursor predates its own push; the second binds it
-    life.sync(other, hub)  # a second replica joins with the same schema
+    soma.sync(path, hub)
+    soma.sync(path, hub)  # the first round's cursor predates its own push; the second binds it
+    soma.sync(other, hub)  # a second replica joins with the same schema
     clock[0] = T1
-    life.insert_rows(other, "notes", [{"id": "n1", "name": "from the other replica"}])
-    life.sync(other, hub)
+    soma.insert_rows(other, "notes", [{"id": "n1", "name": "from the other replica"}])
+    soma.sync(other, hub)
 
     hub.pulled.clear()
     clock[0] = T2
-    out = life.sync(path, hub)
+    out = soma.sync(path, hub)
     assert out["pulled"] == 1
     assert "notes" in hub.pulled  # the changed table is pulled
     assert "items" not in hub.pulled and "places" not in hub.pulled  # quiet tables are not
-    assert life.execute_sql(path, "SELECT name FROM notes") == [{"name": "from the other replica"}]
+    assert soma.execute_sql(path, "SELECT name FROM notes") == [{"name": "from the other replica"}]
 
 
 def test_first_sync_and_hubs_without_marks_still_pull_everything(tmp_path, clock, monkeypatch):
-    path = life.init(tmp_path / "replica.db")
+    path = soma.init(tmp_path / "replica.db")
     for name in ("items", "notes"):
-        life.create_table(path, name, ["name:text"])
+        soma.create_table(path, name, ["name:text"])
     hub = Counting(tmp_path / "hub.db")
-    life.sync(path, hub)  # first sync: no cursor yet
+    soma.sync(path, hub)  # first sync: no cursor yet
     assert {"items", "notes"} <= set(hub.pulled)
 
-    life.sync(path, hub)
+    soma.sync(path, hub)
     hub.pulled.clear()
     marks = hub.marks
     # an older hub answers with the maximum only
     monkeypatch.setattr(hub, "marks", lambda tables: (marks(tables)[0], None))
-    life.sync(path, hub)
+    soma.sync(path, hub)
     assert {"items", "notes"} <= set(hub.pulled)
 
 
 T3 = "2026-01-01T00:00:03.000Z"
 
 
-class Recording(life.LocalHub):
+class Recording(soma.LocalHub):
     """Records pushes and pull-page requests; can fail one pull page once."""
 
     def __init__(self, path):
@@ -682,20 +682,20 @@ class Recording(life.LocalHub):
 
 
 def legacy_checkpoint(path):
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute("UPDATE _sync_state SET value='2' WHERE key='checkpoint_version'")
 
 
 def names(path, table="items"):
-    rows = life.execute_sql(path, f"SELECT id, name FROM {table}")
+    rows = soma.execute_sql(path, f"SELECT id, name FROM {table}")
     return {r["id"]: r["name"] for r in rows}
 
 
 def test_recovery_pushes_only_rows_the_hub_lacks_or_holds_older(tmp_path, clock):
-    path = life.init(tmp_path / "replica.db")
-    life.create_table(path, "items", ["name:text"])
+    path = soma.init(tmp_path / "replica.db")
+    soma.create_table(path, "items", ["name:text"])
     hub = Recording(tmp_path / "hub.db")
-    life.sync(path, hub)
+    soma.sync(path, hub)
     remote = [
         {"id": "same", "name": "hub", "updated_at": T1},
         {"id": "hub-newer", "name": "hub", "updated_at": T2},
@@ -703,16 +703,16 @@ def test_recovery_pushes_only_rows_the_hub_lacks_or_holds_older(tmp_path, clock)
     ]
     hub.rows_push("items", ["id", "name", "updated_at"], remote)
     # An older writer left rows without dirty receipts behind a pre-v3 checkpoint.
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.executemany(
             "INSERT INTO items (id, name, updated_at) VALUES (?, 'local', ?)",
             [("same", T1), ("hub-newer", T1), ("local-newer", T2), ("local-only", T0)],
         )
     legacy_checkpoint(path)
-    life.insert_rows(path, "items", [{"id": "edited", "name": "local"}])
+    soma.insert_rows(path, "items", [{"id": "edited", "name": "local"}])
     hub.pushed.clear()
     clock[0] = T3
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert sorted(hub.pushed) == [
         ("items", "edited"),
         ("items", "local-newer"),
@@ -730,48 +730,48 @@ def test_recovery_pushes_only_rows_the_hub_lacks_or_holds_older(tmp_path, clock)
 
 
 def test_interrupted_recovery_resumes_at_the_failed_page(tmp_path, clock, monkeypatch):
-    monkeypatch.setattr(life, "CHUNK", 2)
-    path = life.init(tmp_path / "replica.db")
-    other = life.init(tmp_path / "other.db")
+    monkeypatch.setattr(soma, "CHUNK", 2)
+    path = soma.init(tmp_path / "replica.db")
+    other = soma.init(tmp_path / "other.db")
     for name in ("alpha", "items"):
-        life.create_table(path, name, ["name:text"])
+        soma.create_table(path, name, ["name:text"])
     hub = Recording(tmp_path / "hub.db")
-    life.sync(path, hub)
-    life.insert_rows(path, "items", [{"id": f"i{n}", "name": "v"} for n in range(6)])
-    life.sync(path, hub)
-    life.sync(other, hub)
+    soma.sync(path, hub)
+    soma.insert_rows(path, "items", [{"id": f"i{n}", "name": "v"} for n in range(6)])
+    soma.sync(path, hub)
+    soma.sync(other, hub)
     legacy_checkpoint(path)
 
     hub.fail_page = ("items", 1)
     with pytest.raises(OSError, match="synthetic page failure"):
-        life.sync(path, hub)
+        soma.sync(path, hub)
     # Between attempts: another replica writes to a table recovery already
     # verified (two arrivals, so a fresh cursor would skip the first), and so
     # does this replica.
     clock[0] = T1
-    life.insert_rows(other, "alpha", [{"id": "remote-late", "name": "v"}])
-    life.sync(other, hub)
+    soma.insert_rows(other, "alpha", [{"id": "remote-late", "name": "v"}])
+    soma.sync(other, hub)
     clock[0] = T2
-    life.insert_rows(other, "alpha", [{"id": "remote-later", "name": "v"}])
-    life.sync(other, hub)
-    life.insert_rows(path, "alpha", [{"id": "local-late", "name": "v"}])
+    soma.insert_rows(other, "alpha", [{"id": "remote-later", "name": "v"}])
+    soma.sync(other, hub)
+    soma.insert_rows(path, "alpha", [{"id": "local-late", "name": "v"}])
 
     hub.calls.clear()
     clock[0] = T3
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert hub.calls[0] == ("items", "i1")  # resumes after the last completed page
     assert {t for t, _ in hub.calls} <= {"items", "history"}
     assert state(path)["checkpoint_version"] == "3"
     assert not [k for k in state(path) if k.startswith("recovery")]
     assert "local-late" in names(hub.path, "alpha")
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert {"remote-late", "remote-later"} <= set(names(path, "alpha"))
     assert set(names(path)) == {f"i{n}" for n in range(6)}
 
 
 def test_rejected_recovery_rescans_the_hub_on_retry(estate, clock, monkeypatch):
     path, hub = estate
-    with life.connect(path) as conn:
+    with soma.connect(path) as conn:
         conn.execute(f"INSERT INTO items (id, updated_at) VALUES ('missed', '{T0}')")
     legacy_checkpoint(path)
     original = hub.rows_push
@@ -784,9 +784,9 @@ def test_rejected_recovery_rescans_the_hub_on_retry(estate, clock, monkeypatch):
     clock[0] = T1  # the missed row predates recovery: only the hub comparison finds it
     with monkeypatch.context() as m:
         m.setattr(hub, "rows_push", rejecting)
-        assert life.sync(path, hub)["rejected"]
+        assert soma.sync(path, hub)["rejected"]
     assert state(path)["checkpoint_version"] != "3"
     clock[0] = T2
-    assert not life.sync(path, hub)["rejected"]
+    assert not soma.sync(path, hub)["rejected"]
     assert "missed" in ids(hub)
     assert state(path)["checkpoint_version"] == "3"

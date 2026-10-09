@@ -19,7 +19,7 @@ import sys
 import httpx
 
 CF_ACCOUNT = "1e69de15e5dc3dddea6db7b3ae8087bc"
-NAME = "life-data"
+NAME = "soma"
 # AI Agent vault items, by ID (names are mutable, IDs aren't)
 OP_CF_TOKEN = "op://4eeyrkqibibn7k4j6rz2fbzvxm/mxxpo6neiz3grdyrjj7rv7nume/credential"
 
@@ -83,7 +83,7 @@ MINTERS = {
 }
 
 
-BUCKETS = ["life-data-backups", "life-data-archive"]
+BUCKETS = ["soma-backups", "soma-archive"]
 
 
 def ensure() -> None:

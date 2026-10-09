@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from life_data import LocalHub, catalog, create_table, execute_sql, init, sync
+from soma import LocalHub, catalog, create_table, execute_sql, init, sync
 
 catalog.ORIGIN = "replica"
 with tempfile.TemporaryDirectory() as directory:

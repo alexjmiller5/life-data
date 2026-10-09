@@ -1,4 +1,4 @@
-"""life-data: schema-agnostic personal data store — local-first SQLite, agent-friendly CLI."""
+"""soma: schema-agnostic personal data store — local-first SQLite, agent-friendly CLI."""
 
 import argparse
 import fcntl
@@ -18,9 +18,9 @@ from pathlib import Path
 VERSION = "0.2.0"
 # Default hosted hub. Any deployment can be targeted by setting hub_url in
 # config.json, so the client is not tied to this instance.
-DEFAULT_HUB_URL = "https://life-data.nqipomyrjb.workers.dev"
-POLL_SECONDS = 30  # how often `life watch` pulls when the hub cannot signal changes
-TICK_SECONDS = 1  # how often `life watch` checks for local changes
+DEFAULT_HUB_URL = "https://soma.nqipomyrjb.workers.dev"
+POLL_SECONDS = 30  # how often `soma watch` pulls when the hub cannot signal changes
+TICK_SECONDS = 1  # how often `soma watch` checks for local changes
 CHANGES_WAIT = 25  # seconds one change long poll may be held (the hub's maximum)
 SAFETY_SECONDS = 600  # with live change signals, a slow round still catches a missed one
 
@@ -44,20 +44,20 @@ PLUMBING_STMTS = [
 ]
 PLUMBING = ";\n".join(PLUMBING_STMTS) + ";"
 
-from life_data import catalog, changes
+from soma import catalog, changes, legacy
 
 # --- local database ----------------------------------------------------------
 
 
 def resolve_data_dir() -> Path:
-    if override := os.environ.get("LIFE_DATA_DIR"):
+    if override := os.environ.get("SOMA_DATA_DIR"):
         return Path(override)
     xdg = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
-    return Path(xdg) / "life-data"
+    return Path(xdg) / "soma"
 
 
 def db_path() -> Path:
-    return resolve_data_dir() / "life.db"
+    return resolve_data_dir() / "soma.db"
 
 
 SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -120,7 +120,7 @@ def execute_sql(path: Path, sql: str) -> list[dict]:
     if RENAME_TABLE.match(sql):
         raise ValueError(
             "renaming a table through SQL leaves the catalog, provenance and history "
-            "pointing at the old name - use `life table rename OLD NEW`"
+            "pointing at the old name - use `soma table rename OLD NEW`"
         )
     if _first_word(sql) in READ_KEYWORDS:
         with connect(path) as conn:
@@ -265,7 +265,7 @@ def rename_table(path: Path, old: str, new: str) -> None:
         for stmt in (
             f"ALTER TABLE {qi(old)} RENAME TO {qi(new)}",
             # SQLite rewrites the trigger body itself; the NAME must follow the
-            # convention too, or a later `life table create {old}` collides
+            # convention too, or a later `soma table create {old}` collides
             f"DROP TRIGGER IF EXISTS {qi(f'{old}_updated_at')}",
             _trigger_ddl(new),
         ):
@@ -277,8 +277,8 @@ def rename_table(path: Path, old: str, new: str) -> None:
     catalog.write(path, run, ddl=True)
 
 
-# The dump shape version shared with life-core (DUMP_HEADER in core/src/backup.ts).
-DUMP_HEADER = "-- life-data-dump: 1"
+# The dump shape version shared with soma-core (DUMP_HEADER in core/src/backup.ts).
+DUMP_HEADER = "-- soma-dump: 1"
 
 
 def dump_sql(path: Path) -> str:
@@ -317,10 +317,15 @@ def load_config(data_dir: Path | None = None, *, resolve_auth: bool = True) -> d
 
     prefs = read_json(data_dir / "background.json")
     if prefs.get("hub_url"):
+        current = legacy.hub_url(prefs["hub_url"], DEFAULT_HUB_URL)
+        if current != prefs["hub_url"]:
+            from .background import update_preferences
+
+            prefs = update_preferences(data_dir, lambda p: p.update(hub_url=current))
         cfg["hub_url"] = prefs["hub_url"]
     cfg.setdefault("hub_url", DEFAULT_HUB_URL)
     cfg.setdefault("commands", {})
-    cfg["hub_url"] = validate_hub_url(os.environ.get("LIFE_HUB_URL", cfg["hub_url"]))
+    cfg["hub_url"] = validate_hub_url(os.environ.get("SOMA_HUB_URL", cfg["hub_url"]))
     if prefs.get("signed_out") or prefs.get("keychain"):
         cfg["headers"] = {
             key: value
@@ -329,12 +334,14 @@ def load_config(data_dir: Path | None = None, *, resolve_auth: bool = True) -> d
         }
     if not resolve_auth:
         return cfg
-    token = os.environ.get("LIFE_HUB_TOKEN") or None
+    token = os.environ.get("SOMA_HUB_TOKEN") or None
     if not token and not prefs.get("signed_out") and prefs.get("keychain"):
         from .background import keychain_account
         from .credentials import read_token
 
-        token = read_token(keychain_account(data_dir, cfg["hub_url"]))
+        token = read_token(keychain_account(data_dir, cfg["hub_url"])) or legacy.adopt_token(
+            data_dir, cfg["hub_url"], DEFAULT_HUB_URL, interactive=True
+        )
     elif not token and not prefs.get("signed_out"):
         token = cfg.get("token")
         if not token and cfg.get("token_cmd"):
@@ -532,7 +539,7 @@ def _ensure_purges(path: Path) -> None:
             purpose="Purge markers: each names a row (col empty) or one column's history "
             "that the hub and every replica hard-delete, never the content itself.",
             id_semantics="JSON array [table, row_id, col]; purging again updates purged_at.",
-            owner="life purge",
+            owner="soma purge",
         )
 
 
@@ -933,9 +940,7 @@ class HttpHub:
         # A real User-Agent is REQUIRED, not cosmetic: Cloudflare's edge bot
         # protection 403s (error 1010) the default "Python-urllib/x.y" agent
         # before the request ever reaches the Worker.
-        self.headers = _validate_headers(
-            {"User-Agent": f"life-data/{VERSION}", **dict(headers or {})}
-        )
+        self.headers = _validate_headers({"User-Agent": f"soma/{VERSION}", **dict(headers or {})})
         self.timeout = timeout
         self.opener = urllib.request.build_opener(_NoRedirect())
 
@@ -1275,6 +1280,9 @@ def _sync_locked(path: Path, hub) -> dict:
     unbound_hub = False
     if isinstance(hub, HttpHub):
         previous_hub = _get_state(path, "hub_url")
+        if previous_hub and legacy.hub_url(previous_hub, DEFAULT_HUB_URL) == hub.base:
+            _set_state(path, "hub_url", hub.base)
+            previous_hub = hub.base
         unbound_hub = not previous_hub
         if previous_hub and previous_hub != hub.base:
             raise ValueError("hub changed; use a fresh data directory for a different hub")
@@ -1438,7 +1446,7 @@ def _sync_locked(path: Path, hub) -> dict:
                     _upsert_sql(table, columns[table]), (json.dumps(remote[i : i + CHUNK]),)
                 )
                 pulled += cur.rowcount
-                # Short transactions: a `life sql` writer waits one chunk, not a
+                # Short transactions: a `soma sql` writer waits one chunk, not a
                 # whole pull. A failure re-pulls; the LWW upsert is idempotent.
                 conn.commit()
             if table == PURGES:
@@ -1658,7 +1666,7 @@ def watch(path: Path, hub, poll_seconds: int = POLL_SECONDS, once: bool = False)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="life", description=__doc__)
+    parser = argparse.ArgumentParser(prog="soma", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="create the data dir and database")
     sub.add_parser("path", help="print the database path")
@@ -1754,7 +1762,7 @@ def main(argv: list[str] | None = None) -> int:
     p_simport.add_argument("--chunk", type=int, default=500)
     p_archive = sub.add_parser("archive", help="analytical queries over streams (DuckDB)")
     a_sub = p_archive.add_subparsers(dest="archive_command", required=True)
-    p_aq = a_sub.add_parser("query", help="SQL over the archive (life.events), results as JSON")
+    p_aq = a_sub.add_parser("query", help="SQL over the archive (soma.events), results as JSON")
     p_aq.add_argument("statement")
     p_aq.add_argument(
         "--raw",
@@ -1853,6 +1861,8 @@ def main(argv: list[str] | None = None) -> int:
     ru_rm.add_argument("id")
     args = parser.parse_args(argv)
 
+    if not os.environ.get("SOMA_DATA_DIR"):
+        legacy.adopt_data_dir(resolve_data_dir())
     path = db_path()
     from .login import LoginError
 
@@ -1968,7 +1978,7 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         cfg = load_config()
         if not cfg.get("token"):
             print(
-                "life derive requires a hub token: set LIFE_HUB_TOKEN, config.json's "
+                "soma derive requires a hub token: set SOMA_HUB_TOKEN, config.json's "
                 "token, or token_cmd",
                 file=sys.stderr,
             )

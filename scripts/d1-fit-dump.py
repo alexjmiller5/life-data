@@ -2,7 +2,7 @@
 """Rewrite a SQL dump (stdin -> stdout) so every statement fits D1's 100 KB
 statement limit, for restoring a hub backup into D1:
 
-    gunzip -c life-....sql.gz | scripts/d1-fit-dump.py > dump.sql
+    gunzip -c soma-....sql.gz | scripts/d1-fit-dump.py > dump.sql
     wrangler d1 execute <new-db> --remote --file dump.sql
 
 D1 stores values up to 2 MB, but its export writes each row as one INSERT,

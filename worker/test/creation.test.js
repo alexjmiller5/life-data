@@ -127,7 +127,7 @@ test('Python consumer accepts real Worker session, created and existing receipts
   const created=await (await call()).json(),existing=await (await call()).json();
   const child=Bun.spawn(['python3','-c',`
 import json, sys
-from life_data.creation import validate_creation_receipt, validate_creation_session
+from soma.creation import validate_creation_receipt, validate_creation_session
 v=json.load(sys.stdin)
 assert validate_creation_session({'status':200,'data':v['session']},v['policy'],v['scopes'])
 for receipt in [v['created'],v['existing']]:

@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Converge the Cloudflare Access application for Life device enrollment.
+"""Converge the Cloudflare Access application for Soma device enrollment.
 
 This owns only the Access application at ``<domain>/login``. It never creates
 or stores a client credential. Pass the operator API token through
@@ -112,7 +112,7 @@ def destination(domain: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("--domain must be an origin such as https://life.example.com")
+        raise ValueError("--domain must be an origin such as https://soma.example.com")
     return domain.rstrip("/") + "/login"
 
 
@@ -191,10 +191,10 @@ def account_id(client: Client) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--domain", required=True, help="hub origin, such as https://life.example.com"
+        "--domain", required=True, help="hub origin, such as https://soma.example.com"
     )
     parser.add_argument("--email", action="append", required=True, dest="emails")
-    parser.add_argument("--name", default="life-login")
+    parser.add_argument("--name", default="soma-login")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     token = os.environ.get("CLOUDFLARE_API_TOKEN")

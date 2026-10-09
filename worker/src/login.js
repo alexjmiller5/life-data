@@ -148,14 +148,14 @@ async function approvedLogin(request, env, url) {
   const result=await env.AUTH_DB.batch(statements);
   if (!result[0].results?.length) {
     return page(
-      "Life API token cannot be reused",
+      "Soma API token cannot be reused",
       "<p>This token was revoked or belongs to a different approval. Start a new sign-in on the device.</p>",
       409,
     );
   }
   return page(
-    "Life device approved",
-    '<p>If the device is still waiting, it will finish signing in automatically. If you abandoned this request, revoke its API token in <a href="/login/devices">Life devices</a>.</p>',
+    "Soma device approved",
+    '<p>If the device is still waiting, it will finish signing in automatically. If you abandoned this request, revoke its API token in <a href="/login/devices">Soma devices</a>.</p>',
   );
 }
 
@@ -176,8 +176,8 @@ async function devicesPage(env) {
     )
     .join("");
   return page(
-    "Life devices",
-    `<p>Revoke a Life API token to stop that token accessing Life. Browser sessions are separate: a signed-in owner browser can approve devices.</p><table><thead><tr><th>Device</th><th>Created</th><th>Token status</th><th></th></tr></thead><tbody>${rows || "<tr><td colspan=4>No devices</td></tr>"}</tbody></table>`,
+    "Soma devices",
+    `<p>Revoke a Soma API token to stop that token accessing Soma. Browser sessions are separate: a signed-in owner browser can approve devices.</p><table><thead><tr><th>Device</th><th>Created</th><th>Token status</th><th></th></tr></thead><tbody>${rows || "<tr><td colspan=4>No devices</td></tr>"}</tbody></table>`,
   );
 }
 
@@ -196,8 +196,8 @@ async function revokeDevice(request, env, url) {
     .first();
   if (!result) return json({ error: "device not found" }, 404);
   return page(
-    "Life API token revoked",
-    "<p>This token can no longer access Life. Browser sign-in is unchanged.</p>",
+    "Soma API token revoked",
+    "<p>This token can no longer access Soma. Browser sign-in is unchanged.</p>",
   );
 }
 
@@ -217,7 +217,7 @@ export async function handleLogin(request, env, ctx, url) {
     const profileFields=profile ? `<p>Application: <strong>${escapeHtml(profile.label)}</strong></p><p>${profile.scopes.some(s=>/^(?:tables:(?:write|patch)|rows:create|files:write|streams:append|captures:submit)(?::|$)/.test(s))?'Read and write access (listed grants only):':'Read-only access:'}</p><ul>${profile.scopes.map(s=>`<li><code>${escapeHtml(s)}</code></li>`).join('')}</ul><input type="hidden" name="profile" value="${escapeHtml(profile.id)}"><input type="hidden" name="profileRevision" value="${profile.revision}">` : '';
     const pushFields=push ? `<p>Allow Apple push notifications for <strong>${escapeHtml(push.id)}</strong> (${escapeHtml(push.platform)}) on this installation.</p><input type="hidden" name="pushProfile" value="${escapeHtml(push.id)}">` : "";
     return page(
-      "Approve Life device",
+      "Approve Soma device",
       `<p><strong>${escapeHtml(identity.email)}</strong>, approve this device:</p><p><code>${escapeHtml(values.name)}</code></p><p>Approval code: <code>${escapeHtml(values.key.slice(0, 8))}</code></p><p>This approval link does not expire. Approve it only while your device is waiting to sign in.</p><form method="post" action="/login"><input type="hidden" name="key" value="${escapeHtml(values.key)}"><input type="hidden" name="name" value="${escapeHtml(values.name)}">${profileFields}${pushFields}<button type="submit">Approve device</button></form>`,
     );
   }

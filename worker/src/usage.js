@@ -182,7 +182,7 @@ function crossings(L, before, after, p) {
       out.push({
         id: `${key}:${Math.round(f * 100)}`, producer: "usage", type: "usage.threshold",
         severity: f >= 0.8 ? "warning" : "info",
-        title: `Life Data used ${Math.round(f * 100)}% of its monthly ${l.label}`,
+        title: `Soma used ${Math.round(f * 100)}% of its monthly ${l.label}`,
         body: `${compact(now)} of ${compact(l.allowance)} ${l.unit} this period (resets ${day(p.end)}).` +
           (l.cap == null ? "" : ` Sync pauses at ${compact(l.cap)}.`),
         data: data(f),
@@ -191,7 +191,7 @@ function crossings(L, before, after, p) {
     if (l.cap != null && was < l.cap && now >= l.cap) {
       out.push({
         id: `${key}:cap`, producer: "usage", type: "usage.cap", severity: "critical",
-        title: `Life Data paused sync: monthly ${l.label} cap reached`,
+        title: `Soma paused sync: monthly ${l.label} cap reached`,
         body: `${compact(now)} of the ${compact(l.cap)} ${l.unit} cap this period. Sync resumes ${day(p.end)}.`,
         data: data(now / l.allowance),
       });
@@ -308,7 +308,7 @@ const json = (obj, status = 200, headers = {}) =>
 // CORS for the routes this wrapper answers itself, with the hub's CORS_ORIGINS
 // rule (exact listed origins; bearer auth, never cookies). Preflight is answered
 // before authentication: browsers never send credentials on OPTIONS.
-// ponytail: mirrors the hub's own CORS (life-ui-foundation); share one helper once both land.
+// ponytail: mirrors the hub's own CORS (iris-foundation); share one helper once both land.
 const OWN_METHODS = { "/v1/usage": ["GET"], "/v1/notifications": ["GET"], "/v1/notifications/read": ["POST"] };
 const ALLOW_HEADERS = ["authorization", "content-type", "if-none-match"];
 
@@ -475,7 +475,7 @@ async function ownRoute(request, url, env, tenant) {
     await ensureUsage(env.AUTH_DB);
     if (method === "POST") {
       const created = await notify(env.AUTH_DB, {id, producer: "delivery-test", type: "notification.test",
-        severity: "info", title: "Life notification test",
+        severity: "info", title: "Soma notification test",
         body: "Synthetic delivery check. No usage thresholds or read state were changed."});
       if (!created) {
         await ensurePush(env.AUTH_DB);

@@ -4,7 +4,7 @@ from itertools import pairwise
 
 import pytest
 
-from life_data import LocalHub, catalog, connect, create_table, execute_sql, init, sync
+from soma import LocalHub, catalog, connect, create_table, execute_sql, init, sync
 
 T0 = "2025-01-01T00:00:00.000Z"
 T1 = "2025-01-02T00:00:00.000Z"
@@ -195,7 +195,7 @@ def test_new_client_replicates_history_when_old_server_ignores_attachment(hub, t
         if table == "items":
             import json
 
-            from life_data import _upsert_sql
+            from soma import _upsert_sql
 
             with connect(hub.path) as c:
                 c.execute(_upsert_sql(table, columns), (json.dumps(rows),))
@@ -367,7 +367,7 @@ def test_I5_sync_snapshots_rows_and_events_together(hub, tmp_path, monkeypatch):
 def test_I5_local_write_between_snapshot_reads_is_deferred(hub, tmp_path, monkeypatch):
     import sqlite3
 
-    import life_data
+    import soma
 
     replica = init(tmp_path / "replica.db")
     push(hub, [{"id": "a", "name": "A", "updated_at": T0}])
@@ -403,7 +403,7 @@ def test_I5_local_write_between_snapshot_reads_is_deferred(hub, tmp_path, monkey
         return original_pull(table, columns, since)
 
     with monkeypatch.context() as m:
-        m.setattr(life_data, "connect", traced_connect)
+        m.setattr(soma, "connect", traced_connect)
         m.setattr(hub, "rows_pull", pull)
         assert not sync(replica, hub)["rejected"]
     assert edited

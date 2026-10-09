@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import life_data as life
+import soma
 
 T0 = "2025-01-01T00:00:00.000Z"
 T1 = "2025-01-02T00:00:00.000Z"
@@ -14,8 +14,8 @@ T1 = "2025-01-02T00:00:00.000Z"
 
 @pytest.fixture
 def hub(tmp_path):
-    hub = life.LocalHub(life.init(tmp_path / "hub.db"))
-    life.create_table(hub.path, "items", ["name:text!", "status:select(saved|new)", "qty:int"])
+    hub = soma.LocalHub(soma.init(tmp_path / "hub.db"))
+    soma.create_table(hub.path, "items", ["name:text!", "status:select(saved|new)", "qty:int"])
     return hub
 
 
@@ -24,13 +24,13 @@ def insert(hub, rows, **kwargs):
 
 
 def stored(hub):
-    return life.execute_sql(hub.path, "SELECT * FROM items ORDER BY id")
+    return soma.execute_sql(hub.path, "SELECT * FROM items ORDER BY id")
 
 
 @pytest.mark.parametrize("deleted", [None, T0])
 @pytest.mark.parametrize("stamp", [None, "invalid", "2099-01-01T00:00:00.000Z"])
 def test_existing_ids_ignore_initializer_content_and_preserve_all_state(hub, deleted, stamp):
-    life.insert_rows(
+    soma.insert_rows(
         hub.path,
         "items",
         [
@@ -44,7 +44,7 @@ def test_existing_ids_ignore_initializer_content_and_preserve_all_state(hub, del
         ],
     )
     before = stored(hub)
-    history = life.execute_sql(hub.path, "SELECT * FROM history")
+    history = soma.execute_sql(hub.path, "SELECT * FROM history")
     out = insert(
         hub,
         [
@@ -60,7 +60,7 @@ def test_existing_ids_ignore_initializer_content_and_preserve_all_state(hub, del
     )
     assert out == {"inserted": [], "existing": ["kept"], "rejected": []}
     assert stored(hub) == before
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == history
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == history
 
 
 def test_new_rows_validate_and_replay_reports_existing(hub):
@@ -77,21 +77,21 @@ def test_new_rows_validate_and_replay_reports_existing(hub):
     before = stored(hub)
     assert insert(hub, rows)["existing"] == ["new"]
     assert stored(hub) == before
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == []
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == []
     assert before[0]["hub_at"] and before[0]["hub_at"] != T0
 
 
 def test_sql_defaults_are_validated_as_stored(hub):
-    life.execute_sql(
+    soma.execute_sql(
         hub.path,
         "CREATE TABLE defaults (id TEXT PRIMARY KEY, name TEXT DEFAULT 'default', qty INTEGER DEFAULT 4, updated_at TEXT, deleted_at TEXT, hub_at TEXT)",
     )
-    life.catalog.set_property(hub.path, "defaults", "name", type="text", required=1)
+    soma.catalog.set_property(hub.path, "defaults", "name", type="text", required=1)
     rows = [{"id": "a", "updated_at": T0}, {"id": "b", "updated_at": T0, "name": None}]
     out = hub.rows_insert("defaults", ["id", "name", "updated_at"], rows)
     assert out["inserted"] == ["a"]
     assert out["rejected"][0]["id"] == "b"
-    assert life.execute_sql(hub.path, "SELECT id,name,qty FROM defaults") == [
+    assert soma.execute_sql(hub.path, "SELECT id,name,qty FROM defaults") == [
         {"id": "a", "name": "default", "qty": 4}
     ]
 
@@ -109,14 +109,14 @@ def test_invalid_requests_fail_before_any_mutation(hub, problem):
         rows.append({"name": "value"})
     else:
         columns.remove("id")
-    before = life.dump_sql(hub.path)
+    before = soma.dump_sql(hub.path)
     with pytest.raises(ValueError):
         hub.rows_insert("items", columns, rows, **kwargs)
-    assert life.dump_sql(hub.path) == before
+    assert soma.dump_sql(hub.path) == before
 
 
 def test_invariant_rejection_rolls_back_only_invalid_row(hub):
-    life.catalog.set_rule(
+    soma.catalog.set_rule(
         hub.path,
         "positive",
         tbl="items",
@@ -135,11 +135,11 @@ def test_invariant_rejection_rolls_back_only_invalid_row(hub):
     assert out["inserted"] == ["good"]
     assert out["rejected"][0]["rule"] == "positive"
     assert [r["id"] for r in stored(hub)] == ["good"]
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == []
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == []
 
 
 def test_unexpected_constraint_failure_rolls_back_all_values_and_receipts(hub):
-    life.execute_sql(hub.path, "CREATE UNIQUE INDEX unique_name ON items(name)")
+    soma.execute_sql(hub.path, "CREATE UNIQUE INDEX unique_name ON items(name)")
     before = stored(hub)
     with pytest.raises(sqlite3.IntegrityError):
         insert(
@@ -150,14 +150,14 @@ def test_unexpected_constraint_failure_rolls_back_all_values_and_receipts(hub):
             ],
         )
     assert stored(hub) == before
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == []
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == []
 
 
 @pytest.mark.parametrize("deleted", [None, T0])
 def test_competing_insert_commits_before_waiting_creator_without_overwrite(
     hub, monkeypatch, deleted
 ):
-    connect = life.connect
+    connect = soma.connect
     waiting = threading.Event()
 
     def traced(path, manual_tx=False):
@@ -172,7 +172,7 @@ def test_competing_insert_commits_before_waiting_creator_without_overwrite(
             (deleted, T0),
         )
         with monkeypatch.context() as m:
-            m.setattr(life, "connect", traced)
+            m.setattr(soma, "connect", traced)
             future = pool.submit(
                 insert,
                 hub,
@@ -195,11 +195,11 @@ def test_competing_insert_commits_before_waiting_creator_without_overwrite(
         deleted,
         T0,
     )
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == []
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == []
 
 
 def test_http_uses_distinct_route_and_preserves_receipts_across_chunks(hub, monkeypatch):
-    client = life.HttpHub("https://hub.example")
+    client = soma.HttpHub("https://hub.example")
     calls = []
 
     def post(route, body):
@@ -216,7 +216,7 @@ def test_http_uses_distinct_route_and_preserves_receipts_across_chunks(hub, monk
 
 
 def test_http_rejects_cross_chunk_duplicates_and_history_before_network(monkeypatch):
-    client = life.HttpHub("https://hub.example")
+    client = soma.HttpHub("https://hub.example")
     monkeypatch.setattr(client, "_post", lambda *_: pytest.fail("invalid request reached network"))
     rows = [{"id": str(i), "name": "value", "updated_at": T0} for i in range(201)]
     with pytest.raises(ValueError):
@@ -237,14 +237,14 @@ def test_http_rejects_cross_chunk_duplicates_and_history_before_network(monkeypa
     ],
 )
 def test_http_rejects_ambiguous_or_invalid_receipts(monkeypatch, response):
-    client = life.HttpHub("https://hub.example")
+    client = soma.HttpHub("https://hub.example")
     monkeypatch.setattr(client, "_post", lambda *_: response)
     with pytest.raises(RuntimeError, match="insert response"):
         insert(client, [{"id": "a", "name": "value", "updated_at": T0}])
 
 
 def test_http_never_falls_back_on_unsupported_hub(monkeypatch):
-    client = life.HttpHub("https://hub.example")
+    client = soma.HttpHub("https://hub.example")
     calls = []
 
     def unsupported(route, body):
@@ -265,11 +265,11 @@ def test_new_content_obeys_catalog_types_and_options(hub, values, rule):
     assert out["inserted"] == out["existing"] == []
     assert out["rejected"][0]["rule"] == rule
     assert stored(hub) == []
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == []
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == []
 
 
 def test_suppressed_insert_requires_real_receipt(hub):
-    life.execute_sql(
+    soma.execute_sql(
         hub.path,
         "CREATE TRIGGER ignore_insert BEFORE INSERT ON items WHEN NEW.id='ignored' BEGIN SELECT RAISE(IGNORE); END",
     )
@@ -285,23 +285,23 @@ def test_suppressed_insert_requires_real_receipt(hub):
     assert out["rejected"][0]["id"] == "ignored"
     assert out["rejected"][0]["retryable"] is True
     assert [r["id"] for r in stored(hub)] == ["good"]
-    assert life.execute_sql(hub.path, "SELECT * FROM history") == []
+    assert soma.execute_sql(hub.path, "SELECT * FROM history") == []
 
 
 def test_existing_provenance_keeps_original_creation_detail(hub):
-    with life.connect(hub.path) as conn:
+    with soma.connect(hub.path) as conn:
         conn.execute(
             "INSERT INTO provenance(id,detail,updated_at) VALUES ('edge',?,?)",
             ('{"created_row":0}', T0),
         )
-    before = life.execute_sql(hub.path, "SELECT * FROM provenance")
+    before = soma.execute_sql(hub.path, "SELECT * FROM provenance")
     row = {"id": "edge", "detail": '{"created_row":1}', "updated_at": T1}
     assert hub.rows_insert("provenance", list(row), [row]) == {
         "inserted": [],
         "existing": ["edge"],
         "rejected": [],
     }
-    assert life.execute_sql(hub.path, "SELECT * FROM provenance") == before
+    assert soma.execute_sql(hub.path, "SELECT * FROM provenance") == before
 
 
 def test_insert_round_trip_over_loopback_http(hub):
@@ -329,7 +329,7 @@ def test_insert_round_trip_over_loopback_http(hub):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = life.HttpHub(f"http://127.0.0.1:{server.server_port}")
+        client = soma.HttpHub(f"http://127.0.0.1:{server.server_port}")
         row = {"id": "a", "name": "value", "updated_at": T0}
         assert insert(client, [row]) == {"inserted": ["a"], "existing": [], "rejected": []}
         assert insert(client, [row]) == {"inserted": [], "existing": ["a"], "rejected": []}

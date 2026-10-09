@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import worker from "../src/index.js";
 import { D1Shim } from "./d1shim.js";
 
-const APP = "https://life-ui.example.test";
+const APP = "https://iris.example.test";
 const env = (extra = {}) => ({ DB: new D1Shim(), HUB_TOKEN: "test", CORS_ORIGINS: `${APP}, http://localhost:5173`, ...extra });
 const call = (path, init, e = env()) => worker.fetch(new Request(`https://hub.test${path}`, init), e, { waitUntil() {} });
 

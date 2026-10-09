@@ -1,4 +1,4 @@
-# life-data — secrets manifest (committed; values live in 1Password).
+# soma — secrets manifest (committed; values live in 1Password).
 # Local dev / admin scripts: op run --env-file=.env.tpl -- <cmd>
 #
 # Cloudflare credentials are minted by scripts/provision.py. Apple push keys

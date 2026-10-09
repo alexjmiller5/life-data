@@ -49,7 +49,7 @@ export async function backup(env, now, { fetch: get = (...a) => fetch(...a), wai
     if (recovering) {
       await notify(db, {
         id: `backup:${stamp}:recovered`, producer: "backup", type: "backup.recovered", severity: "info",
-        title: "Life Data backups are working again",
+        title: "Soma backups are working again",
         body: `Backed up ${keys.length} copies.` + (recovering.since ? ` The previous copy was from ${day(recovering.since)}.` : ""),
         data: { keys },
       });
@@ -59,7 +59,7 @@ export async function backup(env, now, { fetch: get = (...a) => fetch(...a), wai
     const error = String(e?.message ?? e).slice(0, 300);
     await notify(db, {
       id: `backup:${stamp}:failed`, producer: "backup", type: "backup.failed", severity: "critical",
-      title: "Life Data backup failed",
+      title: "Soma backup failed",
       body: `The ${day(now)} backup to R2 did not complete: ${error}`,
       data: { error },
     }).catch((n) => console.log(JSON.stringify({ backup_notify_error: String(n) })));

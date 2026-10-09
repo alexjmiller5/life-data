@@ -1,4 +1,4 @@
-// Hub-side validation: the pure row validator lives in life-core (shared with
+// Hub-side validation: the pure row validator lives in soma-core (shared with
 // every UI client); this module adds what needs D1 - resolving stored rows,
 // refs and options before calling it, and the provenance hashes.
 import { allowed, asList, ident, qident, same, validEditTimestamp, validateRow } from "../../core/src/validate.ts";

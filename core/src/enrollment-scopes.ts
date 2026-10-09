@@ -1,5 +1,5 @@
 /** Scope grammar shared by browser approval and native enrollment validation.
- * tests/fixtures/enrollment-scopes.json is the contract; src/life_data/login.py
+ * tests/fixtures/enrollment-scopes.json is the contract; src/soma/login.py
  * implements the same grammar for the CLI. Full, admin and token administration
  * are never profile grants. */
 const simple = new RegExp('^(?:tables:read|tables:write|streams:append|backups:read|backups:write'

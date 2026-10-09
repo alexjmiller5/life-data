@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from life_data import HttpHub
+from soma import HttpHub
 
 
 def test_http_pull_reads_every_page_including_tombstones():
@@ -96,10 +96,10 @@ def serve(replies):
 
 @pytest.fixture
 def waits(monkeypatch):
-    import life_data
+    import soma
 
     delays = []
-    monkeypatch.setattr(life_data.time, "sleep", delays.append)
+    monkeypatch.setattr(soma.time, "sleep", delays.append)
     return delays
 
 

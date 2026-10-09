@@ -28,21 +28,21 @@ copies are never listed or served.
 
 ## Dump format
 
-One SQL text shape, version 1, from three producers: `life export`, the hub's
-D1 exports and life-core's `exportReplica`. A first line
-`-- life-data-dump: <version>` names the version; a dump without it is
-version 1. `life export` and `exportReplica` write
+One SQL text shape, version 1, from three producers: `soma export`, the hub's
+D1 exports and soma-core's `exportReplica`. A first line
+`-- soma-dump: <version>` names the version; a dump without it is
+version 1. `soma export` and `exportReplica` write
 `BEGIN TRANSACTION;`, each table's `CREATE TABLE` followed by its
 `INSERT INTO ... VALUES(...)` rows, then indexes, triggers and views, then
 `COMMIT;`. D1 exports have no transaction lines and spell newlines as
 `replace('a\nb','\n',char(10))`. Any of them imports into a fresh database
-with `sqlite3 <dir>/life.db < dump.sql`, which `LIFE_DATA_DIR=<dir> life ...`
+with `sqlite3 <dir>/soma.db < dump.sql`, which `SOMA_DATA_DIR=<dir> life ...`
 then reads.
 
 `exportReplica` writes the schema log and every ordinary table; device sync
 state, caches and other underscore plumbing stay out.
 
-## Restore (life-core)
+## Restore (soma-core)
 
 Hosts pass opaque file references; a `BackupFiles` adapter opens them as text
 (removing and checking gzip) and creates destinations that become durable on

@@ -1,5 +1,5 @@
 // The shared fixture is the contract between the Python validator
-// (life_data.catalog.validate_row) and this one, which the hub and every UI
+// (soma.catalog.validate_row) and this one, which the hub and every UI
 // client run.
 import { describe, expect, test } from "bun:test";
 import cases from "../../tests/fixtures/validation-cases.json";

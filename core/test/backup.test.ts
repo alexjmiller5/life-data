@@ -59,7 +59,7 @@ test('export is a versioned, sqlite3-importable dump of schema log, tables, rows
   expect(dump.startsWith(`${DUMP_HEADER}\nBEGIN TRANSACTION;\n`)).toBe(true);
   expect(dump.trimEnd().endsWith('COMMIT;')).toBe(true);
   expect(dump).not.toContain('device state');
-  // The CLI's import path: sqlite3 executes the dump into a fresh life.db.
+  // The CLI's import path: sqlite3 executes the dump into a fresh soma.db.
   const copy = new Database(':memory:');
   copy.exec(dump);
   expect(copy.query('SELECT id,name,qty,score,hex(data) AS data,updated_at,deleted_at FROM items ORDER BY id').all()).toEqual(rows(db));
@@ -153,7 +153,7 @@ ${TRIGGER};
 test("Python's iterdump of a CLI database, search cache included, restores", async () => {
   const dir = mkdtempSync(join(tmpdir(), 'life-dump-'));
   try {
-    const path = join(dir, 'life.db');
+    const path = join(dir, 'soma.db');
     const source = await replica();
     source.db.exec("CREATE VIRTUAL TABLE _core_search_fts USING fts5(body); INSERT INTO _core_search_fts VALUES ('cached')");
     source.db.exec(`VACUUM INTO '${path}'`);
@@ -180,6 +180,7 @@ test('corrupt, foreign and wrong-version dumps are refused with a reason', async
     [good.replace("'Bee'", 'randomblob(4)'), 'unsupported value'],
     [good.replace('INSERT INTO "items"', 'INSERT INTO "nope"'), 'undeclared table'],
     [good.replace(/("updated_at"),/, '"bogus",'), 'unknown columns'],
+    [good.replace(`${DUMP_HEADER}`, '-- soma-dump: 2'), 'dump format 2'],
     [good.replace(`${DUMP_HEADER}`, '-- life-data-dump: 2'), 'dump format 2'],
     [good.replace('applied_at TEXT', 'applied TEXT'), 'unsupported schema version'],
     [good.replace(/CREATE TABLE _schema_log[^;]*;\n(INSERT INTO "_schema_log"[^\n]*\n)*/, ''), 'no _schema_log'],
@@ -205,8 +206,8 @@ test('preview compares the backup with the live replica; CLI-synced files are re
   expect(preview.backup.tables).toEqual([{ table: 'items', rows: 2, liveRows: 1, newestUpdatedAt: T2 }]);
   expect(preview.current.tables).toEqual([{ table: 'items', rows: 1, liveRows: 1, newestUpdatedAt: T2 }]);
   db.db.exec("INSERT INTO _sync_state VALUES ('last_push','x')");
-  await expect(previewRestore(db, source(await dumpOf(await replica())))).rejects.toThrow('Life CLI');
-  await expect(restoreReplica(db, memoryFiles({ f: 'x' }), { file: 'f', recovery: 'r', confirm: 'replace' })).rejects.toThrow('Life CLI');
+  await expect(previewRestore(db, source(await dumpOf(await replica())))).rejects.toThrow('Soma CLI');
+  await expect(restoreReplica(db, memoryFiles({ f: 'x' }), { file: 'f', recovery: 'r', confirm: 'replace' })).rejects.toThrow('Soma CLI');
 });
 
 test('handlers clear undo after a restore and validate hub backup listings', async () => {

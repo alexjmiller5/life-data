@@ -1,5 +1,5 @@
 // Conformance test: the shared fixture is the contract between the Python
-// validator (life_data.catalog.validate_row) and this JS mirror.
+// validator (soma.catalog.validate_row) and this JS mirror.
 import { describe, expect, test } from "bun:test";
 import cases from "../../tests/fixtures/validation-cases.json";
 import { validateRow } from "../src/validate.js";

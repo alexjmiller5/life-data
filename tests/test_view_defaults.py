@@ -7,7 +7,7 @@ import pytest
 from test_saved_views import client
 from test_saved_views import db as shared_db
 
-from life_data import catalog, connect, create_table, execute_sql, rename_table, table_ddl
+from soma import catalog, connect, create_table, execute_sql, rename_table, table_ddl
 
 
 @pytest.fixture()
@@ -117,7 +117,7 @@ def test_preference_rule_rolls_back_table_rename(db):
 
 
 def test_preference_follows_sync_and_rename_without_duplicate_live_rows(db, tmp_path):
-    from life_data import LocalHub, init, sync
+    from soma import LocalHub, init, sync
 
     provision(db)
     hub = LocalHub(init(tmp_path / "hub.db"))

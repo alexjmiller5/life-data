@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from life_data.login import valid_profile_scopes
+from soma.login import valid_profile_scopes
 
 CASES = json.loads((Path(__file__).parent / "fixtures" / "enrollment-scopes.json").read_text())[
     "cases"

@@ -1,6 +1,6 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
-	"name": "life-data",
+	"name": "soma",
 	"main": "src/main.js",
 	"compatibility_date": "2026-07-06",
 	// AsyncLocalStorage: the usage meter attributes each D1 result to its request.
@@ -12,13 +12,13 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "life-data",
-			"database_id": "a7a10931-e427-428e-8d0d-1e4024a3312b"
+			"database_name": "soma",
+			"database_id": "4245f13e-535b-4db5-a591-646f597231c8"
 		},
 		{
 			"binding": "AUTH_DB",
-			"database_name": "life-data-auth",
-			"database_id": "572840fc-5179-4f42-b9d0-4474d97edc6a"
+			"database_name": "soma-auth",
+			"database_id": "235cc853-6652-432c-ae41-0e75daea3f38"
 		}
 	],
 	// Instant sync: one ChangeSignal object per hub holds the change sequence
@@ -27,28 +27,28 @@
 	"durable_objects": { "bindings": [{ "name": "CHANGES", "class_name": "ChangeSignal" }] },
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChangeSignal"] }],
 	"r2_buckets": [
-		{ "binding": "BACKUPS", "bucket_name": "life-data-backups" },
-		{ "binding": "ARCHIVE", "bucket_name": "life-data-archive" }
+		{ "binding": "BACKUPS", "bucket_name": "soma-backups" },
+		{ "binding": "ARCHIVE", "bucket_name": "soma-archive" }
 	],
-	// Pipelines stream: appends tee events here → Iceberg table life.events
+	// Pipelines stream: appends tee events here → Iceberg table soma.events
 	// in the R2 Data Catalog (managed compaction on). Landing stays the raw
 	// source of truth.
-	"pipelines": [{ "stream": "24ff9a5dd60549e7b1d0d931cf5ffea0", "binding": "EVENTS" }],
+	"pipelines": [{ "stream": "1d761b6cb98c423dbd6f59c3760a1fb0", "binding": "EVENTS" }],
 	"vars": {
 		"ACCOUNT_ID": "1e69de15e5dc3dddea6db7b3ae8087bc",
-		"ARCHIVE_BUCKET": "life-data-archive",
+		"ARCHIVE_BUCKET": "soma-archive",
 		"LOGIN_ACCESS_AUD": "9f21efcb47f8b63e252f64e20c3df14a9e7372999de4bb1ed6a84599c46f9f29",
 		// Browser apps allowed to call /v1 (comma-separated exact origins).
-		"CORS_ORIGINS": "https://life-ui.nqipomyrjb.workers.dev",
+		"CORS_ORIGINS": "https://iris.nqipomyrjb.workers.dev,https://life-ui.nqipomyrjb.workers.dev",
 		// What the backup cron exports through D1's export API (src/backup.js):
 		// backup object name -> database_id of a d1_databases entry above.
 		"BACKUP_DATABASES": {
-			"life": "a7a10931-e427-428e-8d0d-1e4024a3312b",
-			"auth": "572840fc-5179-4f42-b9d0-4474d97edc6a"
+			"soma": "4245f13e-535b-4db5-a591-646f597231c8",
+			"auth": "235cc853-6652-432c-ae41-0e75daea3f38"
 		},
 		// The one entry whose copies consumers may list, download and take
 		// (src/backups.js); the auth registry's never leave the service.
-		"BACKUP_DATA_DATABASE": "life"
+		"BACKUP_DATA_DATABASE": "soma"
 	},
 	// Daily at 09:10 UTC; the Worker decides which retention prefixes today
 	// belongs to (daily / weekly / monthly / yearly). Every 15 minutes the

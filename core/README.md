@@ -1,4 +1,4 @@
-# life-core
+# soma-core
 
 Shared TypeScript behavior for browser and JavaScriptCore clients. Runtime
 source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
@@ -468,18 +468,18 @@ definitions live exclusively in `views` rows. Names need not be unique.
 
 An operator uses an existing replica and the supported logged-DDL workflow.
 First sync with full schema scope and inspect the physical `sqlite_master`
-entry through `life sql`, plus `life doc views` if the name already exists. Stop on a collision or any failed
+entry through `soma sql`, plus `soma doc views` if the name already exists. Stop on a collision or any failed
 step; an existing unrelated `views` table must never be silently adopted,
 dropped or renamed. For absent storage only:
 
 ```sh
-life sync
-life table create views 'name:text!' 'tbl:ref!' 'definition:json!'
-life property set views.tbl --ref-table catalog_tables
-life table set views --kind table --display name --purpose 'Shared named table views'
-life property set views.definition --source life-core --source-ref saved-views/v1
-life doc views
-life sync
+soma sync
+soma table create views 'name:text!' 'tbl:ref!' 'definition:json!'
+soma property set views.tbl --ref-table catalog_tables
+soma table set views --kind table --display name --purpose 'Shared named table views'
+soma property set views.definition --source life-core --source-ref saved-views/v1
+soma doc views
+soma sync
 ```
 
 Set the marker last, after reviewing the schema and property metadata.
@@ -487,7 +487,7 @@ Ordinary clients receive this existing logged DDL and catalog through sync;
 they need no schema provisioning rights. Include `tables: { views: true }`
 when enabling saved views so the size threshold does not hide definitions.
 This does not imply that every referenced target table is fully replicated.
-`life table rename` updates `views.tbl` only for the exact recognized schema
+`soma table rename` updates `views.tbl` only for the exact recognized schema
 and marker, with ordinary validation/history in the rename transaction.
 Column renames/removals leave affected definitions unavailable for explicit
 repair; unknown JSON versions are never rewritten.
@@ -498,7 +498,7 @@ the DDL and identity metadata from this file; property `sort` values are seed
 defaults, not recognition requirements. Python parity tests compare the same
 manifest with the operator CLI's DDL and catalog output.
 
-Consumers can import `life-core/schema/saved-views.json` or vendor that exact
+Consumers can import `soma-core/schema/saved-views.json` or vendor that exact
 file alongside the core bundle. Keep the vendored JSON and runtime from the
 same source revision and hash the JSON separately from the unchanged bridge
 contract. The source package includes `schema/`; browser/JavaScriptCore bundles
@@ -515,7 +515,7 @@ no actual view definitions or default selection.
 
 Per-table preferred views use the optional ordinary synced `view_defaults` table.
 `schema/view-defaults.json` defines its exact operator-provisioned schema and
-catalog marker (`view_defaults.view_id`, `life-core`, `view-defaults/v1`).
+catalog marker (`view_defaults.view_id`, `soma-core`, `view-defaults/v1`).
 `getViewDefault({table})` is read-only. `setViewDefault` accepts a saved-view ID
 (or null to clear) plus the displayed `expectedUpdatedAt` revision (null for
 first creation), validates a live same-table view, and writes through the
@@ -621,7 +621,7 @@ permission in place of `full`, and core adds no capability fields to hub replies
 
 An `approved` result means the candidate identity authenticated; it does **not**
 override a denied `session.replica`. Require `replica.allowed` before installing
-credentials for Life UI replica use. This is eligibility from the supplied
+credentials for Iris replica use. This is eligibility from the supplied
 response, not a freshness guarantee about server authorization.
 
 HTTP 401/403/429/5xx poll replies are `pending`; other statuses fail. Pending has

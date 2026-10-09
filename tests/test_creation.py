@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from life_data.creation import validate_creation_receipt, validate_creation_session
+from soma.creation import validate_creation_receipt, validate_creation_session
 
 CASES = json.loads((Path(__file__).parent / "fixtures/creation-boundary.json").read_text())
 

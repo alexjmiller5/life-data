@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "life-core",
+      "name": "soma-core",
       "devDependencies": {
         "bun-types": "^1.4.2",
         "typescript": "5",

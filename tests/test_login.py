@@ -3,8 +3,8 @@ import sys
 
 import pytest
 
-from life_data import login
-from life_data.background import keychain_account, read_json, write_json
+from soma import login
+from soma.background import keychain_account, read_json, write_json
 
 
 def test_browser_login_stores_an_app_token_without_enabling_background(
@@ -46,7 +46,7 @@ def test_native_save_rereads_preferences_and_preserves_concurrent_disable(tmp_pa
             tmp_path / "background.json", {"enabled": False, "revision": 9, "token_cmd": "new"}
         )
 
-    monkeypatch.setattr("life_data.credentials.store_token", store)
+    monkeypatch.setattr("soma.credentials.store_token", store)
     login._save_native(tmp_path, "https://hub.example", "lt_test")
     prefs = read_json(tmp_path / "background.json")
     assert prefs == {
@@ -75,9 +75,9 @@ def test_stdin_compatibility_rejects_an_admin_token_before_keychain_write(tmp_pa
 
 
 def test_logout_requires_a_saved_endpoint_instead_of_using_operator_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("LIFE_HUB_URL", "https://wrong.example")
+    monkeypatch.setenv("SOMA_HUB_URL", "https://wrong.example")
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr("life_data.credentials.read_token", lambda account: "lt_secret")
+    monkeypatch.setattr("soma.credentials.read_token", lambda account: "lt_secret")
     with pytest.raises(login.LoginError, match="saved hub endpoint"):
         login.logout(tmp_path)
 
@@ -89,10 +89,8 @@ def test_logout_releases_keychain_only_after_authoritative_remote_result(tmp_pat
         {"hub_url": "https://hub.example", "enabled": True, "revision": 2},
     )
     deleted = []
-    monkeypatch.setattr("life_data.credentials.read_token", lambda account: "lt_secret")
-    monkeypatch.setattr(
-        "life_data.credentials.delete_token", lambda account: deleted.append(account)
-    )
+    monkeypatch.setattr("soma.credentials.read_token", lambda account: "lt_secret")
+    monkeypatch.setattr("soma.credentials.delete_token", lambda account: deleted.append(account))
     calls = []
 
     def request(*args, **kwargs):
@@ -129,15 +127,19 @@ def native_tokens(monkeypatch):
     """Keep every login test away from the user's credentials and configuration."""
     import ctypes
 
-    from life_data import credentials
+    from soma import credentials
 
     monkeypatch.setattr(ctypes, "CDLL", lambda *_: pytest.fail("native access forbidden"))
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.delenv("LIFE_HUB_TOKEN", raising=False)
-    monkeypatch.delenv("LIFE_HUB_URL", raising=False)
+    monkeypatch.delenv("SOMA_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("SOMA_HUB_URL", raising=False)
     monkeypatch.setattr(login.platform, "node", lambda: "Review device")
     tokens = {}
-    monkeypatch.setattr(credentials, "read_token", tokens.get)
+    monkeypatch.setattr(
+        credentials,
+        "read_token",
+        lambda account, service="soma", **_: tokens.get(account) if service == "soma" else None,
+    )
     monkeypatch.setattr(
         credentials, "store_token", lambda account, token: tokens.update({account: token})
     )
@@ -146,7 +148,7 @@ def native_tokens(monkeypatch):
 
 
 def test_login_selects_native_auth_and_logout_suppresses_implicit_fallback(tmp_path, monkeypatch):
-    from life_data import load_config
+    from soma import load_config
 
     write_json(tmp_path / "config.json", {"token": "old-token", "token_cmd": "exit 99"})
     write_json(tmp_path / "background.json", {"signed_out": True})
@@ -159,12 +161,12 @@ def test_login_selects_native_auth_and_logout_suppresses_implicit_fallback(tmp_p
     monkeypatch.setattr(login, "_request_json", lambda *a, **k: (200, {"logged_out": True}))
     login.logout(tmp_path)
     assert load_config(tmp_path)["token"] is None
-    monkeypatch.setenv("LIFE_HUB_TOKEN", "explicit-operator-token")
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "explicit-operator-token")
     assert load_config(tmp_path)["token"] == "explicit-operator-token"
 
 
 def test_selected_native_auth_does_not_fall_back_when_item_missing(tmp_path):
-    from life_data import load_config
+    from soma import load_config
 
     write_json(tmp_path / "config.json", {"token_cmd": "exit 99"})
     write_json(tmp_path / "background.json", {"keychain": True})
@@ -189,7 +191,7 @@ def test_selected_native_auth_does_not_fall_back_when_item_missing(tmp_path):
     ],
 )
 def test_unsafe_endpoint_rejected_before_browser_or_network(tmp_path, monkeypatch, endpoint):
-    from life_data import HttpHub
+    from soma import HttpHub
 
     monkeypatch.setattr(
         login, "_wait_for_approval", lambda *a, **k: pytest.fail("network attempted")
@@ -213,7 +215,7 @@ def test_unsafe_endpoint_rejected_before_browser_or_network(tmp_path, monkeypatc
     ],
 )
 def test_secure_or_loopback_endpoint_allowed(endpoint):
-    from life_data import HttpHub
+    from soma import HttpHub
 
     assert HttpHub(endpoint).base == endpoint.rstrip("/")
 
@@ -223,7 +225,7 @@ def test_credential_bearing_get_post_and_session_requests_never_follow_redirects
     from contextlib import ExitStack
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    from life_data import HttpHub
+    from soma import HttpHub
 
     captured = []
 
@@ -270,7 +272,7 @@ def test_credential_bearing_get_post_and_session_requests_never_follow_redirects
 
 
 def test_signed_out_or_missing_native_token_cannot_reuse_config_authorization_header(tmp_path):
-    from life_data import auth_headers, load_config
+    from soma import auth_headers, load_config
 
     write_json(tmp_path / "config.json", {"headers": {"authorization": "Bearer fixture-old"}})
     for state in ({"signed_out": True}, {"keychain": True}):
@@ -394,7 +396,7 @@ def test_stdin_cannot_silently_replace_an_active_credential(enrollment):
 
 
 def test_failed_native_install_cleans_up_the_newly_approved_token(monkeypatch, enrollment):
-    from life_data import credentials
+    from soma import credentials
 
     def unavailable(*args):
         raise credentials.KeychainError("fixture storage failure")
@@ -425,7 +427,7 @@ def test_failed_install_reports_failed_remote_cleanup_without_disclosing_token(
 ):
     import traceback
 
-    from life_data import credentials
+    from soma import credentials
 
     def unavailable(*args):
         raise credentials.KeychainError("fixture private diagnostic")
@@ -509,8 +511,8 @@ def test_concurrent_install_cannot_overwrite_a_credential_read_before_its_creati
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from life_data import credentials
-    from life_data.background import CredentialLockError
+    from soma import credentials
+    from soma.background import CredentialLockError
 
     entered, release = Event(), Event()
     endpoint = "https://hub.example"
@@ -541,7 +543,7 @@ def test_contended_logout_cannot_revoke_a_reused_login_before_it_commits(
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from life_data import background
+    from soma import background
 
     enrollment.run()
     entered, release = Event(), Event()
@@ -572,7 +574,7 @@ def test_logout_holds_lifecycle_lock_before_native_read_and_remote_revoke(
 ):
     import fcntl
 
-    from life_data import credentials
+    from soma import credentials
 
     enrollment.run()
     original_read = credentials.read_token
@@ -584,9 +586,9 @@ def test_logout_holds_lifecycle_lock_before_native_read_and_remote_revoke(
         ):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    def read(account):
+    def read(account, **kw):
         assert_locked()
-        return original_read(account)
+        return original_read(account, **kw)
 
     def request(*args, **kwargs):
         assert_locked()
@@ -604,10 +606,10 @@ def test_logout_holds_lifecycle_lock_before_native_read_and_remote_revoke(
 def test_malformed_stdin_credential_is_not_printed_or_sent(tmp_path, monkeypatch, capsys, suffix):
     import socket
 
-    from life_data import main
+    from soma import main
 
     token = "fixture-private-token" + suffix
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(sys, "stdin", io.StringIO(token))
     monkeypatch.setattr(
         socket, "create_connection", lambda *_a, **_k: pytest.fail("network attempted")
@@ -626,7 +628,7 @@ def test_shared_callers_reject_malformed_headers_without_exception_disclosure(
     import traceback
     import urllib.request
 
-    from life_data import HttpHub, auth_headers
+    from soma import HttpHub, auth_headers
 
     token = "fixture-private-token" + suffix
     monkeypatch.setattr(
@@ -651,7 +653,7 @@ def test_header_serialization_exception_is_sanitized(monkeypatch, caller):
     import traceback
     import urllib.request
 
-    from life_data import HttpHub
+    from soma import HttpHub
 
     def fail(*_args, **_kwargs):
         raise ValueError("fixture-private-serialization-diagnostic")

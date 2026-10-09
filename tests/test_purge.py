@@ -1,12 +1,12 @@
-"""`life purge`: a content-free marker that syncs like a row and makes the hub
+"""`soma purge`: a content-free marker that syncs like a row and makes the hub
 and every replica hard-delete a row (or one column's history) for good."""
 
 import json
 
 import pytest
 
-import life_data as life
-from life_data import create_table, execute_sql, init, insert_rows, purge
+import soma
+from soma import create_table, execute_sql, init, insert_rows, purge
 
 OLD = "2000-01-01T00:00:00.000Z"
 FUTURE = "2099-01-01T00:00:00.000Z"
@@ -62,10 +62,10 @@ def pair(tmp_path):
     """Two replicas that share one hub and hold the same secret row."""
     a = init(tmp_path / "a.db")
     _seed(a)
-    hub = life.LocalHub(tmp_path / "hub.db")
+    hub = soma.LocalHub(tmp_path / "hub.db")
     b = init(tmp_path / "b.db")
-    assert not life.sync(a, hub)["rejected"]
-    assert not life.sync(b, hub)["rejected"]
+    assert not soma.sync(a, hub)["rejected"]
+    assert not soma.sync(b, hub)["rejected"]
     assert _rows(b, "items") and _history(b)
     return a, b, hub
 
@@ -89,14 +89,14 @@ def test_purge_column_deletes_only_that_columns_history(db):
 
 def test_purging_again_keeps_one_marker_and_removes_a_recreated_row(db, monkeypatch):
     ticks = ["2030-01-01T00:00:00.000Z"]
-    real = life.connect
+    real = soma.connect
 
     def clocked(path, manual_tx=False):
         conn = real(path, manual_tx)
         conn.create_function("strftime", 2, lambda *_: ticks[0])
         return conn
 
-    monkeypatch.setattr(life, "connect", clocked)
+    monkeypatch.setattr(soma, "connect", clocked)
     purge(db, "items", "r1")
     with real(db) as conn:  # a source re-import lands after the first purge
         conn.execute(
@@ -128,11 +128,11 @@ def test_purge_refuses_unknown_table_and_column(db):
 def test_purge_reaches_the_hub_and_the_other_replica(pair):
     a, b, hub = pair
     purge(a, "items", "r1")
-    assert not life.sync(a, hub)["rejected"]
+    assert not soma.sync(a, hub)["rejected"]
     assert _rows(hub.path, "items") == []
     assert _history(hub.path) == []
     assert _edges(hub.path) == []
-    assert not life.sync(b, hub)["rejected"]
+    assert not soma.sync(b, hub)["rejected"]
     assert _rows(b, "items") == []
     assert _history(b) == []
     assert _edges(b) == []
@@ -141,8 +141,8 @@ def test_purge_reaches_the_hub_and_the_other_replica(pair):
 def test_column_purge_reaches_the_hub_and_the_other_replica(pair):
     a, b, hub = pair
     purge(a, "items", "r1", cols=["name"])
-    life.sync(a, hub)
-    life.sync(b, hub)
+    soma.sync(a, hub)
+    soma.sync(b, hub)
     for path in (hub.path, b):
         assert _rows(path, "items")
         assert _history(path, col="name") == []
@@ -154,8 +154,8 @@ def test_a_stale_replica_cannot_bring_a_purged_row_back(pair):
     # B edits the row while it has not heard of the purge yet
     execute_sql(b, "UPDATE items SET name = 'edited offline' WHERE id = 'r1'")
     purge(a, "items", "r1")
-    life.sync(a, hub)
-    assert not life.sync(b, hub)["rejected"]
+    soma.sync(a, hub)
+    assert not soma.sync(b, hub)["rejected"]
     for path in (hub.path, b):
         assert _rows(path, "items") == []
         assert _history(path) == []
@@ -164,7 +164,7 @@ def test_a_stale_replica_cannot_bring_a_purged_row_back(pair):
 def test_the_hub_drops_old_copies_pushed_by_an_unupgraded_client(pair):
     a, _, hub = pair
     purge(a, "items", "r1")
-    life.sync(a, hub)
+    soma.sync(a, hub)
     out = hub.rows_push(
         "items", ["id", "name", "updated_at"], [{"id": "r1", "name": "x", "updated_at": OLD}]
     )
@@ -189,7 +189,7 @@ def test_the_hub_drops_old_copies_pushed_by_an_unupgraded_client(pair):
 def test_a_row_recreated_after_the_purge_is_accepted(pair):
     a, _, hub = pair
     purge(a, "items", "r1")
-    life.sync(a, hub)
+    soma.sync(a, hub)
     out = hub.rows_push(
         "items", ["id", "name", "updated_at"], [{"id": "r1", "name": "new", "updated_at": FUTURE}]
     )
@@ -198,12 +198,12 @@ def test_a_row_recreated_after_the_purge_is_accepted(pair):
 
 
 def test_cli_purge(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    path = init(tmp_path / "life.db")
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    path = init(tmp_path / "soma.db")
     _seed(path)
-    assert life.main(["purge", "items", "r1", "--col", "name"]) == 0
+    assert soma.main(["purge", "items", "r1", "--col", "name"]) == 0
     assert _history(path, col="name") == []
-    assert life.main(["purge", "items", "r1"]) == 0
+    assert soma.main(["purge", "items", "r1"]) == 0
     assert _rows(path, "items") == []
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {"markers": 1}
 
@@ -212,7 +212,7 @@ def test_a_replica_does_not_send_covered_copies(pair):
     a, b, hub = pair
     execute_sql(b, "UPDATE items SET name = 'edited offline' WHERE id = 'r1'")
     purge(a, "items", "r1")
-    life.sync(a, hub)
+    soma.sync(a, hub)
     sent = []
     push = hub.rows_push
 
@@ -222,7 +222,7 @@ def test_a_replica_does_not_send_covered_copies(pair):
         return push(table, columns, rows, **kw)
 
     hub.rows_push = spy
-    life.sync(b, hub)
+    soma.sync(b, hub)
     assert not [r for t, r in sent if t == "items" and r["id"] == "r1"]
     assert not [e for t, e in sent if t == "history" and e.get("row_id") == "r1"]
 
@@ -230,7 +230,7 @@ def test_a_replica_does_not_send_covered_copies(pair):
 def test_the_hub_drops_covered_history_attached_to_a_newer_push(pair):
     a, _, hub = pair
     purge(a, "items", "r1")
-    life.sync(a, hub)
+    soma.sync(a, hub)
     event = {
         "id": "e-old",
         "tbl": "items",
@@ -253,7 +253,7 @@ def test_the_hub_drops_covered_history_attached_to_a_newer_push(pair):
 
 def test_purge_repairs_an_interrupted_setup(db):
     # a first purge stopped after CREATE TABLE (e.g. the database was locked)
-    ddl, trigger = life.table_ddl("purges", life.PURGE_COLUMNS)
+    ddl, trigger = soma.table_ddl("purges", soma.PURGE_COLUMNS)
     execute_sql(db, ddl)
     purge(db, "items", "r1")
     names = {r["name"] for r in execute_sql(db, "SELECT name FROM sqlite_master")}
@@ -268,8 +268,8 @@ def test_a_redaction_synced_with_its_marker_leaves_no_old_value_anywhere(pair):
     a, b, hub = pair
     execute_sql(a, "UPDATE items SET name = '[redacted]' WHERE id = 'r1'")
     purge(a, "items", "r1", cols=["name"])
-    assert not life.sync(a, hub)["rejected"]
-    assert not life.sync(b, hub)["rejected"]
+    assert not soma.sync(a, hub)["rejected"]
+    assert not soma.sync(b, hub)["rejected"]
     for path in (a, hub.path, b):
         [m] = execute_sql(path, "SELECT purged_at FROM purges")
         old = execute_sql(
@@ -284,10 +284,10 @@ def test_a_redaction_synced_with_its_marker_leaves_no_old_value_anywhere(pair):
 def test_a_replica_does_not_take_covered_copies_from_the_hub(pair):
     a, b, hub = pair
     purge(a, "items", "r1")
-    life.sync(a, hub)
-    life.sync(b, hub)
+    soma.sync(a, hub)
+    soma.sync(b, hub)
     # a hub that never applied the marker still serves the old row and event
-    with life.connect(hub.path) as conn:
+    with soma.connect(hub.path) as conn:
         conn.execute(
             "INSERT INTO items (id, name, updated_at, hub_at) "
             f"VALUES ('r1', 'secret', '{OLD}', '{FUTURE}')"
@@ -296,6 +296,6 @@ def test_a_replica_does_not_take_covered_copies_from_the_hub(pair):
             "INSERT INTO history (id, tbl, row_id, col, old, new, created_at, updated_at, hub_at) "
             f"VALUES ('h-stale', 'items', 'r1', 'name', 'a', 'secret', '{OLD}', '{OLD}', '{FUTURE}')"
         )
-    life.sync(b, hub)
+    soma.sync(b, hub)
     assert _rows(b, "items") == []
     assert _history(b) == []

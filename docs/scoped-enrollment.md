@@ -80,9 +80,9 @@ Neither receiving a token callback nor opening the browser proves approval.
 
 ## Minimal native binding
 
-`life-core/enrollment` exports only the pure enrollment policy functions. A
+`soma-core/enrollment` exports only the pure enrollment policy functions. A
 native host can bundle this entry for JavaScriptCore, with no SQL driver,
-HTTP adapter, replica handlers or Life UI dependency. Generated Swift DTOs
+HTTP adapter, replica handlers or Iris dependency. Generated Swift DTOs
 are in `core/generated/CoreContract.generated.swift`; this file is types and
 codecs, not an alternate Swift validator. The test suite bundles the minimal
 entry into a realm without URL, fetch, crypto, clocks or storage, and passes a
@@ -142,7 +142,7 @@ Profiles without config retain the original revision algorithm.
 credential's enrolled profile, with `Cache-Control: no-store`. It takes no
 profile selector. A changed profile/config or grant set returns 409 and requires
 reenrollment. Missing config returns 404; operator tokens are not consumer
-sessions. `life-core/consumer-config` exports canonical pure configuration checks.
+sessions. `soma-core/consumer-config` exports canonical pure configuration checks.
 
 `POST /v1/catalog/projection` takes `{table,columns}` (1-256 distinct columns).
 Every column needs both `catalog:read` and `tables:read` grants, even for an
@@ -160,7 +160,7 @@ Metadata does not authorize edits; normal checked writes remain the final author
 
 Session capability `row_query: bounded-v1` advertises `POST /v1/rows/query`.
 Clients require that capability; absence never permits a full-catalog fallback.
-`life-core/query` validates and normalizes the bounded request policy without
+`soma-core/query` validates and normalizes the bounded request policy without
 transport or credentials. Canonical wire types are generated from core.json.
 
 The request is `{table,columns,filter?,order?,limit?,cursor?}`. A filter is an
@@ -199,7 +199,7 @@ logical fields; changing a name does not change a credential's authority.
 The caller needs `captures:submit:ADAPTER` or `captures:read:ADAPTER`.
 `GET /v1/session` advertises only configured, usable adapters in
 `capabilities.captures = {protocol:"receipt-v1",adapters:[{id,read,submit}]}`.
-Hosts use `life-core/capture` to check capability and validate receipts.
+Hosts use `soma-core/capture` to check capability and validate receipts.
 Enrolled callers with changed profile bindings or grants receive 409 before
 submission. Revoked tokens are denied by ordinary authentication.
 
@@ -210,11 +210,11 @@ retained for retries. `GET /v1/captures/ADAPTER/REQUEST_ID` reads the same calle
 receipt. Request and response bodies are bounded to 64 KiB and redirects are
 refused. Upstream submissions wait up to 60 seconds, because acceptance can queue
 behind the adapter's serialized writer; receipt reads wait up to 15 seconds.
-Device tokens never leave Life Data.
+Device tokens never leave Soma.
 
 A 202 `received` or `processing` receipt is acceptance only. A `saved` receipt
 includes the resolved `{kind,id}` after verified commit. `needs_review`,
 `failed` and `uncertain` never imply success. A transport failure has unknown
 acceptance; query or resubmit the same UUID, never silently create a new one.
 The adapter owns receipt persistence, deduplication and mutation reconciliation;
-Life Data adds no queue, receipt database or schedule.
+Soma adds no queue, receipt database or schedule.

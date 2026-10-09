@@ -1,4 +1,4 @@
-# life-data
+# soma
 
 A schema-agnostic personal data store: local-first SQLite with an
 agent-friendly CLI, and an optional sync service. Think "headless Notion" -
@@ -13,15 +13,15 @@ editing this repo.
 ## Install
 
 ```bash
-nix profile install github:alexjmiller5/life-data
+nix profile install github:alexjmiller5/soma
 ```
 
 Or use the exported Home Manager module on macOS. It installs the CLI,
 DuckDB and a supervised background runner. Sync starts **off**:
 
 ```nix
-imports = [ life-data.homeModules.default ];
-lifeData.enable = true;
+imports = [ soma.homeModules.default ];
+services.soma.enable = true;
 ```
 
 Optional defaults: `hubUrl`, `cli.tokenCommand`, and `watch.tokenCommand`.
@@ -29,19 +29,23 @@ The two credential commands are independent; neither is required. Add any
 background command's dependencies through `watch.packages`.
 `watch.enable = false` omits the runner entirely.
 
+An install made before the rename (data in `~/.local/share/life-data`, the
+`life` command) is adopted on the first `soma` run: the data dir moves, the
+hosted hub's new hostname replaces the old one and the device stays enrolled.
+
 ## Use
 
 ```bash
-life init                                  # create the data dir + database
-life path                                  # print the database path
-life table create people name:text birthday:text \
+soma init                                  # create the data dir + database
+soma path                                  # print the database path
+soma table create people name:text birthday:text \
   --description 'name=Display name.' --description 'birthday=Source birthday text.'
-life sql "INSERT INTO people (name) VALUES ('Ada')"
-life sql "SELECT * FROM people"            # results as JSON
-life sql "ALTER TABLE people ADD COLUMN likes TEXT"
-life table rename people humans            # the ONLY way to rename a table
-life sql "SELECT * FROM history WHERE tbl = 'humans' ORDER BY created_at"
-life export > backup.sql                   # portable dump, no cloud involved
+soma sql "INSERT INTO people (name) VALUES ('Ada')"
+soma sql "SELECT * FROM people"            # results as JSON
+soma sql "ALTER TABLE people ADD COLUMN likes TEXT"
+soma table rename people humans            # the ONLY way to rename a table
+soma sql "SELECT * FROM history WHERE tbl = 'humans' ORDER BY created_at"
+soma export > backup.sql                   # portable dump, no cloud involved
 ```
 
 Every statement is plain SQLite SQL. Everything above works offline, forever,
@@ -50,14 +54,14 @@ with no account and no server.
 ## Sync (optional)
 
 ```bash
-life sync                    # one round trip
-life watch                   # sync in this terminal until interrupted
-life background enable       # enable the installed background runner
-life background disable      # finish the current round, then stop syncing
-life background status       # enabled, running, last success/error and counts
+soma sync                    # one round trip
+soma watch                   # sync in this terminal until interrupted
+soma background enable       # enable the installed background runner
+soma background disable      # finish the current round, then stop syncing
+soma background status       # enabled, running, last success/error and counts
 ```
 
-`life watch` and the background runner push a local write within about a
+`soma watch` and the background runner push a local write within about a
 second and pull a remote edit within a couple of seconds: they hold a long
 poll on the hub's change signal and run a round as soon as anything is
 committed there. While the hub cannot be reached that way they sync every
@@ -80,14 +84,14 @@ ordinary sync round, then poll again with the new value.
 On a new Mac, sign in through the browser and then enable sync:
 
 ```bash
-life login --name "My laptop"
-life background enable
+soma login --name "My laptop"
+soma background enable
 ```
 
-Life opens the hub's Cloudflare Access email approval page. After approval,
+Soma opens the hub's Cloudflare Access email approval page. After approval,
 it saves an independently revocable device token in macOS Keychain. No other
-Life device, password-manager vault, service account, or provider token is
-needed. Recovering after losing every Mac means installing Life again and
+Soma device, password-manager vault, service account, or provider token is
+needed. Recovering after losing every Mac means installing Soma again and
 repeating these steps using the owner's email account. Login and sync opt-in
 are separate choices.
 
@@ -95,7 +99,7 @@ The browser receives a public fingerprint, never the bearer token. An
 unapproved fingerprint link does not expire on the server; the CLI waits up to
 five minutes. Only approve a link from a login you are currently performing.
 A fingerprint alone grants no access. Device management at `<hub>/login/devices`
-revokes Life API credentials. It does not sign an owner out of Cloudflare Access:
+revokes Soma API credentials. It does not sign an owner out of Cloudflare Access:
 for a lost device with a usable browser session, the service operator must also
 revoke that identity's Access sessions and secure the email account. The hosted
 service currently admits one owner and one dataset; it is not multi-user signup.
@@ -105,32 +109,32 @@ if access requires interaction, the runner reports a sanitized OS error and
 retries. Unlocking the screen and allowing the executable to read the Keychain
 item are separate requirements. Disabling sync retains the credential.
 
-`life logout` revokes the saved device token at its hub before removing the
+`soma logout` revokes the saved device token at its hub before removing the
 Keychain item. Failed revocation retains the local token so logout can be
 retried. For an existing externally provisioned device token, use
-`life login --token-stdin`; admin tokens are rejected. Pipe credentials from
+`soma login --token-stdin`; admin tokens are rejected. Pipe credentials from
 a trusted provider, never put them in arguments or shell history.
 
 ### Consumer enrollment
 
-Applications other than your own `life` CLI and Life UI enroll with a named
+Applications other than your own `soma` CLI and Iris enroll with a named
 profile: a grant set the hub operator configures in `ENROLLMENT_PROFILES`. The
 approval page shows the application label and every grant; the resulting token
 carries exactly those grants and nothing broader. The full standard is
 [docs/consumer-access.md](docs/consumer-access.md).
 
 ```bash
-life login --profile reader-v1 --name "Reader"   # this Mac, token in Keychain
+soma login --profile reader-v1 --name "Reader"   # this Mac, token in Keychain
 ```
 
 A server consumer is enrolled by its operator in two steps, so the approval
 link can wait for the owner:
 
 ```bash
-life login --profile sync-v1 --name "Sync server" --start pending.json
+soma login --profile sync-v1 --name "Sync server" --start pending.json
 # prints {"approval_url", "approval_code", "state_file"}; send the URL to the owner
-life login --claim pending.json            # one check; fails until approved
-life login --claim pending.json --wait     # or poll every 5 s for up to 300 s
+soma login --claim pending.json            # one check; fails until approved
+soma login --claim pending.json --wait     # or poll every 5 s for up to 300 s
 ```
 
 `--start` writes a fresh candidate token to a new `0600` state file (it never
@@ -141,7 +145,7 @@ revoked. Neither step touches Keychain, so both work on any OS.
 
 `--hub-url https://your-hub.example.com` selects a self-hosted instance.
 Once a data directory has synced over HTTP, it is bound to that endpoint.
-Use a fresh `LIFE_DATA_DIR` for a different hub; existing cursors and data
+Use a fresh `SOMA_DATA_DIR` for a different hub; existing cursors and data
 are never silently reused against another service. A replica without a recorded
 endpoint performs one full sync to establish trustworthy cursors. This first
 round can take longer for a large existing database. Pulls request pages of 200;
@@ -151,8 +155,8 @@ three times (after 1, 4 and 15 seconds) before the round fails.
 
 Alternatively, pass `--token-command 'credential-tool read hub-token'`.
 It runs in the daemon's environment; it must work without a terminal.
-`LIFE_HUB_TOKEN` in that environment takes precedence. No password manager,
-vault, or service account is required by Life. A credential command is read
+`SOMA_HUB_TOKEN` in that environment takes precedence. No password manager,
+vault, or service account is required by Soma. A credential command is read
 once per enabled session/configuration; a rejected credential is reloaded
 with backoff. Never put a token literal in a command or shell history.
 
@@ -160,7 +164,7 @@ The Home Manager module owns installation and login startup. The CLI owns
 the mutable on/off setting, which survives process restarts and Nix rebuilds.
 With only the standalone package installed, `background status` reports
 `running: false`; install the module for automatic login startup, or run
-`life background run` under your own supervisor. The runner stays idle
+`soma background run` under your own supervisor. The runner stays idle
 while disabled, making no hub or credential requests. Only one runner can
 hold a data directory at a time. Failures retry after 60 seconds, doubling
 to a maximum of one hour. Re-enabling resets that wait. `last_success`
@@ -171,15 +175,15 @@ first 300 characters of a server, timeout or connection failure's message.
 Sync is state-based and last-write-wins per row on `updated_at`; deletes are
 soft (`UPDATE ... SET deleted_at = updated_at`) so tombstones propagate. A
 hard `DELETE` does not. Schema changes replay from `_schema_log`, so a new
-device pulls tables and rows with `life init` followed by `life sync`.
+device pulls tables and rows with `soma init` followed by `soma sync`.
 
 When content must disappear rather than be marked deleted (a soft-deleted
-row and the `history` table both keep the old text), use `life purge`:
+row and the `history` table both keep the old text), use `soma purge`:
 
 ```bash
-life purge notes 3f2a...                 # the row, its history and provenance edges
-life sql "UPDATE notes SET body = '[redacted]' WHERE id = '3f2a...'"
-life purge notes 3f2a... --col body      # only the old values of one column
+soma purge notes 3f2a...                 # the row, its history and provenance edges
+soma sql "UPDATE notes SET body = '[redacted]' WHERE id = '3f2a...'"
+soma purge notes 3f2a... --col body      # only the old values of one column
 ```
 
 A purge writes a marker to the `purges` table naming the table, row and
@@ -225,10 +229,10 @@ same row do not overwrite one another.
 ```
 
 The interactive client also accepts `token` in config and extra proxy
-`headers`; `LIFE_HUB_TOKEN` and `LIFE_HUB_URL` override file configuration.
+`headers`; `SOMA_HUB_TOKEN` and `SOMA_HUB_URL` override file configuration.
 Browser login selects the saved device session ahead of installation credential
 commands. Logout suppresses implicit fallback until an explicit authentication
-choice. An explicitly set `LIFE_HUB_TOKEN` remains an operator override.
+choice. An explicitly set `SOMA_HUB_TOKEN` remains an operator override.
 Background credential commands are separate from interactive `token`/`token_cmd`.
 User choices made through the CLI live in `background.json`; execution
 status lives in `background-status.json`. Neither contains saved tokens.
@@ -270,7 +274,7 @@ the expected public policy receipt, never the server policy or provider facts.
 
 ### Backups
 
-The hub's daily cron exports each database (the data database as `life-…`,
+The hub's daily cron exports each database (the data database as `soma-…`,
 the auth registry as `auth-…`) through D1's export API and streams the SQL,
 gzipped, to R2, writing into the prefix matching how long that copy should
 live:
@@ -294,7 +298,7 @@ Restore a copy locally inside one transaction (the export carries none, and
 committing each statement separately takes hours):
 
 ```bash
-{ echo 'BEGIN;'; gunzip -c life-….sql.gz; echo 'COMMIT;'; } | sqlite3 restored.db
+{ echo 'BEGIN;'; gunzip -c soma-….sql.gz; echo 'COMMIT;'; } | sqlite3 restored.db
 ```
 
 Restore into a fresh D1 database through `scripts/d1-fit-dump.py`, which
@@ -302,7 +306,7 @@ splits rows over D1's 100 KB statement limit (the export writes each row as
 one INSERT, and D1 refuses longer ones with `SQLITE_TOOBIG`):
 
 ```bash
-gunzip -c life-….sql.gz | scripts/d1-fit-dump.py > dump.sql
+gunzip -c soma-….sql.gz | scripts/d1-fit-dump.py > dump.sql
 wrangler d1 execute <new-db> --remote --file dump.sql
 ```
 
@@ -315,16 +319,16 @@ location pings, sensor readings, anything written once and read analytically.
 Streams are hub-backed by nature (the events are born remote):
 
 ```bash
-echo '{"lat": 42.36, "lon": -71.06, "tst": 1756789200}' | life stream append location
-life stream tail location        # the freshest record
-life archive query "SELECT * FROM life.events WHERE stream = 'location' LIMIT 10"
+echo '{"lat": 42.36, "lon": -71.06, "tst": 1756789200}' | soma stream append location
+soma stream tail location        # the freshest record
+soma archive query "SELECT * FROM soma.events WHERE stream = 'location' LIMIT 10"
 ```
 
 Any client that can POST JSON can feed a stream - e.g. OwnTracks in HTTP mode
 pointed at `<hub>/v1/streams/location/append` with the token as its Basic-auth
 password. The hub stores every event verbatim as a landing object (raw is
 sacred, never deleted) and tees it into a managed pipeline that builds an
-Apache Iceberg table (`life.events`) with automatic compaction. Queries run
+Apache Iceberg table (`soma.events`) with automatic compaction. Queries run
 server-side over that table; `--raw` instead runs local DuckDB against the
 raw landing/parquet objects (needs `duckdb` on PATH).
 
@@ -334,25 +338,25 @@ regardless, and everything is rebuildable from landing.
 
 ## Where data lives
 
-`$LIFE_DATA_DIR` if set, else `$XDG_DATA_HOME/life-data`, else
-`~/.local/share/life-data`. The database is a single `life.db` file - copying
+`$SOMA_DATA_DIR` if set, else `$XDG_DATA_HOME/soma`, else
+`~/.local/share/soma`. The database is a single `soma.db` file - copying
 it is a complete backup. Never put the data dir inside a file-sync folder
 (iCloud Drive, Dropbox): file-level sync corrupts SQLite WAL databases.
 
 ## Design
 
-- **Tables created via `life table create` get sync-ready columns
+- **Tables created via `soma table create` get sync-ready columns
   automatically**: `id` (random 128-bit hex), `created_at`, `updated_at`
   (trigger-maintained), `deleted_at`. ISO 8601 UTC, millisecond precision.
   Repeat `--description COLUMN=TEXT` to document each supplied column.
   The table, timestamp trigger, catalog definitions and schema log commit
   together; a rejected definition leaves none of them behind.
 - **Catalog policy is data.** Enforced table invariants on
-  `catalog_properties` apply to `life property set`, raw metadata writes and
+  `catalog_properties` apply to `soma property set`, raw metadata writes and
   hub pushes. A rule using `changed` can require descriptions on new or edited
   definitions while leaving ordinary data edits available for older tables.
-  `life check` evaluates `changed` against the full table to report existing
-  gaps. Configure naming and documentation rules through `life rule set`;
+  `soma check` evaluates `changed` against the full table to report existing
+  gaps. Configure naming and documentation rules through `soma rule set`;
   the application ships no user-specific catalog policy.
 - **`history`** records every edit to every cataloged table, one row per
   changed cell (`tbl`, `row_id`, `col`, `old`, `new`, `origin` = hostname,
@@ -360,10 +364,10 @@ it is a complete backup. Never put the data dir inside a file-sync folder
   an insert is `created_at` plus the row, and a cell's first change keeps its
   original value in `old`, so the full timeline is reconstructible. It syncs
   like any table.
-- **`life table rename OLD NEW`** renames a table and every reference to it
+- **`soma table rename OLD NEW`** renames a table and every reference to it
   (catalog properties and refs, rule SQL, provenance, history) in one
   transaction, as logged DDL. A raw `ALTER TABLE … RENAME TO` through
-  `life sql` is refused because it would leave those references dangling.
+  `soma sql` is refused because it would leave those references dangling.
 - **`_schema_log`** records every DDL statement in order; replicas replay it.
 - **`_sync_state`** holds the sync cursors.
 - The client is pure Python standard library - no runtime dependencies.
@@ -371,8 +375,8 @@ it is a complete backup. Never put the data dir inside a file-sync folder
 ## Importing data
 
 There is no importer command by design: an agent (or you) maps any source
-into the generic primitives - `life table create`, then transform records to
-JSON and pipe them into `life insert <table>`. Use source record ids as row
+into the generic primitives - `soma table create`, then transform records to
+JSON and pipe them into `soma insert <table>`. Use source record ids as row
 `id`s so re-imports stay idempotent and cross-source relations survive.
 
 ### Hub write contract
@@ -549,7 +553,7 @@ There is no file deletion endpoint.
 `{objects:[{key,size,uploaded,etag}],cursor}`; `cursor` is opaque and `null` on
 the last page, `limit` is 1-1000 (default 100). A `files:read:<prefix>/` holder
 may list only prefixes inside its grant; `full` and `admin` may list anything,
-including the whole archive. `life files list <prefix>` follows every page and
+including the whole archive. `soma files list <prefix>` follows every page and
 prints the objects as JSON.
 
 Mint client tokens with literal, slash-terminated namespace scopes, for
@@ -561,11 +565,11 @@ URL and their scoped bearer token, never storage-provider credentials.
 
 ### Synced sidebar table pins
 
-`life table provision sidebar-pins` installs the shared navigation table through
-normal logged schema and catalog writes. Run `life sync` to deliver it to enrolled
+`soma table provision sidebar-pins` installs the shared navigation table through
+normal logged schema and catalog writes. Run `soma sync` to deliver it to enrolled
 replicas. Repeating provisioning verifies the existing table without modifying it;
 an unrelated same-name table is preserved and reported as a collision. No pin
 choices are seeded. The UI stores pin order as ordinary rows with history and
 soft deletion, so successfully synced pins recover on a fresh replica.
-`life table rename OLD NEW` retargets recognized pins and preserves their order.
+`soma table rename OLD NEW` retargets recognized pins and preserves their order.
 Concurrent offline reorderings use the usual row-level last-write-wins behavior.

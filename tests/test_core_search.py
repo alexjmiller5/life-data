@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from life_data import catalog, create_table, execute_sql, init, insert_rows
+from soma import catalog, create_table, execute_sql, init, insert_rows
 
 ROOT = Path(__file__).resolve().parents[1]
 

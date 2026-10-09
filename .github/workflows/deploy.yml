@@ -3,7 +3,7 @@ name: deploy
 on:
   push:
     branches: [main]
-    # core/ is in here because the hub bundles life-core's validator.
+    # core/ is in here because the hub bundles soma-core's validator.
     paths: ["worker/**", "core/**", "scripts/generate-core-contract.ts", ".github/workflows/deploy.yml"]
   workflow_dispatch:
 

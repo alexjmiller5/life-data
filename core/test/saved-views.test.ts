@@ -107,12 +107,12 @@ test.each(['canonical', 'ddl', 'metadata'])('a standalone browser bundle recogni
     });
     expect(await pack.exited).toBe(0);
     const modules = join(temp, 'node_modules');
-    const pkg = join(modules, 'life-core');
+    const pkg = join(modules, 'soma-core');
     await mkdir(pkg, { recursive: true });
     const unpack = Bun.spawn(['tar', '-xzf', join(temp, 'core.tgz'), '-C', pkg, '--strip-components=1'], { stdout: 'pipe', stderr: 'pipe' });
     expect(await unpack.exited).toBe(0);
     const entry = join(temp, 'consumer.ts');
-    await writeFile(entry, `export { listViews } from 'life-core';\nexport { default as manifest } from 'life-core/schema/saved-views.json';\n`);
+    await writeFile(entry, `export { listViews } from 'soma-core';\nexport { default as manifest } from 'soma-core/schema/saved-views.json';\n`);
     if (variant !== 'canonical') {
       // Change only the packaged manifest. A second DDL/metadata literal in
       // production would reject the corresponding schema seeded below.

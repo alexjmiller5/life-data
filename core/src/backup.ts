@@ -5,10 +5,10 @@ import { qident, validEditTimestamp, type Row } from './validate.ts';
 import type { BackupSummary, BackupTableSummary, HubBackup, HubBackupList, RestorePreview, RestoreResult, RestoreArgs } from './contract.generated.ts';
 export type { BackupSummary, BackupTableSummary, HubBackup, HubBackupList, RestorePreview, RestoreResult } from './contract.generated.ts';
 
-/** Version of the SQL dump shape: `life export`, hub backups and exportReplica.
+/** Version of the SQL dump shape: `soma export`, hub backups and exportReplica.
  * A dump without the header line is the same version-1 shape. */
 export const DUMP_VERSION = 1;
-export const DUMP_HEADER = `-- life-data-dump: ${DUMP_VERSION}`;
+export const DUMP_HEADER = `-- soma-dump: ${DUMP_VERSION}`;
 
 /** Successive text chunks of one dump, gzip already removed and checked by the host. */
 export interface DumpSource { read(): Promise<string | null> }
@@ -329,7 +329,7 @@ async function readDump(source: DumpSource, apply?: Apply): Promise<{ summary: B
     characters += text.length;
     if (first) {
       first = false;
-      const header = /^﻿?\s*-- life-data-dump: *(\d+)\s*\n/.exec(text);
+      const header = /^﻿?\s*-- (?:soma|life-data)-dump: *(\d+)\s*\n/.exec(text);
       version = header ? Number(header[1]) : DUMP_VERSION;
       if (version !== DUMP_VERSION) throw invalid(`This backup uses dump format ${version}; this app reads format ${DUMP_VERSION}. Update the app first.`);
     }
@@ -462,7 +462,7 @@ export async function previewRestore(db: SqlDriver, source: DumpSource): Promise
   return { backup, current };
 }
 
-/** The portable SQL dump of `life export`: the replica's schema log and every
+/** The portable SQL dump of `soma export`: the replica's schema log and every
  * ordinary table with its rows, then indexes, triggers and views. Device sync
  * state, caches and other underscore plumbing stay out. */
 export async function exportReplica(db: SqlDriver, sink: DumpSink): Promise<BackupSummary> {
@@ -514,7 +514,7 @@ export async function exportReplica(db: SqlDriver, sink: DumpSink): Promise<Back
 /** A Python-synced file keeps its own checkpoints; the CLI owns its restore. */
 async function assertCoreReplica(db: SqlDriver): Promise<void> {
   if ((await db.all("SELECT 1 FROM _sync_state WHERE key IN ('last_push','last_pull') LIMIT 1")).length) {
-    throw new Error('This database is synced by the Life CLI. Restore it with the CLI instead.');
+    throw new Error('This database is synced by the Soma CLI. Restore it with the CLI instead.');
   }
 }
 

@@ -3,8 +3,8 @@
 import json
 from pathlib import Path
 
-from life_data import table_ddl
-from life_data.catalog import CATALOG_TABLES
+from soma import table_ddl
+from soma.catalog import CATALOG_TABLES
 
 
 def test_catalog_log_manifest_uses_engine_ddl():

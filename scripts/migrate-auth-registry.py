@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Copy the legacy token registry into Life's separate auth D1.
+"""Copy the legacy token registry into Soma's separate auth D1.
 
 The source is read once and the target is preflighted before any insert. An
 existing matching row is accepted; a conflicting hash or name aborts without
@@ -156,7 +156,7 @@ def main(argv=None) -> int:
         default=os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
         required=not os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
     )
-    parser.add_argument("--source-id", required=True, help="existing life-data D1 id")
+    parser.add_argument("--source-id", required=True, help="existing soma D1 id")
     parser.add_argument("--target-id", required=True, help="new auth D1 id")
     args = parser.parse_args(argv)
     token = os.environ.get("CLOUDFLARE_API_TOKEN")

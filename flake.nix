@@ -19,23 +19,23 @@
           pythonPkgs = pkgs.python313Packages;
         in
         rec {
-          life-data = pythonPkgs.buildPythonApplication {
-            pname = "life-data";
+          soma = pythonPkgs.buildPythonApplication {
+            pname = "soma";
             version = "0.1.0";
             src = ./.;
             pyproject = true;
             build-system = [ pythonPkgs.uv-build ];
-            pythonImportsCheck = [ "life_data" ];
-            meta.mainProgram = "life";
+            pythonImportsCheck = [ "soma" ];
+            meta.mainProgram = "soma";
           };
-          default = life-data;
+          default = soma;
         });
 
       # Installs the CLI, optional defaults and supervised background runner.
-      # Users opt in with `life background enable`.
+      # Users opt in with `soma background enable`.
       homeModules = rec {
-        life-data = import ./nix/hm-module.nix self;
-        default = life-data;
+        soma = import ./nix/hm-module.nix self;
+        default = soma;
       };
     };
 }

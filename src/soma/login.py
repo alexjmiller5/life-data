@@ -1,4 +1,4 @@
-"""Browser enrollment and local lifecycle for app-issued Life device tokens."""
+"""Browser enrollment and local lifecycle for app-issued Soma device tokens."""
 
 import hashlib
 import json
@@ -99,7 +99,7 @@ def _request_json(
     opener=None,
 ) -> tuple[int, dict | None]:
     endpoint = validate_hub_url(endpoint)
-    headers = {"User-Agent": "life-data/0.2.0", **auth_headers({"token": token})}
+    headers = {"User-Agent": "soma/0.2.0", **auth_headers({"token": token})}
     opener = opener or urllib.request.build_opener(_NoRedirect())
     try:
         with _open_hub_request(
@@ -200,7 +200,7 @@ def _revoke(endpoint: str, token: str, *, opener=None) -> None:
 
 
 def _device_label(name: str | None) -> str:
-    label = (name or platform.node() or "Life device").strip()
+    label = (name or platform.node() or "Soma device").strip()
     if not label or len(label) > 100 or any(ord(c) < 32 or ord(c) == 127 for c in label):
         raise LoginError("device label must be 1-100 printable characters")
     return label
@@ -260,7 +260,7 @@ def login(
         import getpass
 
         source = stdin or sys.stdin
-        token = getpass.getpass("Life device token: ") if source.isatty() else source.read().strip()
+        token = getpass.getpass("Soma device token: ") if source.isatty() else source.read().strip()
         if session and token != previous:
             raise LoginError("already signed in; log out before replacing the device credential")
         session = _session(endpoint, token, opener=opener)
@@ -375,7 +375,7 @@ def _saved_endpoint(data: Path) -> str:
     config = read_json(data / "config.json")
     if isinstance(config.get("hub_url"), str) and config["hub_url"].strip():
         return validate_hub_url(config["hub_url"])
-    if "LIFE_HUB_URL" in os.environ:
+    if "SOMA_HUB_URL" in os.environ:
         raise LoginError("cannot log out without the saved hub endpoint")
     return DEFAULT_HUB_URL
 

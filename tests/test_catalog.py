@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from life_data import connect, create_table, execute_sql, init, insert_rows
-from life_data.catalog import (
+from soma import connect, create_table, execute_sql, init, insert_rows
+from soma.catalog import (
     ValidationError,
     Violation,
     audit,
@@ -36,7 +36,7 @@ from life_data.catalog import (
 
 @pytest.fixture()
 def db(tmp_path):
-    return init(tmp_path / "life.db")
+    return init(tmp_path / "soma.db")
 
 
 def test_cli_writer_waits_until_another_validation_snapshot_commits(db):
@@ -50,13 +50,13 @@ def test_cli_writer_waits_until_another_validation_snapshot_commits(db):
                 sys.executable,
                 "-c",
                 (
-                    "from life_data import main; print('ready', flush=True); "
+                    "from soma import main; print('ready', flush=True); "
                     "main(['sql', \"INSERT INTO items (id,name) VALUES ('second','Second')\"])"
                 ),
             ],
             env={
                 "PATH": os.environ["PATH"],
-                "LIFE_DATA_DIR": str(db.parent),
+                "SOMA_DATA_DIR": str(db.parent),
                 "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
             },
             stdout=subprocess.PIPE,
@@ -284,7 +284,7 @@ def test_untouched_legacy_row_is_not_validated_by_its_timestamp(db):
 
 
 def test_change_without_a_timestamp_bump_is_still_validated(db):
-    """The other half: a table made by raw `life sql` has no updated_at
+    """The other half: a table made by raw `soma sql` has no updated_at
     trigger, so a bad UPDATE moves no timestamp. The snapshot diff sees it."""
     execute_sql(db, "CREATE TABLE t (id TEXT PRIMARY KEY, status TEXT, updated_at TEXT)")
     execute_sql(db, "INSERT INTO t (id, status, updated_at) VALUES ('a','want','2020-01-01')")
@@ -623,8 +623,8 @@ def test_check_reports_legacy_violations_and_unenforced_rules(db):
 
 
 def test_cli_check_exit_code(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    from life_data import main
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    from soma import main
 
     main(["init"])
     main(["table", "create", "pets", "name:text"])
@@ -632,7 +632,7 @@ def test_cli_check_exit_code(monkeypatch, tmp_path, capsys):
     main(["property", "set", "pets.name", "--type", "select", "--options", "cat,dog"])
     import sqlite3 as s
 
-    s.connect(tmp_path / "life.db").execute(
+    s.connect(tmp_path / "soma.db").execute(
         "INSERT INTO pets (name) VALUES ('rat')"
     ).connection.commit()
     capsys.readouterr()  # discard prior commands' stdout; isolate this check's output
@@ -1099,8 +1099,8 @@ def test_set_property_defaults_type_to_text_on_create(db):
 
 
 def test_cli_table_set_consumers_accepts_json_or_comma_list(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("LIFE_DATA_DIR", str(tmp_path))
-    from life_data import main
+    monkeypatch.setenv("SOMA_DATA_DIR", str(tmp_path))
+    from soma import main
 
     main(["init"])
     capsys.readouterr()  # drop init's path line
