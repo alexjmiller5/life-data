@@ -36,10 +36,11 @@ export function trustedEvidenceTrigger(trigger) {
   return trigger.tbl_name==='history' && EVIDENCE_TRIGGERS.some(t=>t.name===trigger.name && t.sql.replace(/\s+/g,' ').trim()===String(trigger.sql).replace(/\s+/g,' ').trim());
 }
 
+// Idempotent DDL travels in batches: one round trip each, not one per statement.
 export async function ensureEvidenceStorage(db) {
-  for(const sql of EVIDENCE_DDL) await db.prepare(sql).run();
+  await db.batch(EVIDENCE_DDL.map(sql=>db.prepare(sql)));
   if (await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history'").first()) {
-    for(const {sql} of EVIDENCE_TRIGGERS) await db.prepare(sql.replace('CREATE TRIGGER ','CREATE TRIGGER IF NOT EXISTS ')).run();
+    await db.batch(EVIDENCE_TRIGGERS.map(({sql})=>db.prepare(sql.replace('CREATE TRIGGER ','CREATE TRIGGER IF NOT EXISTS '))));
   }
   await ensureContinuityGuards(db);
 }

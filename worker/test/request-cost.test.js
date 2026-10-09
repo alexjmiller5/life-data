@@ -120,6 +120,44 @@ test("a warm write audits but skips governance setup while the schema is unchang
   expect(trips).toBeLessThanOrEqual(25);
 });
 
+// A new isolate over an already set-up database: production spreads requests
+// over many isolates, so most writes land on one that has never written.
+function newIsolate(env) {
+  const fresh = new Counting();
+  fresh.db.close();
+  fresh.db = env.DB.db;
+  env.DB = fresh;
+}
+
+test("a new isolate's first write runs governance setup, then one audit", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  const push = (name, at) => call("/v1/rows/push", { table: "people", columns: ["id", "name", "updated_at"], rows: [{ id: "a", name, updated_at: at }] });
+  await push("A", "2026-01-01T00:00:00.000Z");
+  await push("A2", "2026-01-01T00:00:00.500Z");
+  newIsolate(env);
+  env.DB.statements = [];
+  await push("B", "2026-01-01T00:00:01.000Z");
+  expect(env.DB.statements.filter((sql) => sql === AUDIT).length).toBe(1);
+});
+
+test("a new isolate's governance setup costs a handful of round trips", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  const push = (name, at) => call("/v1/rows/push", { table: "people", columns: ["id", "name", "updated_at"], rows: [{ id: "a", name, updated_at: at }] });
+  await push("A", "2026-01-01T00:00:00.000Z");
+  await push("A2", "2026-01-01T00:00:00.500Z");
+  newIsolate(env);
+  env.DB.calls = 0;
+  await push("B", "2026-01-01T00:00:01.000Z");
+  const first = env.DB.calls;
+  env.DB.calls = 0;
+  await push("C", "2026-01-01T00:00:02.000Z");
+  // Before: 21 more than a warm write - each idempotent CREATE and continuity
+  // read was its own round trip, plus a second audit.
+  expect(first - env.DB.calls).toBeLessThanOrEqual(8);
+});
+
 test("a write after out-of-band DDL runs governance setup again", async () => {
   const { env, call } = await hub();
   for (const [p, b] of reads) await call(p, b);

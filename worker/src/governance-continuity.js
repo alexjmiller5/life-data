@@ -36,10 +36,14 @@ export function continuityTables(results){
   return tables;
 }
 export async function ensureContinuityGuards(db){
-  const schemas=await continuitySchemas(db);
-  const {results}=await db.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND name GLOB '_governance_rows_*' ORDER BY name").all();
-  const {results:tables}=await db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table'").all();
-  const {results:layouts}=await db.prepare('SELECT tbl,sql FROM _governance_layouts').all();
+  // One round trip for the four reads.
+  const [{results:columns},{results},{results:tables},{results:layouts}]=await db.batch([
+    db.prepare(CONTINUITY_COLUMNS),
+    db.prepare("SELECT name,tbl_name,sql FROM sqlite_master WHERE type='trigger' AND name GLOB '_governance_rows_*' ORDER BY name"),
+    db.prepare("SELECT name,sql FROM sqlite_master WHERE type='table'"),
+    db.prepare('SELECT tbl,sql FROM _governance_layouts'),
+  ]);
+  const schemas=continuityTables(columns);
   for(const [table,columns] of schemas){
     const sql=tables.find(t=>t.name===table).sql;
     const expected=continuityTriggers(table,columns);

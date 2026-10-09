@@ -629,9 +629,12 @@ direct external writers retain the timestamp compatibility contract.
 Idempotent setup (auth registry, plumbing tables, each table's arrival column)
 runs once per isolate. Governance setup (continuity guards, private storage) is
 a function of the schema: every other route runs the exact generic-state audit,
-and setup runs again only when the audited schema (all of `sqlite_master`)
-differs from the one setup last ran against - a replay, a DDL route or DDL from
-outside the hub (`ready` in `index.js`). Replica reads (`rows/pull`, `cursor`,
+and an isolate that has run setup skips it while the audited schema (all of
+`sqlite_master`) is the one it ran against; a replay, a DDL route or DDL from
+outside the hub runs it again (`ready` in `index.js`). The platform spreads
+requests over many isolates, so most writes land on one that has never written
+and pay setup: its idempotent DDL and continuity reads travel in batches (about
+six round trips), and each run logs one `governance_setup` line with its reason. Replica reads (`rows/pull`, `cursor`,
 `stats`) skip setup and re-audit only when a one-row schema stamp (object
 count, total SQL length) moved since the isolate's last passing audit; a failed
 audit drops that verification, and reads execute no catalog SQL. The token

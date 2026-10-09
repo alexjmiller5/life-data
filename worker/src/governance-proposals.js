@@ -1,4 +1,4 @@
-import {ensureReceiptStorage} from './governance-store.js';
+import {RECEIPTS_DDL} from './governance-store.js';
 import {permits} from './governance-preview.js';
 import {ScopeDenied} from './scopes.js';
 export const PROPOSAL_DDL=[
@@ -11,8 +11,7 @@ export const PROPOSAL_DDL=[
       columns_json TEXT NOT NULL CHECK(json_valid(columns_json)),PRIMARY KEY(proposal_id,version))`,
 ];
 export async function ensureProposalStorage(db){
-  await ensureReceiptStorage(db);
-  await db.batch(PROPOSAL_DDL.map(sql=>db.prepare(sql)));
+  await db.batch([RECEIPTS_DDL,...PROPOSAL_DDL].map(sql=>db.prepare(sql)));
 }
 export async function loadProposal(view,tenant,id,version){
   const header=await view.prepare('SELECT * FROM _governance_proposals WHERE id=?').bind(id).first();

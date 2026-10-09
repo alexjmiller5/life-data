@@ -273,16 +273,19 @@ async function audit(db) {
 }
 
 // Every non-read route audits the generic state afresh. Governance setup is a
-// function of the schema, so it runs only when the audited schema differs from
-// the one it last ran against (always in a fresh isolate): ~20 round trips a
-// write no longer pays. A failed first audit gets setup and the second audit,
-// the order every request used to run them in.
+// function of the schema, so an isolate that has run it skips it while the
+// audited schema is the one it ran against. A new isolate (most writes: the
+// platform spreads requests over many) and a changed or failing audit run
+// setup, then the audit, the order every request used to run them in.
 async function ready(db) {
-  let state = null;
-  try { state = await audit(db); } catch (e) { if (!(e instanceof ScopeDenied)) throw e; }
-  if (state && state.objects === prepared.get(db)) return;
-  // Rare by design; frequent lines mean schema churn or short-lived isolates.
-  console.log(JSON.stringify({ governance_setup: !state ? "audit failed" : prepared.has(db) ? "schema changed" : "new isolate" }));
+  let reason = "new isolate";
+  if (prepared.has(db)) {
+    let state = null;
+    try { state = await audit(db); } catch (e) { if (!(e instanceof ScopeDenied)) throw e; }
+    if (state && state.objects === prepared.get(db)) return;
+    reason = state ? "schema changed" : "audit failed";
+  }
+  console.log(JSON.stringify({ governance_setup: reason }));
   await ensureReady(db);
   prepared.set(db, (await audit(db)).objects);
 }
