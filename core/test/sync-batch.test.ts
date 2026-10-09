@@ -113,6 +113,7 @@ test('progress counts finished tables and received rows against the full pulls e
   seen.length = 0;
   remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('new', 'New', T1, T2);
   await sync(db, { ...hub, progress: (p: SyncProgress) => seen.push(p) });
+  // Quiet tables (both empty catalogs) are done before the round starts.
+  expect(seen[0]).toMatchObject({ tablesDone: 2, tablesTotal: 4 });
   expect(seen.at(-1)).toMatchObject({ tablesDone: 4, tablesTotal: 4, rowsExpected: null });
-  expect(seen.some(p => p.table === 'catalog_rules')).toBe(true); // quiet tables still count as done
 });

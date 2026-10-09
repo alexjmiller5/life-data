@@ -190,7 +190,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     return [table,{since,mark:resume ? String(progress.mark) : quiet ? since : String(marks.max_hub_at),after:resume ? String(progress.after) : undefined,quiet}];
   }));
   const fullRows=tables.filter(t=>walks.get(t)!.since===''&&!walks.get(t)!.quiet);
-  const progress={tablesDone:0,tablesTotal:tables.length,rowsReceived:0,rowsExpected:fullRows.length ? fullRows.reduce((n,t)=>n+(Number.isSafeInteger(counts?.[t]) ? counts[t] : 0),0) : null,table:null as string|null};
+  const progress={tablesDone:tables.filter(t=>walks.get(t)!.quiet).length,tablesTotal:tables.length,rowsReceived:0,rowsExpected:fullRows.length ? fullRows.reduce((n,t)=>n+(Number.isSafeInteger(counts?.[t]) ? counts[t] : 0),0) : null,table:null as string|null};
   const report=()=>hub.progress?.({...progress});
   // Pages fetched ahead with an earlier table's request, by table and cursor.
   const ahead=new Map<string,{after:string|undefined,page:any}>();
@@ -329,8 +329,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       if(!deferred.has(table)) await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,pull,COVERAGE_VERSION]);
       await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[table]);
     });
-    progress.tablesDone++;
-    report();
+    if(!quiet) { progress.tablesDone++; report(); }
   }
   // Certification and completion commit only after every request succeeds.
   // Rejected rows wait in the inbox; they do not make a finished round unsuccessful.
