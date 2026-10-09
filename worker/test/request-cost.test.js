@@ -58,10 +58,39 @@ for (const [path, body] of reads.slice(1)) test(`a warm ${path} answers within a
   for (const [p, b] of reads) await call(p, b); // the isolate's first requests set up storage
   env.DB.calls = env.AUTH_DB.calls = 0;
   // Before: 30-33, from re-running every CREATE IF NOT EXISTS and the write
-  // path's governance setup on each read. Two of these run after the response
-  // (the token's last-use stamp and the usage flush).
-  expect(await call(path, body)).toBeLessThanOrEqual(8);
+  // path's governance setup on each read; then 8, with the generic-state audit
+  // (two batches) and the cursor's column probe on every read. Two of these
+  // run after the response (the token's last-use stamp and the usage flush).
+  expect(await call(path, body)).toBeLessThanOrEqual(4);
 });
+
+test("a write re-audits the generic state the reads had memoized, and reads re-audit after a write", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  // A tamper that only a fresh audit sees: reads keep serving from the memo...
+  env.DB.db.exec("CREATE VIEW _governance_fake AS SELECT 1");
+  expect((await (await rawCall(env, "/v1/stats", {})).json()).error).toBeUndefined();
+  // ...a write audits afresh and is denied...
+  const denied = await rawCall(env, "/v1/rows/push", { table: "people", columns, rows: [] });
+  expect(denied.status).toBe(403);
+  // ...and the next read audits again too.
+  expect((await rawCall(env, "/v1/stats", {})).status).toBe(403);
+});
+
+test("a cursor read after a schema replay still sees the new table", async () => {
+  const { env, call } = await hub();
+  for (const [p, b] of reads) await call(p, b);
+  await call("/v1/schema/push", { entries: [{ applied_at: "2026-01-01T00:00:00.000Z", ddl: "CREATE TABLE later (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)" }] });
+  env.DB.db.exec("INSERT INTO later VALUES ('a','A','2026-01-02T00:00:00.000Z',NULL,'2026-01-02T00:00:00.000Z')");
+  const marks = await (await rawCall(env, "/v1/cursor", { tables: ["people", "later"] })).json();
+  expect(marks.tables).toEqual({ people: "", later: "2026-01-02T00:00:00.000Z" });
+});
+
+async function rawCall(env, path, body) {
+  return worker.fetch(new Request(`https://hub.test${path}`, {
+    method: "POST", headers: { Authorization: "Bearer t-device", "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }), env, { waitUntil() {} });
+}
 
 test("write routes still install governance storage for tables created after the isolate warmed up", async () => {
   const { env, call } = await hub();

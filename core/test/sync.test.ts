@@ -256,7 +256,7 @@ test.each(['early failure','failure','rejection','midflight rejection','skipped'
   await db.run('INSERT INTO items(id,name,updated_at) VALUES (?,?,?)',['lost','Offline',T1]);
   let clock=mode==='midflight rejection'?new Date().toISOString():T1;
   const interrupted={...hub,async post(route:string,body:any){
-    if(mode==='early failure'&&route==='/v1/schema/pull') throw new Error('offline');
+    if(mode==='early failure'&&route==='/v1/cursor') throw new Error('offline');
     if(mode==='midflight rejection'&&route==='/v1/cursor') clock=T1;
     if(mode==='failure'&&route==='/v1/rows/pull'&&body.table==='items') throw new Error('offline');
     if(mode.endsWith('rejection')&&route==='/v1/rows/push'&&body.table==='items') return {data:{upserted:0,rejected:[{id:'lost',rule:'write-budget'}]},date:new Date(clock).toUTCString()};
@@ -333,4 +333,62 @@ test.each([false,true])('rejected history stays held when its table is skipped (
   await sync(db,hub);
   expect(await db.all('SELECT * FROM _core_rejected')).toEqual([]);
   expect(remote.db.query("SELECT id FROM history WHERE id='held'").all()).toEqual([{id:'held'}]);
+});
+
+test('a quiet round asks the hub for its cursor and nothing else', async () => {
+  const {db,remote,hub,requests}=setup();
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('a','Hub row',T0,T1);
+  await sync(db,hub);
+  requests.length=0;
+  await sync(db,hub);
+  expect(requests.map(r=>r.route)).toEqual(['/v1/cursor']);
+});
+
+test('schema entries that appear on the hub or locally between rounds are still exchanged', async () => {
+  const {db,remote,hub,requests}=setup();
+  await sync(db,hub);
+  remote.db.exec("CREATE TABLE later (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)");
+  remote.db.query('INSERT INTO _schema_log(applied_at,ddl) VALUES (?,?)').run(T1,'CREATE TABLE later (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)');
+  requests.length=0;
+  await sync(db,hub);
+  expect(requests.map(r=>r.route)).toContain('/v1/schema/pull');
+  expect(await db.all("SELECT name FROM sqlite_master WHERE name='later'")).toEqual([{name:'later'}]);
+  await db.run('ALTER TABLE items ADD COLUMN note TEXT');
+  await db.run('INSERT INTO _schema_log(applied_at,ddl) VALUES (?,?)',[T2,'ALTER TABLE items ADD COLUMN note TEXT']);
+  await sync(db,hub);
+  expect(remote.db.query("SELECT count(*) AS n FROM _schema_log WHERE ddl LIKE 'ALTER TABLE items ADD COLUMN note%'").get()).toEqual({n:1});
+  expect(remote.db.query("PRAGMA table_info(items)").all().some((c:any)=>c.name==='note')).toBe(true);
+});
+
+test('table sizes are asked again only daily or for a table the counts never saw', async () => {
+  let clock=new Date(T0).getTime();
+  const now=()=>new Date(clock);
+  const {db,remote,hub,requests}=setup();
+  await sync(db,hub,{now});
+  clock+=3_600_000;
+  requests.length=0;
+  await sync(db,hub,{now});
+  expect(requests.map(r=>r.route)).not.toContain('/v1/stats');
+  clock+=86_400_000;
+  await sync(db,hub,{now});
+  expect(requests.map(r=>r.route)).toContain('/v1/stats');
+  requests.length=0;
+  remote.db.exec("CREATE TABLE later (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)");
+  remote.db.query('INSERT INTO _schema_log(applied_at,ddl) VALUES (?,?)').run(T1,'CREATE TABLE later (id TEXT PRIMARY KEY, name TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)');
+  await sync(db,hub,{now});
+  expect(requests.map(r=>r.route)).toContain('/v1/stats');
+});
+
+test('a commit stamped with the same millisecond as the cursor after its read is still pulled', async () => {
+  const {db,remote,hub,requests}=setup();
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('a','First',T0,T1);
+  await sync(db,hub);
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('b','Same stamp',T0,T1);
+  requests.length=0;
+  await sync(db,hub);
+  expect(requests.map(r=>r.route)).toEqual(['/v1/cursor','/v1/rows/pull']);
+  expect(await db.all('SELECT id FROM items ORDER BY id')).toEqual([{id:'a'},{id:'b'}]);
+  requests.length=0;
+  await sync(db,hub);
+  expect(requests.map(r=>r.route)).toEqual(['/v1/cursor']);
 });

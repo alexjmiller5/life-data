@@ -317,11 +317,11 @@ test("cursor asks the database in batches, not once per table", async () => {
   };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  // after the one-time index pass, a cursor read is two batches and no per-table round trips
+  // after the one-time index and column passes, a cursor read is one batch and no per-table round trips
   expect(batches).toBeGreaterThanOrEqual(2);
   const warm = { batches, singles };
   await ROUTES["/v1/cursor"]({ tables: ["people", "provenance", "catalog_properties"] }, db);
-  expect(batches - warm.batches).toBe(2);
+  expect(batches - warm.batches).toBe(1);
   expect(singles - warm.singles).toBe(0);
 });
 

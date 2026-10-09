@@ -311,7 +311,7 @@ test.each(['schema', 'rows', 'commit'])('failed next %s round retains previous s
   const before = await core.syncStatus(db);
   remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', T0, T2);
   const transport: Hub = { ...hub, async post(route, body) {
-    if (failure === 'schema' && route === '/v1/schema/pull') throw new Error('schema offline');
+    if (failure === 'schema' && route === '/v1/cursor') throw new Error('schema offline');
     if (failure === 'rows' && route === '/v1/rows/pull' && body.table === 'items') throw new Error('rows offline');
     return hub.post(route, body);
   } };

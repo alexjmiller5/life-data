@@ -626,11 +626,14 @@ TypeScript `_core_pending` remains that client's separate receipt mechanism;
 direct external writers retain the timestamp compatibility contract.
 
 **Every hub request pays its D1 round trips (~45 ms each from the edge).**
-Idempotent setup (auth registry, plumbing tables) runs once per isolate;
-replica reads (`rows/pull`, `cursor`, `stats`) skip the write path's governance
-storage setup (schema/pull keeps it: it initializes a fresh hub) and run the
-generic-state guard as two batches. `worker/test/request-cost.test.js` holds
-the per-route budget; a cold download is hundreds of these requests.
+Idempotent setup (auth registry, plumbing tables, each table's arrival column)
+runs once per isolate; replica reads (`rows/pull`, `cursor`, `stats`) skip the
+write path's governance storage setup (schema/pull keeps it: it initializes a
+fresh hub) and reuse the isolate's generic-state audit for a minute (every
+write audits afresh; a failed audit drops the memo). A token's last-use stamp
+is written at most once a minute. `worker/test/request-cost.test.js` holds the
+per-route budget (a warm read is one round trip plus the two after the
+response); a cold download is dozens of these requests.
 
 **The hub owns a `hub_at` index per user table** (`<table>_hub_at`, unlogged
 like the engine indexes, ensured once per isolate on cursor/pull and again

@@ -79,6 +79,9 @@ test('reserved names stored in catalog SQL deny generic row access',async()=>{
     env.DB.db.exec(ddl);
     expect((await call('/v1/rows/pull',{table:'items',columns:['id'],since:'',limit:1})).status).toBe(200);
     env.DB.db.exec(row);
+    // Reads reuse the isolate's audit for a minute; the next write audits afresh
+    // and its denial drops the memo for the reads that follow.
+    expect((await call('/v1/rows/push',{table:'items',columns:['id','updated_at'],rows:[]})).status).toBe(403);
     expect((await call('/v1/rows/pull',{table:'items',columns:['id'],since:'',limit:1})).status).toBe(403);
   }
 });

@@ -37,18 +37,17 @@ for (const batch of [false, true]) test(`an incremental round asks only the tabl
   estate(remote, 10);
   await sync(db, hub);
   const asked = async () => { requests.length = 0; const round = await sync(db, hub); return { round, asked: items(requests).map(i => [i.table, i.since]) }; };
-  // The cursor is the round's newest arrival; the inclusive pull re-reads the
-  // tables holding it, and the empty catalog tables are quiet.
-  expect((await asked()).asked).toEqual([['items', T1], ['history', T1]]);
+  // The cursor is the round's newest arrival; the tables holding it are quiet
+  // too while the hub holds as many rows at that mark as were pulled.
+  expect((await asked()).asked).toEqual([]);
   remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('new', 'New', T1, T2);
   const { round, asked: changed } = await asked();
-  expect(changed).toEqual([['items', T1], ['history', T1]]);
+  expect(changed).toEqual([['items', T1]]);
   expect(round.pulled).toBe(1);
-  // history's newest arrival (T1) is now older than the cursor (T2).
-  expect((await asked()).asked).toEqual([['items', T2]]);
+  expect((await asked()).asked).toEqual([]);
   // A quiet table keeps its cursor and its coverage.
-  expect(await db.all("SELECT pull FROM _core_sync WHERE tbl='history'")).toEqual([{ pull: T2 }]);
-  expect(await db.all("SELECT pull FROM _core_coverage WHERE tbl='history'")).toEqual([{ pull: T2 }]);
+  expect(await db.all("SELECT pull FROM _core_sync WHERE tbl='history'")).toEqual([{ pull: T1 }]);
+  expect(await db.all("SELECT pull FROM _core_coverage WHERE tbl='history'")).toEqual([{ pull: T1 }]);
   expect(await local(db, 'items')).toEqual(remoteRows(remote, 'items'));
 });
 

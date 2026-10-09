@@ -121,14 +121,17 @@ test.each(['schema', 'log'])('driver object key order does not change %s coverag
   await core.writeRow(db, 'items', { id: 'edited', name: 'Changed' });
   requests.length = 0;
   expect((await core.sync(db, hub)).rejected).toEqual([]);
-  expect(requests.find(r => r.route === '/v1/rows/pull' && r.body.table === 'items')!.body.since).toBe(previousPull);
+  // Stable identity keeps the cursor: no full re-pull, and nothing to pull at all.
+  expect(requests.filter(r => r.route === '/v1/rows/pull' && r.body.table === 'items').map(r => r.body.since)).toEqual([]);
+  expect(await db.all("SELECT pull FROM _core_sync WHERE tbl='items'")).toEqual([{ pull: previousPull }]);
   expect(remote.db.query("SELECT name FROM items WHERE id='edited'").get()).toEqual({ name: 'Changed' });
   expect(await core.writeability(db, { table: 'items' })).toEqual({ writable: true, reason: null });
 });
 
-test('an unchanged incremental refresh retains prior valid coverage during and after failure', async () => {
-  const { db, hub } = fixture();
+test('an incremental refresh retains prior valid coverage during and after failure', async () => {
+  const { db, hub, remote } = fixture();
   await core.sync(db, hub);
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', T0, T2);
   await core.writeRow(db, 'items', { id: 'edited', name: 'Queued before snapshot' });
   const broken = { ...hub, async post(route: string, body: core.Row) {
     if (route === '/v1/rows/pull' && body.table === 'items') {
@@ -169,6 +172,7 @@ test.each(['bootstrap', 'catalog'])('failed %s metadata never authorizes writes 
     expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
     const stamp = new Date().toISOString();
     remote.db.query("UPDATE catalog_properties SET required=1,updated_at=?,hub_at=? WHERE col='qty'").run(stamp,stamp);
+    remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', stamp, stamp);
   }
   await expect(core.sync(db, { ...hub, async post(route, body) {
     if (route === '/v1/rows/pull' && body.table === 'items') throw new Error('metadata interrupted');
@@ -263,11 +267,12 @@ test('schema-level REPLACE cannot silently remove another row', async () => {
 
 test('prior certified incremental coverage survives interruption and database reopen', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'core-coverage-'));
-  const { db, hub } = fixture();
+  const { db, hub, remote } = fixture();
   const path = join(temp, 'replica.db');
   db.db.close(); db.db = new Database(path);
   try {
     await core.sync(db, hub);
+    remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', T0, T2);
     db.db.close(); db.db = new Database(path);
     expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
     await expect(core.sync(db, { ...hub, async post(route, body) {
@@ -325,8 +330,9 @@ test('coverage readiness and cursors commit atomically; a failed certification k
 });
 
 test('metadata-only search initialization preserves coverage, while mid-sync public schema changes do not', async () => {
-  const { db, hub } = fixture();
+  const { db, hub, remote } = fixture();
   await core.sync(db, hub);
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', T0, T2);
   await core.search(db, { text: 'Initial' });
   expect((await core.writeability(db, { table: 'items' })).writable).toBe(true);
   let changed = false;

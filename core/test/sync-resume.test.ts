@@ -23,7 +23,7 @@ test('a schema change in another table keeps incremental pulls; only the changed
   hubDDL(remote, 'ALTER TABLE history ADD COLUMN note TEXT');
   requests.length = 0;
   await sync(db, hub);
-  expect(pulls(requests, 'items').map(b => b.since)).toEqual([T1]);
+  expect(pulls(requests, 'items').map(b => b.since)).toEqual([]);
   expect(pulls(requests, 'history').map(b => b.since)).toEqual(['']);
   // A column the hub filled before this replica's cursor needs that table's full pull.
   hubDDL(remote, 'ALTER TABLE items ADD COLUMN color TEXT');
@@ -31,7 +31,7 @@ test('a schema change in another table keeps incremental pulls; only the changed
   requests.length = 0;
   await sync(db, hub);
   expect(pulls(requests, 'items').map(b => b.since)).toEqual(['']);
-  expect(pulls(requests, 'history').map(b => b.since)).toEqual([T1]);
+  expect(pulls(requests, 'history').map(b => b.since)).toEqual([]);
   expect(await db.all("SELECT color FROM items WHERE id='a'")).toEqual([{ color: 'red' }]);
 });
 
@@ -61,7 +61,7 @@ test('a round that fails later keeps the cursors of the tables it finished', asy
   expect((await syncStatus(db)).lastSuccessfulSync).toBeNull();
   requests.length = 0;
   await sync(db, hub);
-  expect(pulls(requests, 'items').map(b => b.since)).toEqual([T1]);
+  expect(pulls(requests, 'items').map(b => b.since)).toEqual([]);
   expect(await db.all('SELECT id FROM history')).toEqual([{ id: 'h' }]);
   expect((await syncStatus(db)).lastSuccessfulSync).not.toBeNull();
 });

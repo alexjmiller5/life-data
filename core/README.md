@@ -275,8 +275,13 @@ request or host deadline never repeats finished work. None of this local
 metadata is logged or synced.
 
 A table's pull cursor is the round's `max_hub_at` (read before any pull), and a
-table whose own newest arrival is older than its cursor is not asked at all, so
-a quiet round costs a few requests. When the cursor reply carries `pull_batch`,
+table whose own newest arrival is older than its cursor is not asked at all; one
+whose newest arrival is its cursor is asked only when the hub's `at_mark` count
+for that stamp differs from what the replica pulled (`_core_pull_marks`), so a
+quiet round is one request: `/v1/cursor`. Its `schema` id and the local log id
+decide whether `schema/pull` runs (`_core_state.schema_exchange`), and the
+`/v1/stats` counts behind the size rule are kept for a day or until a table
+they never saw appears (`_core_state.hub_stats`). When the cursor reply carries `pull_batch`,
 each pull request carries the current table's page plus the first pages of the
 following tables (within its item and row limits; full pulls size pages from
 `/v1/stats` counts). Pages fetched ahead are applied only when their table's
