@@ -25,8 +25,12 @@ export function continuityTriggers(table,columns){
 }
 export const trustedContinuityTrigger=(trigger,columns)=>continuityTriggers(trigger.tbl_name,columns)
   .some(t=>t.name===trigger.name && normalized(t.sql)===normalized(trigger.sql));
+export const CONTINUITY_COLUMNS="SELECT m.name AS tbl,m.sql,p.name AS col FROM sqlite_master m JOIN pragma_table_xinfo(m.name) p WHERE m.type='table' AND m.name NOT GLOB '_*' ORDER BY m.name,p.cid";
 export async function continuitySchemas(view){
-  const {results}=await view.prepare("SELECT m.name AS tbl,m.sql,p.name AS col FROM sqlite_master m JOIN pragma_table_xinfo(m.name) p WHERE m.type='table' AND m.name NOT GLOB '_*' ORDER BY m.name,p.cid").all();
+  const {results}=await view.prepare(CONTINUITY_COLUMNS).all();
+  return continuityTables(results);
+}
+export function continuityTables(results){
   const tables=new Map();
   for(const {tbl,col,sql} of results)if(ordinary(tbl) && /^CREATE\s+TABLE\b/i.test(sql)){if(!tables.has(tbl))tables.set(tbl,[]);tables.get(tbl).push(col);}
   return tables;

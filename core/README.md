@@ -153,6 +153,10 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   host supplies a `Hub` using URLSession. Neither credentials nor SQL drivers
   are owned by the core. HTTP adapters must expose the server Date header and
   impose a request timeout. Clock skew above five minutes blocks pushes.
+  An optional `Hub.progress(SyncProgress)` is told as a round advances:
+  tables done of the round's tables, rows received of the rows its full pulls
+  expect (from the hub's cached counts; null for a changes-only round) and the
+  table being pulled. Hosts derive status and estimates from it.
 - `ServiceHub` extends `Hub` with `get(route)`. `createHttpHub` implements both;
   native hosts provide the same HTTPS/loopback, no-redirect, no-cookie behavior.
   `readUsage` returns the deployment's `UsageSummary`, preserving unmeasured
@@ -269,6 +273,15 @@ keeps an unfinished table's first-attempt `since`/mark and last applied page,
 so the next round resumes there (a deferral or replay discards it). A failed
 request or host deadline never repeats finished work. None of this local
 metadata is logged or synced.
+
+A table's pull cursor is the round's `max_hub_at` (read before any pull), and a
+table whose own newest arrival is older than its cursor is not asked at all, so
+a quiet round costs a few requests. When the cursor reply carries `pull_batch`,
+each pull request carries the current table's page plus the first pages of the
+following tables (within its item and row limits; full pulls size pages from
+`/v1/stats` counts). Pages fetched ahead are applied only when their table's
+turn comes, through the same deferral and progress path; a hub over its byte
+budget answers a prefix of the pages asked, and the rest are asked again.
 
 Sync freezes candidate payloads and their original history in the main-database
 `_core_sync_snapshot` within one transaction, then reads 200 candidates per

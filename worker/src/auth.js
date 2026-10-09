@@ -21,8 +21,12 @@ const AUTHORITY_TABLE = `CREATE TABLE IF NOT EXISTS _governance_authorities (
   revoked_at TEXT
 )`;
 
+// Idempotent setup, run once per isolate per binding: every token request
+// would otherwise pay these round trips before its first real query.
+const authReady = new WeakSet();
 export async function ensureAuthReady(db) {
   if (!db) throw new Error("auth database unavailable");
+  if (authReady.has(db)) return;
   await db.prepare(TOKENS_TABLE).run();
   await db.prepare(AUTHORITY_TABLE).run();
   const { results } = await db.prepare("PRAGMA table_info(_tokens)").all();
@@ -35,6 +39,7 @@ export async function ensureAuthReady(db) {
       }
     }
   }
+  authReady.add(db);
 }
 
 // Only verified browser enrollment calls this with user kind. Token-admin
@@ -51,7 +56,7 @@ export function authorityStatement(db,tokenHash,kind,afterRegistration=false) {
 }
 
 export async function readGovernanceAuthority(db,tokenHash) {
-  if (!await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_governance_authorities'").first()) return null;
+  if (!authReady.has(db) && !await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_governance_authorities'").first()) return null;
   const row=await db.prepare(`SELECT a.* FROM _governance_authorities a JOIN _tokens t ON t.hash=a.token_hash
     WHERE a.token_hash=? AND a.revoked_at IS NULL AND t.revoked_at IS NULL`).bind(tokenHash).first();
   if (!row || !row.principal_id || !['user','agent','service'].includes(row.kind)) return null;

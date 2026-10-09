@@ -24,7 +24,9 @@ export const schema = [
   'CREATE TABLE catalog_rules (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, kind TEXT, enforce INTEGER, sql TEXT, text TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
   'CREATE TABLE history (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, old TEXT, new TEXT, origin TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
 ];
-export function setup() {
+// Most tests intercept single-table pulls; `batch` lets the hub advertise and
+// answer many-page requests as deployed.
+export function setup({ batch = false } = {}) {
   const db = new TestSql();
   const remote = new D1Shim();
   remote.db.exec('CREATE TABLE _schema_log (id INTEGER PRIMARY KEY, applied_at TEXT, ddl TEXT)');
@@ -39,7 +41,9 @@ export function setup() {
       method:'POST',headers:{Authorization:'Bearer fixture', 'Content-Type':'application/json'},body:JSON.stringify(body),
     }), { DB:remote,HUB_TOKEN:'fixture' }, {waitUntil() {}});
     if (!response.ok) throw new Error(`hub HTTP ${response.status}`);
-    return {data:await response.json(),date:new Date().toUTCString()};
+    const data = await response.json();
+    if (!batch && route === '/v1/cursor') delete data.pull_batch;
+    return {data,date:new Date().toUTCString()};
   }};
   return {db,remote,hub,requests};
 }

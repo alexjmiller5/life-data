@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import worker, { ROUTES } from "../src/index.js";
 import { D1Shim } from "./d1shim.js";
+import { ensureReceiptStorage } from "../src/governance-store.js";
 
 const STAMP = "2026-01-02T00:00:00.000Z";
 const OLD = "2026-01-01T00:00:00.000Z";
@@ -208,4 +209,91 @@ test("incremental paginated pull reads through the hub_at index, full pull pages
     rows: [{ id: "b" }, { id: "c" }], next_cursor: "c",
   });
   expect(await plan(db, seen.at(-1))).toContain("sqlite_autoindex_records_1 (id>?)");
+});
+
+// A cold replica is mostly many small tables, and every request pays the hub's
+// fixed cost, so one request may carry many table pages (`batch`). Each page
+// is exactly what its own paginated pull returns.
+async function batchSeed() {
+  const db = await seed();
+  await db.prepare("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)").run();
+  for (const id of ["n1", "n2", "n3"]) {
+    await db.prepare("INSERT INTO notes VALUES (?, ?, ?, NULL, ?)").bind(id, `body-${id}`, OLD, STAMP).run();
+  }
+  return db;
+}
+const batchPull = (db, batch) => pull(db, { table: undefined, columns: undefined, since: undefined, batch });
+
+test("a batch answers several table pages in one request, each as its own pull would", async () => {
+  const db = await batchSeed();
+  const items = [
+    { table: "records", columns: ["id", "label"], since: "", limit: 2 },
+    { table: "records", columns: ["label"], since: STAMP, limit: 2, after: "b" },
+    { table: "notes", columns: ["id", "body"], since: "", limit: 5 },
+    { table: "notes", columns: ["id"], since: STAMP, limit: 3 },
+  ];
+  const response = await batchPull(db, items);
+  expect(response.status).toBe(200);
+  const singles = [];
+  for (const item of items) singles.push(await (await pull(db, item)).json());
+  expect(await response.json()).toEqual({ batch: singles });
+  expect(singles[3]).toEqual({ rows: [{ id: "n1" }, { id: "n2" }, { id: "n3" }], next_cursor: "n3" });
+});
+
+test("cursor advertises the batch limits", async () => {
+  const out = await ROUTES["/v1/cursor"]({ tables: ["records"] }, await seed());
+  expect(out.pull_batch).toEqual({ items: 50, rows: 5000, bytes: 4 * 1024 * 1024 });
+});
+
+for (const [name, batch] of [
+  ["an empty batch", []],
+  ["a batch that is not a list", { table: "records" }],
+  ["more than 50 pulls", Array.from({ length: 51 }, () => ({ table: "records", columns: ["id"], since: "", limit: 1 }))],
+  ["more than 5000 rows in total", [{ table: "records", columns: ["id"], since: "", limit: 4000 }, { table: "notes", columns: ["id"], since: "", limit: 1001 }]],
+  ["a pull without a limit", [{ table: "records", columns: ["id"], since: "" }]],
+  ["a zero limit", [{ table: "records", columns: ["id"], since: "", limit: 0 }]],
+  ["a non-string after", [{ table: "records", columns: ["id"], since: "", limit: 1, after: 1 }]],
+  ["a missing table", [{ columns: ["id"], since: "", limit: 1 }]],
+  ["a non-string since", [{ table: "records", columns: ["id"], since: null, limit: 1 }]],
+  ["a non-list of columns", [{ table: "records", columns: "id", since: "", limit: 1 }]],
+]) test(`a batch rejects ${name} with JSON 400`, async () => {
+  const response = await batchPull(await batchSeed(), batch);
+  expect(response.status).toBe(400);
+  expect((await response.json()).error).toEqual(expect.any(String));
+});
+
+for (const table of ["_governance_receipts", "sqlite_master"]) test(`a batch cannot address private state: ${table}`, async () => {
+  const db = await batchSeed();
+  await ensureReceiptStorage(db); // genuine service-owned storage
+  const response = await batchPull(db, [
+    { table: "records", columns: ["id"], since: "", limit: 1 },
+    { table, columns: ["receipt_key"], since: "", limit: 1 },
+  ]);
+  expect(response.status).toBe(403);
+});
+
+test("a batch stops at the byte budget after at least one row and resumes from the last row sent", async () => {
+  const db = await batchSeed();
+  await db.prepare("CREATE TABLE blobs (id TEXT PRIMARY KEY, body TEXT, hub_at TEXT)").run();
+  const big = "x".repeat(1_500_000);
+  for (const id of ["b1", "b2", "b3", "b4"]) await db.prepare("INSERT INTO blobs VALUES (?, ?, ?)").bind(id, big, STAMP).run();
+  const items = [
+    { table: "notes", columns: ["id"], since: "", limit: 5 },
+    { table: "blobs", columns: ["body"], since: "", limit: 10 },
+    { table: "records", columns: ["id"], since: "", limit: 10 },
+  ];
+  const first = await (await batchPull(db, items)).json();
+  expect(first.batch).toHaveLength(2); // records waits for the next request
+  expect(first.batch[1].rows).toHaveLength(2);
+  expect(first.batch[1].next_cursor).toBe("b2");
+  const second = await (await batchPull(db, [{ ...items[1], after: "b2" }, items[2]])).json();
+  expect(second.batch[0]).toEqual({ rows: [{ body: big }, { body: big }], next_cursor: null });
+  expect(second.batch[1].next_cursor).toBeNull();
+  // A single row over the budget still makes progress.
+  await db.prepare("INSERT INTO blobs VALUES ('b0', ?, ?)").bind("y".repeat(5_000_000), STAMP).run();
+  const alone = await (await batchPull(db, [{ table: "blobs", columns: ["id"], since: "", limit: 1 }, items[2]])).json();
+  expect(alone.batch).toEqual([{ rows: [{ id: "b0" }], next_cursor: "b0" }, { rows: expect.any(Array), next_cursor: null }]);
+  const huge = await (await batchPull(db, [{ table: "blobs", columns: ["body"], since: "", limit: 1 }, items[2]])).json();
+  expect(huge.batch).toHaveLength(1);
+  expect(huge.batch[0].next_cursor).toBe("b0");
 });

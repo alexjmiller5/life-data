@@ -19,7 +19,7 @@ import { ident, qident, sha256hex, validatePush, validEditTimestamp } from "./va
 import { TOKENS_TABLE, ensureAuthReady, hashToken, authorityStatement, readGovernanceAuthority } from "./auth.js";
 import { governanceOperation, governanceFailure } from './governance-protocol.js';
 import { ensureEvidenceStorage } from './governance-evidence.js';
-import {assertGenericBody,assertGenericDDL,assertGenericState} from './governance-isolation.js';
+import {assertGenericBody,assertGenericDDL,assertGenericStateBatched} from './governance-isolation.js';
 import {handleGovernance} from './governance.js';
 import {handleChangesetGovernance,canChangeset,changesetGovernanceLimits} from './changeset-governance.js';
 import {ensureChangesetStorage} from './changeset-store.js';
@@ -47,6 +47,8 @@ const PLUMBING = [
     ddl TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS _sync_state (key TEXT PRIMARY KEY, value TEXT)`,
+  // Cached row counts behind /v1/stats.
+  `CREATE TABLE IF NOT EXISTS _table_stats (tbl TEXT PRIMARY KEY, rows INTEGER NOT NULL, computed_at TEXT NOT NULL)`,
 ];
 
 // Constant-time compare so a token can't be recovered by timing the response.
@@ -232,8 +234,18 @@ const logDerive = (p) =>
     })
     .catch((e) => console.log(JSON.stringify({ derive_error: String(e) })));
 
-async function ensureReady(db) {
+// Plumbing tables are never dropped, so one isolate creates them once.
+const plumbed = new WeakSet();
+async function ensurePlumbing(db) {
+  if (plumbed.has(db)) return;
   for (const stmt of PLUMBING) await db.prepare(stmt).run();
+  plumbed.add(db);
+}
+
+// Governance storage guards writes (continuity triggers on tables created by
+// any replay), so write routes ensure it on every request.
+async function ensureReady(db) {
+  await ensurePlumbing(db);
   await ensureEvidenceStorage(db);
   await ensureProposalStorage(db);
   await ensureChangesetStorage(db);
@@ -273,6 +285,110 @@ async function ensureHubAtIndexes(db) {
     }
   }
   indexed.add(db);
+}
+
+// One table page: `limit` makes it paginated (`after` row-id cursor);
+// without it a legacy caller gets every matching row.
+function pullError(body, maxLimit) {
+  if (body.limit !== undefined && (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > maxLimit)) {
+    return `limit must be an integer from 1 to ${maxLimit}`;
+  }
+  if (body.limit !== undefined && body.after !== undefined && typeof body.after !== "string") return "after must be a string";
+  // Optional equality filter so a client can pull one slice of a large table
+  // instead of every row (Music Sync needs the songs slice of provenance).
+  const where = body.where ?? {};
+  if (typeof where !== "object" || where === null || Array.isArray(where)
+      || !Object.values(where).every((v) => typeof v === "string" || typeof v === "number")) {
+    return "where must map column names to string or number values";
+  }
+  return null;
+}
+
+function pullQuery(body, hubAt) {
+  const paginated = body.limit !== undefined;
+  const columns = body.columns ?? [];
+  const includeId = paginated && !columns.includes("id");
+  const cols = (includeId ? [...columns, "id"] : columns).map(qident).join(", ");
+  const t = qident(body.table);
+  const since = body.since ?? "";
+  // arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond as
+  // a cursor read must not be lost. A NULL hub_at is older than everything,
+  // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
+  // A table predating the migration falls back to the old client stamp.
+  const incremental = since !== "" && hubAt;
+  let [sql, args] = incremental
+    ? [`SELECT ${cols} FROM ${t} WHERE hub_at >= ?`, [since]]
+    : hubAt
+      ? [`SELECT ${cols} FROM ${t} WHERE true`, []]
+      : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
+  for (const [col, value] of Object.entries(body.where ?? {})) {
+    sql += ` AND ${qident(col)} = ?`;
+    args.push(value);
+  }
+  if (paginated) {
+    // A full pull walks the primary key page by page. An incremental pull
+    // must range-scan the hub_at index instead: the unary `+` hides `id` from
+    // the planner, which otherwise walks the whole PK and filters hub_at row
+    // by row - a full table scan per page (SQLite's EXPLAIN QUERY PLAN proves
+    // it; the pull test asserts the plan).
+    const id = incremental ? "+id" : "id";
+    if (body.after !== undefined) {
+      sql += ` AND ${id} > ?`;
+      args.push(body.after);
+    }
+    sql += ` ORDER BY ${id} ASC LIMIT ?`;
+    args.push(body.limit);
+  }
+  return { sql, args, includeId };
+}
+
+function pullPage(body, rows, includeId, nextCursor = rows.length === body.limit ? rows.at(-1).id : null) {
+  if (body.limit === undefined) return { rows };
+  if (includeId) for (const row of rows) delete row.id;
+  return { rows, next_cursor: nextCursor };
+}
+
+// Many table pages in one request: a cold replica is mostly small tables, and
+// every request pays the hub's fixed cost. The reads travel as one D1 batch.
+// Rows past the byte budget wait for the next request (the first row always
+// goes, so a walk never stalls); `batch` answers a prefix of the pulls asked.
+const PULL_BATCH = { items: 50, rows: 5000, bytes: 4 * 1024 * 1024 };
+
+async function pullBatch(items, db) {
+  if (!Array.isArray(items) || !items.length || items.length > PULL_BATCH.items) {
+    return json({ error: `batch must list 1 to ${PULL_BATCH.items} pulls` }, 400);
+  }
+  for (const item of items) {
+    const invalid = !item || typeof item !== "object" || typeof item.table !== "string" || typeof item.since !== "string"
+      || !Array.isArray(item.columns) || !item.columns.every((c) => typeof c === "string") || item.limit === undefined
+      ? "each pull needs table, columns, since and limit" : pullError(item, PULL_BATCH.rows);
+    if (invalid) return json({ error: invalid }, 400);
+    assertGenericBody(item);
+  }
+  if (items.reduce((n, item) => n + item.limit, 0) > PULL_BATCH.rows) {
+    return json({ error: `a batch reads at most ${PULL_BATCH.rows} rows` }, 400);
+  }
+  await ensureHubAtIndexes(db);
+  const infos = await db.batch(items.map((item) => db.prepare(`PRAGMA table_info(${qident(item.table)})`)));
+  const queries = items.map((item, i) => pullQuery(item, (infos[i].results ?? []).some((c) => c.name === "hub_at")));
+  const pages = await db.batch(queries.map(({ sql, args }) => db.prepare(sql).bind(...args)));
+  const batch = [];
+  let bytes = 0;
+  for (const [i, item] of items.entries()) {
+    const rows = pages[i].results ?? [];
+    let kept = 0;
+    for (const row of rows) {
+      bytes += JSON.stringify(row).length;
+      if (bytes > PULL_BATCH.bytes && (kept || batch.length)) break;
+      kept++;
+    }
+    if (kept < rows.length) {
+      if (kept) batch.push(pullPage(item, rows.slice(0, kept), queries[i].includeId, rows[kept - 1].id));
+      break;
+    }
+    batch.push(pullPage(item, rows, queries[i].includeId));
+  }
+  return { batch };
 }
 
 // `stampHubAt` is the hub's role: hub_at is dropped from whatever the client
@@ -333,60 +449,13 @@ const ROUTES = {
   },
 
   "/v1/rows/pull": async (body, db) => {
-    const paginated = body.limit !== undefined;
-    if (paginated && (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > 200)) {
-      return json({ error: "limit must be an integer from 1 to 200" }, 400);
-    }
-    if (paginated && body.after !== undefined && typeof body.after !== "string") {
-      return json({ error: "after must be a string" }, 400);
-    }
-    const columns = body.columns ?? [];
-    const includeId = paginated && !columns.includes("id");
-    const cols = (includeId ? [...columns, "id"] : columns).map(qident).join(", ");
-    const t = qident(body.table);
-    const since = body.since ?? "";
-    // Optional equality filter so a client can pull one slice of a large table
-    // instead of every row (Music Sync needs the songs slice of provenance).
-    const where = body.where ?? {};
-    if (typeof where !== "object" || where === null || Array.isArray(where)
-        || !Object.values(where).every((v) => typeof v === "string" || typeof v === "number")) {
-      return json({ error: "where must map column names to string or number values" }, 400);
-    }
-    // arrival-time cursor, INCLUSIVE: a push stamped in the same millisecond as
-    // a cursor read must not be lost. A NULL hub_at is older than everything,
-    // so `since = ''` — a fresh or just-upgraded replica — pulls the lot.
-    // A table predating the migration falls back to the old client stamp.
+    if (body.batch !== undefined) return pullBatch(body.batch, db);
+    const invalid = pullError(body, 200);
+    if (invalid) return json({ error: invalid }, 400);
     await ensureHubAtIndexes(db);
-    const incremental = since !== "" && (await hasHubAt(db, body.table));
-    let [sql, args] = incremental
-      ? [`SELECT ${cols} FROM ${t} WHERE hub_at >= ?`, [since]]
-      : (await hasHubAt(db, body.table))
-        ? [`SELECT ${cols} FROM ${t} WHERE true`, []]
-        : [`SELECT ${cols} FROM ${t} WHERE updated_at > ?`, [since]];
-    for (const [col, value] of Object.entries(where)) {
-      sql += ` AND ${qident(col)} = ?`;
-      args.push(value);
-    }
-    if (paginated) {
-      // A full pull walks the primary key page by page. An incremental pull
-      // must range-scan the hub_at index instead: the unary `+` hides `id` from
-      // the planner, which otherwise walks the whole PK and filters hub_at row
-      // by row - a full table scan per page (SQLite's EXPLAIN QUERY PLAN proves
-      // it; the pull test asserts the plan).
-      const id = incremental ? "+id" : "id";
-      if (body.after !== undefined) {
-        sql += ` AND ${id} > ?`;
-        args.push(body.after);
-      }
-      sql += ` ORDER BY ${id} ASC LIMIT ?`;
-      args.push(body.limit);
-    }
+    const { sql, args, includeId } = pullQuery(body, await hasHubAt(db, body.table));
     const { results } = await db.prepare(sql).bind(...args).all();
-    const rows = results ?? [];
-    if (!paginated) return { rows };
-    const next_cursor = rows.length === body.limit ? rows.at(-1).id : null;
-    if (includeId) for (const row of rows) delete row.id;
-    return { rows, next_cursor };
+    return pullPage(body, results ?? [], includeId);
   },
 
   "/v1/rows/push": async (body, db, env, ctx, policy) => {
@@ -489,13 +558,10 @@ const ROUTES = {
   // biggest tables) without counting anything itself. count(*) reads every row
   // on D1, so the answer is cached in plumbing and recounted at most daily.
   "/v1/stats": async (_body, db) => {
-    await db.prepare(
-      "CREATE TABLE IF NOT EXISTS _table_stats (tbl TEXT PRIMARY KEY, rows INTEGER NOT NULL, computed_at TEXT NOT NULL)",
-    ).run();
-    const fresh = await db.prepare(
-      `SELECT max(computed_at) AS at FROM _table_stats WHERE computed_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')`,
-    ).first();
-    if (!fresh?.at) {
+    const read = async () => (await db.prepare("SELECT tbl, rows, computed_at FROM _table_stats ORDER BY tbl").all()).results ?? [];
+    let rows = await read();
+    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
+    if (!rows.some((r) => r.computed_at > dayAgo)) {
       const { results } = await db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\'")
         .all();
@@ -509,9 +575,8 @@ const ROUTES = {
           db.prepare(`INSERT INTO _table_stats (tbl, rows, computed_at) VALUES (?, ?, ${NOW})`).bind(n, counts[i].results?.[0]?.n ?? 0),
         ),
       ]);
+      rows = await read();
     }
-    const { results } = await db.prepare("SELECT tbl, rows, computed_at FROM _table_stats ORDER BY tbl").all();
-    const rows = results ?? [];
     return {
       computed_at: rows.reduce((m, r) => (r.computed_at > m ? r.computed_at : m), ""),
       tables: Object.fromEntries(rows.map((r) => [r.tbl, r.rows])),
@@ -551,7 +616,8 @@ const ROUTES = {
     // tables whose mark reached its cursor instead of asking every table.
     // max_updated_at kept for clients from before the hub_at cursor: same value, so an
     // old client keeps syncing (full-pull semantics) until it is upgraded.
-    return { max_hub_at: top, max_updated_at: top, tables: marks, schema };
+    // pull_batch: this hub answers `/v1/rows/pull` with many pages per request.
+    return { max_hub_at: top, max_updated_at: top, tables: marks, schema, pull_batch: PULL_BATCH };
   },
 };
 
@@ -859,6 +925,10 @@ export default {
   },
 };
 
+// Called every round or page. schema/pull (once per schema change) keeps the
+// full setup: it is what initializes governance storage on a fresh hub.
+const REPLICA_READS = new Set(["/v1/rows/pull", "/v1/cursor", "/v1/stats"]);
+
 async function handle(request, env, ctx, url) {
   if (url.pathname === "/health") return json({ ok: true });
 
@@ -1001,10 +1071,12 @@ async function handle(request, env, ctx, url) {
     if (url.pathname === "/v1/backup") {
       return json({ keys: await backup(env, new Date()) });
     }
-    await ensureReady(tenant.db);
+    // Replica reads (each page of a cold download is one) skip the write path's
+    // governance setup; the generic-state check below still guards them.
+    await (REPLICA_READS.has(url.pathname) ? ensurePlumbing(tenant.db) : ensureReady(tenant.db));
     const body=await request.json();
     assertGenericBody(body);
-    await assertGenericState(tenant.db);
+    await assertGenericStateBatched(tenant.db);
     const out = await ROUTES[url.pathname](body, tenant.db, env, ctx);
     return out instanceof Response ? out : json(out);
   } catch (e) {

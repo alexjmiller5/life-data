@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '../src/index.ts';
 import type { Hub } from '../src/driver.ts';
-import { schema, setup, TestSql, T0, T1 } from './support.ts';
+import { schema, setup, TestSql, T0, T1, T2 } from './support.ts';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -107,6 +107,8 @@ test('a newer remote pull cannot erase an unsent edit across failure, reopen and
   const prior = await db.all("SELECT pull FROM _core_sync WHERE tbl='items'");
   const remoteRevision = new Date(Date.now() + 2000).toISOString();
   remote.db.query('UPDATE items SET name=?,updated_at=?,hub_at=? WHERE id=?').run('Remote', remoteRevision, remoteRevision, 'a');
+  // history changed too, so this round asks for it (and fails there).
+  remote.db.query('INSERT INTO history(id,tbl,row_id,col,updated_at,hub_at) VALUES (?,?,?,?,?,?)').run('h-remote', 'items', 'other', 'name', T0, remoteRevision);
   let changed = false;
   const transport: Hub = { ...hub, async post(route, body) {
     if (route === '/v1/rows/pull' && body.table === 'items' && !changed) {
@@ -185,6 +187,7 @@ test.each([['NOCASE','A','a'], ['RTRIM','a','a ']])('pending pull guards use SQL
 
 test('an insert after the sync snapshot keeps its payload and history for the next round', async () => {
   const { db, hub, remote } = await replica();
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', T0, T2);
   let inserted = false;
   await core.sync(db, { ...hub, async post(route, body) {
     if (route === '/v1/rows/pull' && body.table === 'items' && !inserted) {
@@ -306,6 +309,7 @@ test.each(['schema', 'rows', 'commit'])('failed next %s round retains previous s
   const { db, hub, remote } = await replica();
   await core.sync(db, hub, { tables: { history: false } });
   const before = await core.syncStatus(db);
+  remote.db.query('INSERT INTO items(id,name,updated_at,hub_at) VALUES (?,?,?,?)').run('remote', 'Remote', T0, T2);
   const transport: Hub = { ...hub, async post(route, body) {
     if (failure === 'schema' && route === '/v1/schema/pull') throw new Error('schema offline');
     if (failure === 'rows' && route === '/v1/rows/pull' && body.table === 'items') throw new Error('rows offline');

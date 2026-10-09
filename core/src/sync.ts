@@ -139,6 +139,8 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const marks=await post('/v1/cursor',{tables}); // BEFORE pull; remote writes after this land next round.
   const validMark=(value:unknown)=>value===''||validEditTimestamp(value);
   if(!marks || !validMark(marks.max_hub_at) || !marks.tables || tables.some(t=>!validMark(marks.tables[t]))) throw new Error('invalid cursor response');
+  // A hub that advertises pull_batch answers many table pages per request.
+  const batch=marks.pull_batch, batching=[batch?.items,batch?.rows].every(n=>Number.isSafeInteger(n)&&n>0) ? {items:Number(batch.items),rows:Number(batch.rows)} : null;
   const states=new Map((await db.all('SELECT * FROM _core_sync')).map(r=>[String(r.tbl),r]));
   const proofs=new Map((await db.all('SELECT * FROM _core_coverage')).map(r=>[String(r.tbl),r]));
   const pullSince=new Map<string,string>();
@@ -173,19 +175,60 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   });
   const withheld=new Set<unknown>();
   const deferred=new Set<string>();
+  // Each table's walk: its first page (after a resumed one's last applied page)
+  // and mark. Resuming keeps the first attempt's mark: rows changed since then
+  // in pages already applied carry a later hub_at and arrive next round.
+  const resumed=new Map((await db.all('SELECT tbl,since,mark,after FROM _core_pull_progress')).map(r=>[String(r.tbl),r]));
+  const walks=new Map(tables.map(table=>{
+    const since=pullSince.get(table)!, progress=resumed.get(table);
+    const resume=progress && progress.since===since && validMark(progress.mark) && typeof progress.after==='string' && progress.after;
+    // A table whose newest arrival never reached our cursor has nothing new
+    // (the pull is inclusive, so is this test): no request for it at all. The
+    // cursor is the round's newest arrival over every table, so only tables
+    // written since then are asked again.
+    const quiet=since!=='' && String(marks.tables[table])<since;
+    return [table,{since,mark:resume ? String(progress.mark) : quiet ? since : String(marks.max_hub_at),after:resume ? String(progress.after) : undefined,quiet}];
+  }));
+  const fullRows=tables.filter(t=>walks.get(t)!.since===''&&!walks.get(t)!.quiet);
+  const progress={tablesDone:0,tablesTotal:tables.length,rowsReceived:0,rowsExpected:fullRows.length ? fullRows.reduce((n,t)=>n+(Number.isSafeInteger(counts?.[t]) ? counts[t] : 0),0) : null,table:null as string|null};
+  const report=()=>hub.progress?.({...progress});
+  // Pages fetched ahead with an earlier table's request, by table and cursor.
+  const ahead=new Map<string,{after:string|undefined,page:any}>();
+  const want=(table:string,received:number)=>walks.get(table)!.since==='' && Number.isSafeInteger(counts?.[table]) ? Math.max(counts[table]-received,0)+1 : 1000;
+  const fetchPage=async(table:string,after:string|undefined,received:number)=>{
+    const item=(t:string,a:string|undefined,limit:number)=>({table:t,columns:columns.get(t)!,since:walks.get(t)!.since,limit,...(a ? {after:a} : {})});
+    if(!batching) return post('/v1/rows/pull',item(table,after,200));
+    const cached=ahead.get(table);
+    ahead.delete(table);
+    if(cached && cached.after===after) return cached.page;
+    // This table's page, then the first pages of the tables after it while
+    // the request has room: a cold start is mostly small tables.
+    const limit=Math.min(Math.max(want(table,received),200),batching.rows);
+    const items=[item(table,after,limit)];
+    let room=batching.rows-limit;
+    for(const next of tables.slice(tables.indexOf(table)+1)) {
+      if(items.length>=batching.items || room<1) break;
+      const walk=walks.get(next)!;
+      if(walk.quiet || ahead.has(next)) continue;
+      const nextLimit=Math.min(want(next,0),room);
+      items.push(item(next,walk.after,nextLimit));
+      room-=nextLimit;
+    }
+    const reply=await post('/v1/rows/pull',{batch:items});
+    // A hub over its byte budget answers a prefix of the pulls asked.
+    if(!Array.isArray(reply?.batch) || reply.batch.length<1 || reply.batch.length>items.length) throw new Error('invalid pull response');
+    reply.batch.slice(1).forEach((page:unknown,i:number)=>ahead.set(items[i+1].table,{after:items[i+1].after,page}));
+    return reply.batch[0];
+  };
+  report();
   for (const table of tables) {
     const cols=columns.get(table)!;
-    const since=pullSince.get(table)!;
-    let mark=String(marks.tables[table]);
-    let after: string | undefined;
-    const progress=(await db.all('SELECT since,mark,after FROM _core_pull_progress WHERE tbl=?',[table]))[0];
-    // Resuming keeps the first attempt's mark: rows changed since then in pages
-    // already applied carry a later hub_at and arrive next round.
-    if(progress && progress.since===since && validMark(progress.mark) && typeof progress.after==='string' && progress.after) {
-      mark=String(progress.mark); after=progress.after;
-    }
-    do {
-      const page=await post('/v1/rows/pull',{table,columns:cols,since,limit:200,...(after ? {after} : {})});
+    const {since,quiet}=walks.get(table)!;
+    let {mark,after}=walks.get(table)!;
+    let received=0;
+    progress.table=table;
+    if(!quiet) do {
+      const page=await fetchPage(table,after,received);
       if (!Array.isArray(page.rows)) throw new Error('invalid pull response');
       if(page.next_cursor!=null && (typeof page.next_cursor!=='string' || page.next_cursor<=(after??'') || !page.rows.length)) throw new Error('invalid pull cursor');
       if(page.rows.some((r:Row)=>!r||typeof r!=='object'||Array.isArray(r)
@@ -216,6 +259,9 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
         if(deferred.has(table) || !page.next_cursor) await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[table]);
         else await db.run('INSERT OR REPLACE INTO _core_pull_progress(tbl,since,mark,after) VALUES (?,?,?,?)',[table,since,mark,page.next_cursor]);
       });
+      received+=page.rows.length;
+      progress.rowsReceived+=page.rows.length;
+      report();
       after=page.next_cursor;
     } while (after);
     const held=table==='history' ? new Set((await db.all('SELECT tbl,row_id FROM _core_rejected UNION SELECT tbl,row_id FROM _core_history_hold')).map(r=>JSON.stringify([r.tbl,r.row_id]))) : new Set();
@@ -283,6 +329,8 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       if(!deferred.has(table)) await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,pull,COVERAGE_VERSION]);
       await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[table]);
     });
+    progress.tablesDone++;
+    report();
   }
   // Certification and completion commit only after every request succeeds.
   // Rejected rows wait in the inbox; they do not make a finished round unsuccessful.

@@ -323,6 +323,11 @@ reads never provision either store or rewrite saved definitions.
 - HTTP replica pulls request pages of 200 using an `after` row-id cursor;
   `since` stays fixed for the entire walk. The hub returns `next_cursor`
   only for paginated requests. Legacy requests retain complete responses.
+  `/v1/cursor` advertises `pull_batch` (`{items, rows, bytes}`): `/v1/rows/pull`
+  then also takes `{batch:[pull, ...]}` (each pull paginated) and answers
+  `{batch:[page, ...]}` from one D1 batch. Past the byte budget it stops after
+  at least one row and answers a prefix; a cut page's `next_cursor` is the last
+  row sent. Core uses it; the Python client still pages one table at a time.
   A failed or nonadvancing page aborts before the sync cursors advance.
   Pull pages and push chunks retry a 5xx, timeout or dropped connection up
   to three times (`RETRY_DELAYS`); refusals never retry.
@@ -620,6 +625,13 @@ An unbound replica's first HTTP sync keeps the plain full pull and push.
 TypeScript `_core_pending` remains that client's separate receipt mechanism;
 direct external writers retain the timestamp compatibility contract.
 
+**Every hub request pays its D1 round trips (~45 ms each from the edge).**
+Idempotent setup (auth registry, plumbing tables) runs once per isolate;
+replica reads (`rows/pull`, `cursor`, `stats`) skip the write path's governance
+storage setup (schema/pull keeps it: it initializes a fresh hub) and run the
+generic-state guard as two batches. `worker/test/request-cost.test.js` holds
+the per-route budget; a cold download is hundreds of these requests.
+
 **The hub owns a `hub_at` index per user table** (`<table>_hub_at`, unlogged
 like the engine indexes, ensured once per isolate on cursor/pull and again
 after schema replay). D1 bills rows READ, and every sync round runs
@@ -715,9 +727,9 @@ named stream, capture, `rows:create` (current policy revision only), file-prefix
 `docs/consumer-access.md` is the standard for which consumer uses which pattern.
 Column patch grants require same-column and id/updated_at/hub_at reads, exclude
 lifecycle fields, and never authorize push/insert or caller-supplied history.
-The deploy workflow pushes `ENROLLMENT_PROFILES` and `ROW_CREATION_POLICIES`
-(JSON, `{}` when unused) from the project's ENV item on every deploy; edit the
-item and redeploy, never `wrangler secret put` by hand. One Worker secret is
+The deploy workflow pushes `ENROLLMENT_PROFILES`, `ROW_CREATION_POLICIES` and
+`CAPTURE_ADAPTERS` (JSON, `{}` when unused) from the project's ENV item on every
+deploy; edit the item and redeploy, never `wrangler secret put` by hand. One Worker secret is
 capped at 5.1 kB, so the deploy step sends `ENROLLMENT_PROFILES` as
 `gzip:<base64>`; the Worker accepts either form and bounds decompression.
 Requested unknown profiles never fall back to full. Auth storage binds
@@ -923,15 +935,6 @@ reports this deployment's own consumption only, never the provider account's.
   preflight before authentication and the cap (per-route methods; headers
   Authorization, Content-Type, If-None-Match), and its responses, including
   the 429, expose `Retry-After`. Other routes' preflight goes to the hub.
-
-## Previous hostname
-
-`worker/previous-host/` is the `life-data` Worker: it forwards every request on the
-hub's previous hostname to `soma` through a service binding, for consumers whose
-stored hub URL still names it (installed apps' saved connections, service ENV
-items). It is deployed by hand (`cd worker/previous-host && bunx wrangler@4 deploy`)
-and has no state. Once nothing calls it (Workers analytics show no requests), delete
-it with `bunx wrangler@4 delete --name life-data` and remove this directory.
 
 ## Streams
 

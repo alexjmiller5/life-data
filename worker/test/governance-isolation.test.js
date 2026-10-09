@@ -69,3 +69,16 @@ test('a familiar private table name is not proof of the service-owned schema',as
   const r=await call('/v1/schema/pull',{});
   expect(r.status).toBe(403);
 });
+test('reserved names stored in catalog SQL deny generic row access',async()=>{
+  for(const [ddl,row] of [
+    ['CREATE TABLE catalog_properties(id TEXT PRIMARY KEY,options_sql TEXT,updated_at TEXT)',"INSERT INTO catalog_properties VALUES ('p','SELECT result FROM _governance_receipts','2025')"],
+    ['CREATE TABLE catalog_rules(id TEXT PRIMARY KEY,sql TEXT,updated_at TEXT)',"INSERT INTO catalog_rules VALUES ('r','SELECT 1 FROM _governance_receipts','2025')"],
+  ]){
+    const {env,call}=await fixture();
+    env.DB.db.exec('CREATE TABLE items(id TEXT PRIMARY KEY,updated_at TEXT,hub_at TEXT)');
+    env.DB.db.exec(ddl);
+    expect((await call('/v1/rows/pull',{table:'items',columns:['id'],since:'',limit:1})).status).toBe(200);
+    env.DB.db.exec(row);
+    expect((await call('/v1/rows/pull',{table:'items',columns:['id'],since:'',limit:1})).status).toBe(403);
+  }
+});
