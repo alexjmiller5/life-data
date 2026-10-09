@@ -1090,6 +1090,7 @@ storage credentials never leave this service.
 | Screentime Dashboard | `raw/screentime/` |
 | Music Sync | `raw/spotify-pull/`, `raw/spotify-capture/` |
 | People Sync | `photos/people/`, `photos/records/`, `profiles/` |
+| Circle (profile `circle-reader`, read only) | `photos/people/` |
 | Media Center YouTube offline (mini job) | `youtube/` |
 | Strava Sync | `raw/strava/` |
 | Synapse | `raw/synapse-executions/` |
