@@ -245,7 +245,7 @@ const logDerive = (p) =>
 const plumbed = new WeakSet();
 async function ensurePlumbing(db) {
   if (plumbed.has(db)) return;
-  for (const stmt of PLUMBING) await db.prepare(stmt).run();
+  await db.batch(PLUMBING.map((stmt) => db.prepare(stmt))); // one round trip per isolate, not one per table
   plumbed.add(db);
 }
 

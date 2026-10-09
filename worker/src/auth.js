@@ -27,9 +27,8 @@ const authReady = new WeakSet();
 export async function ensureAuthReady(db) {
   if (!db) throw new Error("auth database unavailable");
   if (authReady.has(db)) return;
-  await db.prepare(TOKENS_TABLE).run();
-  await db.prepare(AUTHORITY_TABLE).run();
-  const { results } = await db.prepare("PRAGMA table_info(_tokens)").all();
+  // One round trip for a fresh isolate's registry setup, not three.
+  const [, , { results }] = await db.batch([db.prepare(TOKENS_TABLE), db.prepare(AUTHORITY_TABLE), db.prepare("PRAGMA table_info(_tokens)")]);
   for (const name of ['label','enrollment_profile','enrollment_revision']) {
     if (!(results ?? []).some((column) => column.name === name)) {
       try {
