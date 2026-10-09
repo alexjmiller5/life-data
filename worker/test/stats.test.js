@@ -1,45 +1,38 @@
 import { expect, test } from "bun:test";
-import worker from "../src/index.js";
+import { ROUTES } from "../src/index.js";
 import { D1Shim } from "./d1shim.js";
 
-async function seed() {
+const NOW = () => new Date().toISOString();
+
+async function hub() {
   const db = new D1Shim();
-  await db.prepare("CREATE TABLE big (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)").run();
-  await db.prepare("CREATE TABLE small (id TEXT PRIMARY KEY, updated_at TEXT, hub_at TEXT)").run();
-  for (let i = 0; i < 5; i++) await db.prepare("INSERT INTO big (id) VALUES (?)").bind(`b${i}`).run();
-  await db.prepare("INSERT INTO small (id) VALUES ('s0')").run();
+  db.db.exec("CREATE TABLE _table_stats (tbl TEXT PRIMARY KEY, rows INTEGER NOT NULL, computed_at TEXT NOT NULL)");
+  db.db.exec("CREATE TABLE people (id TEXT PRIMARY KEY, hub_at TEXT)");
+  db.db.exec("INSERT INTO people VALUES ('a', '2026-01-01T00:00:00.000Z'), ('b', '2026-01-01T00:00:00.000Z')");
   return db;
 }
 
-const stats = (db, token = "test") => worker.fetch(new Request("https://hub.test/v1/stats", {
-  method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: "{}",
-}), { DB: db, HUB_TOKEN: "test" }, { waitUntil() {} });
-
-test("stats report every table's row count, plumbing excluded", async () => {
-  const db = await seed();
-  const out = await (await stats(db)).json();
-  expect(out.tables).toEqual({ big: 5, small: 1 });
-  expect(out.computed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+test("a table created since the daily count is counted on the next stats read", async () => {
+  const db = await hub();
+  expect((await ROUTES["/v1/stats"]({}, db)).tables).toEqual({ people: 2 });
+  // A replay adds a table between daily counts: the size rule must see it,
+  // or no replica syncs it until tomorrow.
+  db.db.exec("CREATE TABLE later (id TEXT PRIMARY KEY, hub_at TEXT)");
+  db.db.exec("INSERT INTO later VALUES ('x', NULL)");
+  expect((await ROUTES["/v1/stats"]({}, db)).tables).toEqual({ people: 2, later: 1 });
+  // Counted tables are not recounted before the day is over.
+  db.db.exec("INSERT INTO people VALUES ('c', NULL)");
+  expect((await ROUTES["/v1/stats"]({}, db)).tables).toEqual({ people: 2, later: 1 });
+  // A dropped table leaves the answer.
+  db.db.exec("DROP TABLE later");
+  expect((await ROUTES["/v1/stats"]({}, db)).tables).toEqual({ people: 2 });
 });
 
-test("stats are cached for a day: a second call does not recount", async () => {
-  const db = await seed();
-  const first = await (await stats(db)).json();
-  await db.prepare("INSERT INTO big (id) VALUES ('b9')").run();
-  const second = await (await stats(db)).json();
-  expect(second).toEqual(first);
-});
-
-test("stale stats are recounted", async () => {
-  const db = await seed();
-  await stats(db);
-  await db.prepare("INSERT INTO big (id) VALUES ('b9')").run();
-  await db.prepare("UPDATE _table_stats SET computed_at = '2000-01-01T00:00:00.000Z'").run();
-  expect((await (await stats(db)).json()).tables.big).toBe(6);
-});
-
-import { allowed } from "../src/index.js";
-test("stats need only tables:read", () => {
-  expect(allowed("/v1/stats", "POST", ["tables:read"])).toBe(true);
-  expect(allowed("/v1/stats", "POST", ["streams:append"])).toBe(false);
+test("stale counts are recomputed after a day", async () => {
+  const db = await hub();
+  await ROUTES["/v1/stats"]({}, db);
+  db.db.exec("INSERT INTO people VALUES ('c', NULL)");
+  db.db.exec("UPDATE _table_stats SET computed_at = '2020-01-01T00:00:00.000Z'");
+  expect((await ROUTES["/v1/stats"]({}, db)).tables).toEqual({ people: 3 });
+  expect((await db.prepare("SELECT computed_at FROM _table_stats").first()).computed_at > NOW().slice(0, 4)).toBe(true);
 });

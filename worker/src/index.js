@@ -588,25 +588,31 @@ const ROUTES = {
   // biggest tables) without counting anything itself. count(*) reads every row
   // on D1, so the answer is cached in plumbing and recounted at most daily.
   "/v1/stats": async (_body, db) => {
-    const read = async () => (await db.prepare("SELECT tbl, rows, computed_at FROM _table_stats ORDER BY tbl").all()).results ?? [];
-    let rows = await read();
+    // Counts and the current table list in one round trip: a table created
+    // since the daily count is counted now, or no replica's size rule would
+    // admit it until tomorrow; a dropped table leaves the answer.
+    const read = async () => {
+      const [stats, master] = await db.batch([
+        db.prepare("SELECT tbl, rows, computed_at FROM _table_stats ORDER BY tbl"),
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\'"),
+      ]);
+      return { rows: stats.results ?? [], names: (master.results ?? []).map((r) => r.name) };
+    };
+    let { rows, names } = await read();
     const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-    if (!rows.some((r) => r.computed_at > dayAgo)) {
-      const { results } = await db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_%' ESCAPE '\\'")
-        .all();
-      const names = (results ?? []).map((r) => r.name);
-      const counts = names.length
-        ? await db.batch(names.map((n) => db.prepare(`SELECT count(*) AS n FROM ${qident(n)}`)))
-        : [];
+    const stale = !rows.some((r) => r.computed_at > dayAgo);
+    const count = stale ? names : names.filter((n) => !rows.some((r) => r.tbl === n));
+    if (count.length) {
+      const counts = await db.batch(count.map((n) => db.prepare(`SELECT count(*) AS n FROM ${qident(n)}`)));
       await db.batch([
-        db.prepare("DELETE FROM _table_stats"),
-        ...names.map((n, i) =>
-          db.prepare(`INSERT INTO _table_stats (tbl, rows, computed_at) VALUES (?, ?, ${NOW})`).bind(n, counts[i].results?.[0]?.n ?? 0),
+        ...(stale ? [db.prepare("DELETE FROM _table_stats")] : []),
+        ...count.map((n, i) =>
+          db.prepare(`INSERT OR REPLACE INTO _table_stats (tbl, rows, computed_at) VALUES (?, ?, ${NOW})`).bind(n, counts[i].results?.[0]?.n ?? 0),
         ),
       ]);
-      rows = await read();
+      ({ rows } = await read());
     }
+    rows = rows.filter((r) => names.includes(r.tbl));
     return {
       computed_at: rows.reduce((m, r) => (r.computed_at > m ? r.computed_at : m), ""),
       tables: Object.fromEntries(rows.map((r) => [r.tbl, r.rows])),
