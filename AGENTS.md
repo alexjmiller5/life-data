@@ -946,6 +946,9 @@ Beta gotchas, all hit at build time (2026-09-02):
 - Sinks with auto-created R2 credentials derive them from the token used at
   creation: deleting that API token strands the sink ("authentication
   failed", pipeline → failed state). Recreate sink + pipeline.
+- Rebuilding the table (a recreated sink or catalog) = replay each landing object
+  through `POST /v1/streams/<name>/replay?ingested_at=<the time in its key>`; the
+  route tees without writing landing and keeps that original ingest time.
 - The stream BUFFERS across sink failures/recreation - buffered events
   redeliver once a working sink exists. Landing remains the true raw record.
 - **Delivery into `soma.events` is AT-LEAST-ONCE and eventually consistent**:

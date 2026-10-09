@@ -719,11 +719,16 @@ async function handleStreams(request, env, url) {
     // Projection rebuild: tee records into the pipeline WITHOUT writing
     // landing — for replaying existing landing objects into a recreated
     // table. Same enrichment as batch. Landing is never duplicated.
+    // ?ingested_at= keeps the landing object's own ingest time in the rebuilt table.
+    const at = url.searchParams.get("ingested_at");
+    if (at !== null && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at)) {
+      return json({ error: "ingested_at must be an ISO-8601 UTC timestamp with milliseconds" }, 400);
+    }
     const records = await request.json();
     if (!Array.isArray(records) || records.length === 0 || records.length > 1000) {
       return json({ error: "body must be a JSON array of 1..1000 records" }, 400);
     }
-    const ingested = new Date().toISOString();
+    const ingested = at ?? new Date().toISOString();
     for (let i = 0; i < records.length; i += 100) {
       await env.EVENTS.send(
         records.slice(i, i + 100).map((record) => ({ stream, ingested_at: ingested, record }))

@@ -176,3 +176,15 @@ test('browser enrollment and native policy keep exact stream profiles narrow',as
     }
   }
 });
+
+test('replay keeps the ingest time of the landing object it rebuilds',async()=>{
+  const {request,env} = await setup();
+  const sent = [];
+  env.EVENTS = {async send(events) {sent.push(...events);}};
+  const at = '2026-09-03T04:05:06.789Z';
+  const res = await request('root',`/v1/streams/sample/replay?ingested_at=${at}`,'POST','[{"tst":1}]');
+  expect(res.status).toBe(200);
+  expect(sent).toEqual([{stream:'sample', ingested_at:at, record:{tst:1}}]);
+  const bad = await request('root','/v1/streams/sample/replay?ingested_at=yesterday','POST','[{"tst":1}]');
+  expect(bad.status).toBe(400);
+});
