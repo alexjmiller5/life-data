@@ -141,3 +141,51 @@ def test_http_pull_gives_up_on_client_errors_and_persistent_failures(waits, stat
     finally:
         server.shutdown()
     assert len(requests) == attempts
+
+
+def test_http_push_halves_rows_the_hub_could_not_fit():
+    """write-budget rejections ask for a smaller batch: halve until one row alone fails."""
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(body)
+            rows = body["rows"]
+            over = len(rows) > 2
+            budget = {"rule": "write-budget", "retryable": True, "col": None, "message": "smaller"}
+            rejected = [{"id": r["id"], **budget} for r in rows if over or r["id"] == "row-3"] + [
+                {"id": r["id"], "rule": "type", "col": "x", "message": "bad"}
+                for r in rows
+                if not over and r["id"] == "row-5"
+            ]
+            data = json.dumps(
+                {"upserted": len(rows) - len(rejected), "rejected": rejected}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    hub = HttpHub(f"http://127.0.0.1:{server.server_address[1]}")
+    rows = [{"id": f"row-{i}", "updated_at": "t"} for i in range(8)]
+    history = [{"id": f"h-{i}", "row_id": f"row-{i}"} for i in range(8)]
+    try:
+        out = hub.rows_push("records", ["id", "updated_at"], rows, history=history)
+    finally:
+        server.shutdown()
+    assert out["upserted"] == 6
+    assert sorted((r["id"], r["rule"]) for r in out["rejected"]) == [
+        ("row-3", "write-budget"),
+        ("row-5", "type"),
+    ]
+    assert max(len(r["rows"]) for r in requests[1:]) <= 4
+    for body in requests:
+        ids = {r["id"] for r in body["rows"]}
+        assert {e["row_id"] for e in body.get("history", [])} == ids

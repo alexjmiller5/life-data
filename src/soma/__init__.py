@@ -1004,16 +1004,37 @@ class HttpHub:
     def rows_push(self, table: str, columns: list[str], rows: list[dict], *, history=None) -> dict:
         # the response also carries the hub_at the hub stamped; nothing reads it
         # - the pull cursor never advances on a push
-        total, rejected = 0, []
-        for i in range(0, len(rows), CHUNK):
-            chunk = rows[i : i + CHUNK]
-            body = {"table": table, "columns": columns, "rows": chunk}
+        def push(part: list[dict]) -> tuple[int, list[dict]]:
+            body = {"table": table, "columns": columns, "rows": part}
             if history:
-                ids = {r["id"] for r in chunk}
+                ids = {r["id"] for r in part}
                 body["history"] = [e for e in history if e["row_id"] in ids]
             out = self._post_idempotent("/v1/rows/push", body)
-            total += out["upserted"]
-            rejected += out.get("rejected", [])
+            upserted, rejected = out["upserted"], out.get("rejected", [])
+            # The hub asks for a smaller batch when one request runs out of its
+            # statement budget; halve those rows until a single row still fails.
+            retry = {
+                r["id"]
+                for r in rejected
+                if r.get("retryable") is True or r.get("rule") == "write-budget"
+            }
+            if len(part) < 2 or not retry:
+                return upserted, rejected
+            again = [r for r in part if r["id"] in retry]
+            rejected = [r for r in rejected if r["id"] not in retry]
+            mid = (len(again) + 1) // 2
+            for half in (again[:mid], again[mid:]):
+                if half:
+                    n, bad = push(half)
+                    upserted += n
+                    rejected += bad
+            return upserted, rejected
+
+        total, rejected = 0, []
+        for i in range(0, len(rows), CHUNK):
+            n, bad = push(rows[i : i + CHUNK])
+            total += n
+            rejected += bad
         return {"upserted": total, "rejected": rejected}
 
     def rows_insert(

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+from collections import Counter
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -331,6 +332,17 @@ def run(data: Path, poll_seconds: int) -> int:
                         current["stats"] = {k: v for k, v in stats.items() if k != "rejected"}
                         current["stats"]["rejected"] = len(stats.get("rejected", []))
                         if stats.get("rejected"):
+                            # Catalog names and rule ids only: never row ids or messages.
+                            kinds = Counter(
+                                f"{r.get('table')}{'.' + r['col'] if r.get('col') else ''}:{r.get('rule')}"
+                                for r in stats["rejected"]
+                            )
+                            print(
+                                "rejected: "
+                                + ", ".join(f"{k} x{n}" for k, n in sorted(kinds.items())),
+                                file=sys.stderr,
+                                flush=True,
+                            )
                             raise RuntimeError("hub rejected rows")
                         current.update(state="idle", last_success=_stamp(), last_error=None)
                         # The fingerprint absorbs this round's own writes, and with

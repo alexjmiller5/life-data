@@ -229,6 +229,47 @@ def test_rejected_rows_are_not_a_success_and_do_not_leak(tmp_path, monkeypatch):
     assert "private" not in (tmp_path / "background-status.json").read_text()
 
 
+def test_rejected_rows_are_summarized_in_the_log_without_ids_or_messages(
+    tmp_path, monkeypatch, capsys
+):
+    import pytest
+
+    import soma
+    from soma import background
+
+    background.write_json(tmp_path / "background.json", {"enabled": True})
+    monkeypatch.setenv("SOMA_HUB_TOKEN", "test-credential")
+    monkeypatch.setattr(soma, "hub_from_config", lambda _: object())
+    rejected = [
+        {
+            "table": "songs",
+            "id": "private-a",
+            "col": None,
+            "rule": "write-budget",
+            "message": "private-m",
+        },
+        {
+            "table": "songs",
+            "id": "private-b",
+            "col": None,
+            "rule": "write-budget",
+            "message": "private-m",
+        },
+        {"table": "tasks", "id": "private-c", "col": "due", "rule": "type", "message": "private-m"},
+    ]
+    monkeypatch.setattr(
+        soma, "sync", lambda *_: {"pushed": 0, "pulled": 0, "ddl_applied": 0, "rejected": rejected}
+    )
+    monkeypatch.setattr(
+        background.time, "sleep", lambda _: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+    with pytest.raises(KeyboardInterrupt):
+        background.run(tmp_path, 30)
+    log = capsys.readouterr().err
+    assert "rejected: songs:write-budget x2, tasks.due:type x1" in log
+    assert "private" not in log
+
+
 def test_wrapped_unauthorized_reloads_credential_and_redacts_body(tmp_path, monkeypatch, capsys):
     import urllib.error
 
