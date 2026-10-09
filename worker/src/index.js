@@ -382,6 +382,7 @@ function pullPage(body, rows, includeId, nextCursor = rows.length === body.limit
 // Rows past the byte budget wait for the next request (the first row always
 // goes, so a walk never stalls); `batch` answers a prefix of the pulls asked.
 const PULL_BATCH = { items: 50, rows: 5000, bytes: 4 * 1024 * 1024 };
+const COMPOUND_TERMS = 5; // D1: "too many terms in compound SELECT" past five
 
 async function pullBatch(items, db) {
   if (!Array.isArray(items) || !items.length || items.length > PULL_BATCH.items) {
@@ -627,36 +628,42 @@ const ROUTES = {
     // whose own log has not moved skip the whole-log pull while this has not
     // moved either. Not one UNION ALL statement: D1 refuses a compound SELECT
     // of more than five terms, and the batch costs D1 ~5 ms for 118 tables.
+    // D1 spends a few milliseconds per statement of a batch, whatever the
+    // statement reads, and refuses a compound SELECT of more than five
+    // terms: five tables per statement is the floor for an estate's cursor.
     const read = async () => {
       const kinds = await arrivalColumns(db, [...tables, "_schema_log"]);
-      return db.batch([
-        ...tables.map((t) => {
-          const col = kinds.get(t);
-          // A table the hub lacks (renamed or dropped by a replay the caller has
-          // not run yet) has no arrivals. With the newest arrival comes how many
-          // rows share that stamp (index-only): a replica whose cursor sits on
-          // it can tell a same-millisecond late commit from nothing new.
-          if (!col) return db.prepare("SELECT '' AS m, NULL AS n");
-          if (col !== "hub_at") return db.prepare(`SELECT max(${col}) AS m, NULL AS n FROM ${qident(t)}`);
-          return db.prepare(`SELECT (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`);
-        }),
-        db.prepare(kinds.get("_schema_log") ? "SELECT coalesce(max(id), 0) AS m FROM _schema_log" : "SELECT 0 AS m"),
-      ]);
+      const terms = tables.map((t, i) => {
+        const col = kinds.get(t);
+        // A table the hub lacks (renamed or dropped by a replay the caller has
+        // not run yet) has no arrivals. With the newest arrival comes how many
+        // rows share that stamp (index-only): a replica whose cursor sits on
+        // it can tell a same-millisecond late commit from nothing new.
+        if (!col) return `SELECT ${i} AS i, '' AS m, NULL AS n`;
+        if (col !== "hub_at") return `SELECT ${i} AS i, max(${col}) AS m, NULL AS n FROM ${qident(t)}`;
+        return `SELECT ${i} AS i, (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`;
+      });
+      terms.push(kinds.get("_schema_log") ? `SELECT ${tables.length} AS i, coalesce(max(id), 0) AS m, NULL AS n FROM _schema_log` : `SELECT ${tables.length} AS i, 0 AS m, NULL AS n`);
+      const statements = [];
+      for (let i = 0; i < terms.length; i += COMPOUND_TERMS) statements.push(db.prepare(terms.slice(i, i + COMPOUND_TERMS).join(" UNION ALL ")));
+      const rows = [];
+      for (const { results } of await db.batch(statements)) for (const row of results ?? []) rows[row.i] = row;
+      return rows;
     };
-    let maxes;
-    try { maxes = await read(); } catch (e) {
+    let rows;
+    try { rows = await read(); } catch (e) {
       if (!arrivalKinds.has(db)) throw e;
       arrivalKinds.delete(db);
-      maxes = await read();
+      rows = await read();
     }
-    const schema = maxes.pop().results?.[0]?.m ?? 0;
+    const schema = rows[tables.length]?.m ?? 0;
     let top = "";
     const marks = {};
     const at_mark = {};
     tables.forEach((t, i) => {
-      const m = maxes[i].results?.[0]?.m ?? "";
+      const m = rows[i]?.m ?? "";
       marks[t] = m;
-      const n = maxes[i].results?.[0]?.n;
+      const n = rows[i]?.n;
       if (m && Number.isSafeInteger(n)) at_mark[t] = n;
       if (m > top) top = m;
     });
