@@ -360,13 +360,14 @@ test.each([false, true])('completed pulls publish changed skips and completion t
   if (previousSuccess) await core.sync(db, hub, { tables: { items: false } });
   await db.run("UPDATE catalog_properties SET required=0 WHERE col='qty'");
   await core.writeRow(db, 'items', { name: 'Missing qty' });
-  const before = await core.syncStatus(db);
-  const result = await core.sync(db, hub, { tables: { history: false } });
+  // A round's completion time is its start checkpoint: two rounds in one
+  // millisecond would publish the same value, so this one starts strictly later.
+  const checkpoint = new Date(Date.now() + 1);
+  const result = await core.sync(db, hub, { tables: { history: false }, now: () => checkpoint });
   expect(result.rejected.length).toBeGreaterThan(0);
   expect(result.skipped).toEqual(['history']);
   const after = await core.syncStatus(db);
-  expect(after.lastSuccessfulSync).not.toBeNull();
-  expect(after.lastSuccessfulSync).not.toBe(before.lastSuccessfulSync);
+  expect(after.lastSuccessfulSync).toBe(checkpoint.toISOString());
   expect(after.skippedTables).toEqual(['history']);
   expect(await db.all("SELECT value FROM _core_state WHERE key='skipped_tables'")).toEqual([{ value: '["history"]' }]);
 });
