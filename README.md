@@ -547,7 +547,14 @@ them. Existing subscriptions retain their exact stored trigger semantics.
 for an absent key). URL-encode each key segment; empty segments, dot
 segments, encoded separators, control characters and percent signs in
 stored keys are rejected. Uploading an existing key replaces its contents.
-There is no file deletion endpoint.
+
+`DELETE /v1/files/<key>` permanently removes one object and returns
+`{key,bytes,etag}` (404 for an absent key). Only `full` and `admin` tokens may
+delete; file grants never do. Keys under `__r2_data_catalog/` (the events
+table's Iceberg files) are refused with 403 unless the request carries
+`?catalog=1`. Every delete posts a `file.deleted` entry (key, bytes, etag,
+token name) to the notification feed. `soma files rm <key> --yes [--catalog]`
+is the CLI form.
 
 `GET /v1/files?prefix=<p>&cursor=<c>&limit=<n>` lists object metadata as
 `{objects:[{key,size,uploaded,etag}],cursor}`; `cursor` is opaque and `null` on

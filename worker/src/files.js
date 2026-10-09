@@ -48,6 +48,22 @@ export function fileHeaders(object) {
   return headers;
 }
 
+// DELETE /v1/files/<key>: the router admits only full/admin callers, never a
+// file grant. Iceberg catalog files need ?catalog=1, since removing a registered
+// table's file breaks the events projection. Every delete lands in the feed.
+export async function deleteFile(url,archive,key,feed,by) {
+  const names=[...url.searchParams.keys()];
+  if (names.length>1 || names.some(n=>n!=='catalog')) return reply({error:'invalid delete request'},400);
+  if (key.startsWith('__r2_data_catalog/') && url.searchParams.get('catalog')!=='1') return reply({error:'catalog_key_needs_flag'},403);
+  const head=await archive.head(key);
+  if (!head) return reply({error:'not found'},404);
+  await archive.delete(key);
+  const deleted={key,bytes:head.size,etag:head.httpEtag};
+  await feed({id:`files:deleted:${crypto.randomUUID()}`,producer:'files',type:'file.deleted',severity:'info',
+    title:'Soma file deleted',body:`${key} (${head.size} bytes) was deleted by ${by}.`,data:{...deleted,by}});
+  return reply(deleted);
+}
+
 // GET /v1/files?prefix=&cursor=&limit= over the ARCHIVE binding. `readable` holds
 // the caller's granted read prefixes ([''] for full/admin); the listed prefix must
 // lie inside one, and R2 keeps every page (cursor included) inside that prefix.

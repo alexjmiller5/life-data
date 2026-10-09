@@ -20,6 +20,7 @@ async function setup(scopes) {
         writeHttpMetadata(headers) { headers.set("Content-Type", obj.type); } };
     },
     async head(key) { return this.get(key); },
+    async delete(key) { objects.delete(key); },
     async list({ prefix = "", cursor, limit = 1000 } = {}) {
       const keys = [...objects.keys()].filter(k => k.startsWith(prefix) && (!cursor || k > cursor)).sort();
       const page = keys.slice(0, limit), truncated = keys.length > limit;
@@ -37,7 +38,7 @@ async function setup(scopes) {
     new Request(`https://hub.test${path}`, { method, body, headers: {
       Authorization: `Bearer ${credential}`, "Content-Type": "image/png", ...headers,
     } }), env, ctx);
-  return { request, objects };
+  return { request, objects, env };
 }
 
 test("scoped client stores and reads exact binary bytes, metadata and missing objects", async () => {
@@ -203,4 +204,54 @@ test('listing rejects malformed parameters and methods before storage',async()=>
     expect((await request(`/v1/files?prefix=captures/&${query}`)).status).toBe(400);
   expect((await request('/v1/files?prefix=captures/%01')).status).toBe(400);
   expect((await request('/v1/files?prefix=captures/','POST','x')).status).toBe(405);
+});
+
+const feed = async env => (await env.AUTH_DB.prepare("SELECT producer,type,severity,data FROM _notifications ORDER BY seq").all()).results
+  .map(n=>({...n,data:JSON.parse(n.data)}));
+
+test('full and admin delete one object and log it to the notification feed',async()=>{
+  const {request,objects,env}=await setup('full');
+  await request('/v1/files/raw/a%20b.json','PUT','four');
+  await request('/v1/files/raw/keep.json','PUT','x');
+  const deleted=await request('/v1/files/raw/a%20b.json','DELETE');
+  expect(deleted.status).toBe(200);
+  expect(await deleted.json()).toEqual({key:'raw/a b.json',bytes:4,etag:'"etag-not-a-sha256"'});
+  expect([...objects.keys()]).toEqual(['raw/keep.json']);
+  expect((await request('/v1/files/raw/keep.json','DELETE',undefined,'root')).status).toBe(200);
+  expect(objects.size).toBe(0);
+  expect(await feed(env)).toEqual([
+    {producer:'files',type:'file.deleted',severity:'info',data:{key:'raw/a b.json',bytes:4,etag:'"etag-not-a-sha256"',by:'client'}},
+    {producer:'files',type:'file.deleted',severity:'info',data:{key:'raw/keep.json',bytes:1,etag:'"etag-not-a-sha256"',by:'admin'}},
+  ]);
+});
+
+test('consumer file and table grants can never delete',async()=>{
+  const {request,objects}=await setup('files:read:raw/,files:write:raw/,tables:write');
+  await request('/v1/files/raw/a','PUT','x');
+  for(const path of ['/v1/files/raw/a','/v1/archive/raw/a']) expect((await request(path,'DELETE')).status).toBe(403);
+  expect(objects.has('raw/a')).toBe(true);
+});
+
+test('catalog keys need the explicit catalog flag and other parameters are refused',async()=>{
+  const {request,objects,env}=await setup('full');
+  const key='__r2_data_catalog/ns/table/metadata/v1.json';
+  await request(`/v1/files/${key}`,'PUT','x');
+  for(const query of ['','?catalog=0','?catalog=','?catalog=true'])
+    expect((await request(`/v1/files/${key}${query}`,'DELETE')).status).toBe(403);
+  for(const query of ['?other=1','?catalog=1&catalog=1'])
+    expect((await request(`/v1/files/raw/x${query}`,'DELETE')).status).toBe(400);
+  expect(objects.has(key)).toBe(true);
+  expect((await request(`/v1/files/${key}?catalog=1`,'DELETE')).status).toBe(200);
+  expect(objects.has(key)).toBe(false);
+  expect((await feed(env)).map(n=>n.data.key)).toEqual([key]);
+});
+
+test('a missing key, a malformed key or the legacy archive route deletes nothing and logs nothing',async()=>{
+  const {request,objects,env}=await setup('full');
+  await request('/v1/files/raw/a','PUT','x');
+  expect((await request('/v1/files/raw/missing','DELETE')).status).toBe(404);
+  expect((await request('/v1/files/raw%2Fa','DELETE')).status).toBe(400);
+  expect((await request('/v1/archive/raw/a','DELETE')).status).toBe(404);
+  expect(objects.has('raw/a')).toBe(true);
+  expect(await feed(env)).toEqual([]);
 });

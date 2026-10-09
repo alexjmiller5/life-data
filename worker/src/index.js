@@ -25,7 +25,8 @@ import {handleChangesetGovernance,canChangeset,changesetGovernanceLimits} from '
 import {ensureChangesetStorage} from './changeset-store.js';
 import {configuration as governanceConfiguration,limits as governanceLimits} from './governance-preview.js';
 import {ensureProposalStorage} from './governance-proposals.js';
-import { putFile, fileHeaders, listFiles } from "./files.js";
+import { putFile, deleteFile, fileHeaders, listFiles } from "./files.js";
+import { ensureUsage, notify } from "./usage.js";
 import { changesRoute, markChanged, withChangeSignal } from "./changes.js";
 import { backup } from "./backup.js";
 import { backupsAllowed, handleBackups } from "./backups.js";
@@ -929,10 +930,12 @@ async function handle(request, env, ctx, url) {
     }
     if (url.pathname.startsWith("/v1/files/")) {
       if (["GET", "HEAD"].includes(request.method)) return await handleArchiveGet(request, env, url);
-      if (request.method !== "PUT") return json({ error: "method not allowed" }, 405);
+      if (!["PUT", "DELETE"].includes(request.method)) return json({ error: "method not allowed" }, 405);
       let key;
       try { key = fileKey(url.pathname); } catch { return json({ error: "bad key" }, 400); }
-      return await putFile(request, tenant.archive, key);
+      if (request.method === "PUT") return await putFile(request, tenant.archive, key);
+      await ensureUsage(tenant.authDb);
+      return await deleteFile(url, tenant.archive, key, (n) => notify(tenant.authDb, n), tenant.name);
     }
     if (url.pathname.startsWith("/v1/tokens/") && request.method === "POST") {
       const route = TOKEN_ROUTES[url.pathname];

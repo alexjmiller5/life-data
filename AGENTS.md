@@ -1032,6 +1032,12 @@ revocation and requests against an in-memory archive.
 `files:read:<prefix>/` holder lists only inside its prefix; full/admin list the
 whole archive. `soma files list <prefix>` follows every page.
 
+`DELETE /v1/files/<key>` is full/admin only (no file grant reaches it; the
+legacy archive route has no delete), returns `{key,bytes,etag}` or 404, refuses
+`__r2_data_catalog/` keys without `?catalog=1` and accepts no other parameter.
+Each delete writes a `files`/`file.deleted` notification naming the token.
+`soma files rm <key> --yes [--catalog]` wraps it.
+
 File-consumer registry (every file consumer and prefix is listed here, per
 `docs/consumer-access.md`). Consumers depend on this supported service contract
 only; each keeps its operational recovery state in its own store, and Soma

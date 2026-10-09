@@ -1103,6 +1103,25 @@ class HttpHub:
                 return objects
             query["cursor"] = page["cursor"]
 
+    def files_rm(self, key: str, catalog: bool = False) -> dict:
+        """Permanently delete one archive object (full/admin token only)."""
+        from urllib.parse import quote
+
+        route = f"/v1/files/{quote(key, safe='/')}" + ("?catalog=1" if catalog else "")
+        try:
+            with _open_hub_request(
+                f"{self.base}{route}",
+                self.headers,
+                opener=self.opener,
+                timeout=self.timeout,
+                method="DELETE",
+            ) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"hub HTTP {e.code}: {e.read().decode()[:300]}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"hub unreachable: {e.reason}") from e
+
     def token_create(self, name: str, scopes: str) -> dict:
         return self._post("/v1/tokens/create", {"name": name, "scopes": scopes})
 
@@ -1773,6 +1792,12 @@ def main(argv: list[str] | None = None) -> int:
     f_sub = p_files.add_subparsers(dest="files_command", required=True)
     p_flist = f_sub.add_parser("list", help="list every object under a key prefix, as JSON")
     p_flist.add_argument("prefix", help="key prefix, e.g. raw/flighty/ (needs files:read on it)")
+    p_frm = f_sub.add_parser("rm", help="permanently delete one object (full token; logged)")
+    p_frm.add_argument("key")
+    p_frm.add_argument("--yes", action="store_true", help="confirm the permanent delete")
+    p_frm.add_argument(
+        "--catalog", action="store_true", help="allow a key under __r2_data_catalog/ (Iceberg)"
+    )
     p_token = sub.add_parser("token", help="scoped client tokens (admin token required)")
     k_sub = p_token.add_subparsers(dest="token_command", required=True)
     p_tc = k_sub.add_parser("create", help="mint a scoped token (value shown ONCE)")
@@ -2020,7 +2045,12 @@ def _dispatch(args: argparse.Namespace, path: Path) -> int:
         else:
             print(json.dumps(hub_from_config().archive_query(args.statement), indent=2))
     elif args.command == "files":
-        print(json.dumps(hub_from_config().files_list(args.prefix), indent=2))
+        if args.files_command == "list":
+            print(json.dumps(hub_from_config().files_list(args.prefix), indent=2))
+        elif not args.yes:
+            raise ValueError(f"files rm permanently deletes {args.key}; pass --yes to confirm")
+        else:
+            print(json.dumps(hub_from_config().files_rm(args.key, args.catalog), indent=2))
     elif args.command == "token":
         hub = hub_from_config()
         if args.token_command == "create":
