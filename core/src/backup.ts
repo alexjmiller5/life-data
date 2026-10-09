@@ -547,7 +547,7 @@ export async function restoreReplica(db: SqlDriver, files: BackupFiles, args: Re
     if (read.characters !== expected.characters || JSON.stringify(read.summary) !== JSON.stringify(expected.summary)) {
       throw invalid('The backup changed while it was being restored. Nothing was replaced.');
     }
-    for (const table of ['_core_sync', '_core_pending', '_core_rejected', '_core_history_hold', '_core_coverage']) await db.run(`DELETE FROM ${table}`);
+    for (const table of ['_core_sync', '_core_pending', '_core_rejected', '_core_history_hold', '_core_coverage', '_core_pull_progress']) await db.run(`DELETE FROM ${table}`);
     await db.run("DELETE FROM _core_state WHERE key IN ('last_sync','skipped_tables')");
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
     const search = (await db.all("SELECT name FROM main.sqlite_master WHERE type='table' AND name IN ('_core_search_fts','_core_search_docs','_core_search_dirty','_core_search_state')")).map(r => String(r.name));

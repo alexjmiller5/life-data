@@ -61,15 +61,14 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   An accepted sync receipt clears only markers at or below its submitted
   revision; newer concurrent edits, rejections and lost receipts stay pending.
 - `syncStatus(driver)` returns `{ lastSuccessfulSync, pendingUiEdits, rejected, skippedTables }`
-  from local durable state. The timestamp is the last successful core round's
-  checkpoint, or `null`. Counts are pending UI-written rows and rows in the
+  from local durable state. The timestamp is the last completed core round's
+  checkpoint, or `null`; rejected rows do not hold it back. Counts are pending UI-written rows and rows in the
   rejection inbox. Pending UI edits await this core's own valid receipt even
   if Python has already pushed them; this is not the entire CLI sync queue.
   `skippedTables` records the last completed pull round's exclusions in the
   existing `_core_state.skipped_tables` JSON key, in the final ready transaction.
-  Rejected pushes still publish the completed pulls' exclusions, while the
-  successful-sync timestamp stays unchanged. HTTP or transaction failure
-  preserves both previous values. Missing history yields `[]`; malformed
+  Rejected pushes still publish the completed pulls' exclusions and the
+  completion time. HTTP or transaction failure preserves both previous values. Missing history yields `[]`; malformed
   stored lists fail explicitly. Hosts read this list after reopen rather than
   writing their own copy. It is a warning about that round, not coverage or
   freshness proof, and an empty list does not certify a complete replica.
@@ -255,13 +254,21 @@ The durable `_core_coverage` certificates belong to sync, not UI preferences.
 They certify an unfiltered full pull and subsequent successful incremental
 walks for one endpoint, public schema/log identity, checkpoint and version.
 Ordinary cursors, row counts and Python daemon acknowledgements never grant
-proof. Missing/stale proof forces a full backfill; skipped tables invalidate
-their proof before transport yields. Unchanged incremental refreshes retain
+proof. A table's pull continues from its cursor while its proof matches the
+endpoint, checkpoint and that table's own definition; a schema change in
+another table keeps it. Replay revokes the proof of every table an entry
+creates, drops, renames or alters, so only that table backfills in full.
+Skipped tables invalidate their proof before transport yields. Unchanged incremental refreshes retain
 prior certified trust across interruption and restart. Applicable schema or
 catalog changes revoke metadata trust before application; partial metadata
 blocks bound-replica writes even when no invariant is yet present. Recovery
-restores trust only after complete certification. Certificates and readiness commit with
-sync checkpoints; none of this local metadata is logged or synced.
+restores trust only after complete certification. Each table's cursors and
+proof commit as soon as its pull and push finish; readiness, skipped tables
+and the completion time commit after the last table. `_core_pull_progress`
+keeps an unfinished table's first-attempt `since`/mark and last applied page,
+so the next round resumes there (a deferral or replay discards it). A failed
+request or host deadline never repeats finished work. None of this local
+metadata is logged or synced.
 
 Sync freezes candidate payloads and their original history in the main-database
 `_core_sync_snapshot` within one transaction, then reads 200 candidates per

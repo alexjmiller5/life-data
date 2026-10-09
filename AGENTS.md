@@ -247,7 +247,8 @@ reads never provision either store or rewrite saved definitions.
   Actions use ordinary catalog/history/coverage checks and pending sync state.
 - `syncStatus` includes durable `skippedTables` from the last completed pull
   round, stored in the final ready transaction even when pushes are rejected.
-  `last_sync` advances only without rejections. Hosts consume this
+  `last_sync` records every completed round; rejected rows wait in the inbox
+  and count separately. Hosts consume this
   warning after reopen; they do not persist exclusions or certify coverage.
   The existing `_core_state.skipped_tables` JSON key remains compatible.
 - `core/src/rejections.ts` owns durable inbox reads through the generated
@@ -271,7 +272,11 @@ reads never provision either store or rewrite saved definitions.
   full pulls and certified incrementals only, endpoint/schema/cursor/version
   bound. Unchanged incremental refreshes retain prior proof across interruption;
   schema/catalog changes revoke metadata trust before application and stay
-  blocked until complete certification. Bound replicas require trusted catalog
+  blocked until complete certification. A pull cursor survives schema changes
+  to other tables (only replayed DDL touching a table forces its full pull);
+  each finished table commits its cursors at once and `_core_pull_progress`
+  resumes an interrupted table at its last page, so a host round deadline or
+  one failed request never restarts finished work. Bound replicas require trusted catalog
   metadata even when no invariant is currently present. The optional driver
   `readDependencies(statements, { ownedTempTables })` uses SQLite compiler
   metadata, without execution, to narrow invariant coverage to target/catalog,

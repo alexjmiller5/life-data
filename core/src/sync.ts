@@ -1,6 +1,6 @@
 import type { SqlDriver, Hub } from './driver.ts';
 import { qident, validEditTimestamp, type Row } from './validate.ts';
-import { COVERAGE_VERSION, coverageProblem, coverageSchema, initCoverage, validCoverage } from './coverage.ts';
+import { COVERAGE_VERSION, coverageProblem, coverageSchema, incrementalProof, initCoverage } from './coverage.ts';
 import type { SyncSettings, SyncResult } from './contract.generated.ts';
 export type { SyncResult } from './contract.generated.ts';
 export type SyncOptions = SyncSettings & { now?: () => Date; maxClockSkewMs?: number };
@@ -13,6 +13,9 @@ export async function initCore(db: SqlDriver): Promise<void> {
   await db.run('CREATE TABLE IF NOT EXISTS _core_rejected (tbl TEXT, row_id TEXT, row TEXT NOT NULL, errors TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
   await db.run('CREATE TABLE IF NOT EXISTS _core_pending (tbl TEXT NOT NULL, row_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
   await db.run('CREATE TABLE IF NOT EXISTS _core_history_hold (tbl TEXT NOT NULL, row_id TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
+  // An unfinished table pull: the first attempt's since and mark, and the last
+  // applied page. Replay deletes it when the table's definition changes.
+  await db.run('CREATE TABLE IF NOT EXISTS _core_pull_progress (tbl TEXT PRIMARY KEY, since TEXT NOT NULL, mark TEXT NOT NULL, after TEXT NOT NULL)');
   await initCoverage(db);
 }
 
@@ -103,16 +106,25 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   const remoteKnown = new Set(entries.map(e=>e.ddl));
   const unsent = local.filter(e=>!remoteKnown.has(e.ddl));
   if (unsent.length) await post('/v1/schema/push',{entries:unsent});
+  const tableDefinitions=async()=>new Map((await db.all("SELECT name,sql FROM main.sqlite_master WHERE type='table'")).map(r=>[String(r.name),String(r.sql)]));
   for (const entry of entries) {
     if (known.has(entry.ddl)) continue;
     await db.transaction(async () => {
       await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','refreshing')");
+      const before=await tableDefinitions();
       try { await db.run(entry.ddl); }
       catch (error) {
         const message=String(error).toLowerCase();
         if (!['already exists','duplicate column','no such column'].some(s=>message.includes(s)) && !(message.includes('no such table')&&/^\s*ALTER\s+TABLE\s+\S+\s+RENAME\s+TO\b/i.test(entry.ddl))) throw error;
       }
       await db.run('INSERT INTO _schema_log(applied_at,ddl) VALUES (?,?)',[entry.applied_at,entry.ddl]);
+      // A table this entry created, dropped, renamed or altered needs its next
+      // pull in full (a rebuild can keep identical SQL); every other cursor stays.
+      const after=await tableDefinitions();
+      for(const name of new Set([...before.keys(),...after.keys()])) if(before.get(name)!==after.get(name)) {
+        await db.run('DELETE FROM _core_coverage WHERE tbl=?',[name]);
+        await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[name]);
+      }
     });
     known.add(entry.ddl);
   }
@@ -135,8 +147,10 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   let checkpoint='';
   await db.transaction(async()=>{
     coverageSignature=(await coverageSchema(db)).signature;
-    // Persist exclusions and schema invalidation even if this round fails.
-    for(const proof of proofs.values()) if(!tables.includes(String(proof.tbl)) || !validCoverage(proof,hub.endpoint,coverageSignature,states.get(String(proof.tbl))?.pull)) {
+    // Persist exclusions and invalidated cursors even if this round fails. A
+    // schema change elsewhere leaves a table's cursor valid; validation trust
+    // still needs this round's signature (coverageProblem).
+    for(const proof of proofs.values()) if(!tables.includes(String(proof.tbl)) || !incrementalProof(proof,hub.endpoint,coverageSignature,states.get(String(proof.tbl))?.pull)) {
       await db.run('DELETE FROM _core_coverage WHERE tbl=?',[String(proof.tbl)]);
     }
     checkpoint=(options.now?.() ?? new Date()).toISOString();
@@ -144,7 +158,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     await db.run("UPDATE _core_sync SET push='' WHERE push > ?",[checkpoint]);
     for(const state of states.values()) if(String(state.push)>checkpoint) state.push='';
     for(const table of tables) {
-      pullSince.set(table,endpoint && validCoverage(proofs.get(table),hub.endpoint,coverageSignature,states.get(table)?.pull) ? String(states.get(table)!.pull) : '');
+      pullSince.set(table,endpoint && incrementalProof(proofs.get(table),hub.endpoint,coverageSignature,states.get(table)?.pull) ? String(states.get(table)!.pull) : '');
       columns.set(table,(await db.all(`PRAGMA table_info(${qident(table)})`)).map(r=>String(r.name)));
       const push=String(states.get(table)?.push??'');
       const since=endpoint && push<=checkpoint ? push : '';
@@ -162,7 +176,14 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
   for (const table of tables) {
     const cols=columns.get(table)!;
     const since=pullSince.get(table)!;
+    let mark=String(marks.tables[table]);
     let after: string | undefined;
+    const progress=(await db.all('SELECT since,mark,after FROM _core_pull_progress WHERE tbl=?',[table]))[0];
+    // Resuming keeps the first attempt's mark: rows changed since then in pages
+    // already applied carry a later hub_at and arrive next round.
+    if(progress && progress.since===since && validMark(progress.mark) && typeof progress.after==='string' && progress.after) {
+      mark=String(progress.mark); after=progress.after;
+    }
     do {
       const page=await post('/v1/rows/pull',{table,columns:cols,since,limit:200,...(after ? {after} : {})});
       if (!Array.isArray(page.rows)) throw new Error('invalid pull response');
@@ -191,6 +212,9 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
           return true;
         });
         if(applicable.length) result.pulled+=await db.run(upsertSql(table,cols),[JSON.stringify(applicable)]);
+        // A deferral keeps the old cursor, so no resumable page progress either.
+        if(deferred.has(table) || !page.next_cursor) await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[table]);
+        else await db.run('INSERT OR REPLACE INTO _core_pull_progress(tbl,since,mark,after) VALUES (?,?,?,?)',[table,since,mark,page.next_cursor]);
       });
       after=page.next_cursor;
     } while (after);
@@ -236,22 +260,26 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
       });
     }
     result.rejected.push(...bad.map(r=>({...r,table})));
-  }
-  // Cursor advancement commits only after every request succeeds.
-  await db.transaction(async()=>{
-    if((await coverageSchema(db)).signature!==coverageSignature) throw new Error('schema changed during sync; retry before certifying coverage');
-    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
-    for(const table of tables) {
-      const rejected=result.rejected.some(r=>r.table===table)||(table==='history'&&withheld.size>0);
-      const pull=deferred.has(table) ? String(states.get(table)?.pull??'') : marks.tables[table];
+    // Each finished table keeps its cursors, so a later failure or host deadline
+    // never sends the next round back through tables already done.
+    await db.transaction(async()=>{
+      const rejected=bad.length>0||(table==='history'&&withheld.size>0);
+      const pull=deferred.has(table) ? String(states.get(table)?.pull??'') : mark;
       await db.run('INSERT OR REPLACE INTO _core_sync(tbl,pull,push) VALUES (?,?,?)',[table,pull,rejected ? String(states.get(table)?.push??'') : checkpoint]);
       // A deferred bootstrap has no complete proof. An incremental deferral
       // retains only the already validated proof at its unchanged checkpoint.
       if(!deferred.has(table)) await db.run('INSERT OR REPLACE INTO _core_coverage(tbl,endpoint,schema,pull,version) VALUES (?,?,?,?,?)',[table,hub.endpoint,coverageSignature,pull,COVERAGE_VERSION]);
-    }
+      await db.run('DELETE FROM _core_pull_progress WHERE tbl=?',[table]);
+    });
+  }
+  // Certification and completion commit only after every request succeeds.
+  // Rejected rows wait in the inbox; they do not make a finished round unsuccessful.
+  await db.transaction(async()=>{
+    if((await coverageSchema(db)).signature!==coverageSignature) throw new Error('schema changed during sync; retry before certifying coverage');
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub',?)",[hub.endpoint]);
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('coverage_phase','ready')");
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('skipped_tables',?)",[JSON.stringify(result.skipped)]);
-    if(!result.rejected.length) await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('last_sync',?)",[checkpoint]);
+    await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('last_sync',?)",[checkpoint]);
   });
   return result;
 }

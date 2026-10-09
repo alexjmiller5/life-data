@@ -25,6 +25,22 @@ export function validCoverage(proof: Row | undefined, endpoint: string, signatur
     && proof.schema === signature && proof.pull === pull;
 }
 
+/** Whether a table's pull may continue from its cursor. Unlike validCoverage,
+ * only the table's own definition must match: a schema change elsewhere keeps
+ * the cursor; replay deletes the proof of every table it touches. */
+export function incrementalProof(proof: Row | undefined, endpoint: string, signature: string, pull: unknown): boolean {
+  if (!proof || proof.version !== COVERAGE_VERSION || proof.endpoint !== endpoint || proof.pull !== pull) return false;
+  const definition = (schema: unknown) => {
+    try {
+      const objects = JSON.parse(String(schema))[0];
+      const found = Array.isArray(objects) ? objects.find(o => Array.isArray(o) && o[0] === 'table' && o[1] === proof.tbl) : undefined;
+      return found ? JSON.stringify(found) : null;
+    } catch { return null; }
+  };
+  const own = definition(proof.schema);
+  return own !== null && own === definition(signature);
+}
+
 /** Read-only, transaction-scoped check. Missing metadata never grants trust. */
 export async function coverageProblem(db: SqlDriver, required?: readonly string[]): Promise<string | null> {
   const scope = required ? 'the tables used by validation' : 'every table, including history and provenance';

@@ -84,6 +84,7 @@ test('restore replaces the replica in one step, keeps a recovery dump and resets
   db.db.exec("CREATE TABLE extra (id TEXT PRIMARY KEY, updated_at TEXT); INSERT INTO extra VALUES ('x', 'y')");
   db.db.exec(`INSERT INTO _core_sync VALUES ('items','${T1}','${T1}'); INSERT INTO _core_pending VALUES ('items','old','${T1}');
     INSERT INTO _core_rejected VALUES ('items','old','{}','[]'); INSERT INTO _core_coverage VALUES ('items','https://hub.test','s','${T1}',1);
+    INSERT INTO _core_pull_progress VALUES ('items','','${T1}','old');
     INSERT INTO _core_state VALUES ('hub','https://hub.test'),('last_sync','${T1}'),('skipped_tables','[]')`);
   const before = await dumpOf(db);
   const files = memoryFiles({ backup });
@@ -95,7 +96,7 @@ test('restore replaces the replica in one step, keeps a recovery dump and resets
   expect(rows(db)).toEqual(rows(await replica()));
   expect(db.db.query("SELECT name FROM sqlite_master WHERE name='extra'").all()).toEqual([]);
   expect(db.db.query("SELECT type,name FROM sqlite_master WHERE name IN ('items_name','items_updated_at','live_items') ORDER BY name").all().length).toBe(3);
-  for (const table of ['_core_sync', '_core_pending', '_core_rejected', '_core_coverage']) {
+  for (const table of ['_core_sync', '_core_pending', '_core_rejected', '_core_coverage', '_core_pull_progress']) {
     expect(db.db.query(`SELECT count(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
   }
   expect(db.db.query('SELECT key,value FROM _core_state ORDER BY key').all())

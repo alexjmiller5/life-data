@@ -67,7 +67,10 @@ test.each(['offline', 'lost receipt', 'malformed receipt', 'rejection'])('pendin
   const attempt = core.sync(db, transport, { now: () => new Date(Date.now() + 50) });
   if (failure === 'rejection') expect((await attempt).rejected).toMatchObject([{ id: 'a', table: 'items', rule: 'required' }]);
   else await expect(attempt).rejects.toThrow(failure === 'malformed receipt' ? 'invalid push response' : 'offline');
-  expect(await core.syncStatus(db)).toEqual({ ...before, pendingUiEdits: 1, rejected: failure === 'rejection' ? 1 : 0 });
+  // A finished round records its time even when the hub rejected an edit.
+  const attempted = await core.syncStatus(db);
+  expect(attempted).toEqual({ ...before, ...(failure === 'rejection' ? { lastSuccessfulSync: attempted.lastSuccessfulSync } : {}), pendingUiEdits: 1, rejected: failure === 'rejection' ? 1 : 0 });
+  if (failure === 'rejection') expect(attempted.lastSuccessfulSync! > before.lastSuccessfulSync!).toBe(true);
   if (failure === 'rejection') await core.writeRow(db, 'items', { id: row.id, qty: 1 });
   const finished = new Date(Date.now() + 100);
   await core.sync(db, hub, { now: () => finished });
@@ -339,7 +342,7 @@ test.each(['{bad', '{}', 'null', '[1]', '[""]', '["items","items"]'])('malformed
   await expect(core.syncStatus(db)).rejects.toThrow('Invalid saved skipped-table status');
 });
 
-test.each([false, true])('completed pulls publish changed skips despite a rejected push; prior success=%s', async previousSuccess => {
+test.each([false, true])('completed pulls publish changed skips and completion time despite a rejected push; prior success=%s', async previousSuccess => {
   const fixture = setup();
   const { db, remote, hub } = fixture;
   cleanup.push(() => db.db.close(), () => remote.db.close());
@@ -358,7 +361,28 @@ test.each([false, true])('completed pulls publish changed skips despite a reject
   expect(result.rejected.length).toBeGreaterThan(0);
   expect(result.skipped).toEqual(['history']);
   const after = await core.syncStatus(db);
-  expect(after.lastSuccessfulSync).toBe(before.lastSuccessfulSync);
+  expect(after.lastSuccessfulSync).not.toBeNull();
+  expect(after.lastSuccessfulSync).not.toBe(before.lastSuccessfulSync);
   expect(after.skippedTables).toEqual(['history']);
   expect(await db.all("SELECT value FROM _core_state WHERE key='skipped_tables'")).toEqual([{ value: '["history"]' }]);
+});
+
+test('a resumed page walk never skips a remote revision deferred behind an unsent edit', async () => {
+  const { db, hub, remote } = await replica();
+  const insert = remote.db.query('INSERT INTO items(id,name,created_at,updated_at,hub_at) VALUES (?,?,?,?,?)');
+  for (let i = 0; i < 450; i++) insert.run(String(i).padStart(3, '0'), `Item ${i}`, T0, T0, T1);
+  await core.sync(db, hub);
+  await core.writeRow(db, 'items', { id: '001', name: 'Unsent' });
+  const remoteRevision = new Date(Date.now() + 2000).toISOString();
+  remote.db.query('UPDATE items SET name=?,updated_at=?,hub_at=? WHERE id=?').run('Remote', remoteRevision, remoteRevision, '001');
+  // A later arrival moves the mark past the deferred row's hub_at.
+  insert.run('zzz', 'Later', T0, remoteRevision, new Date(Date.now() + 3000).toISOString());
+  const failing: Hub = { ...hub, async post(route, body) {
+    if (route === '/v1/rows/pull' && body.table === 'items' && body.after === '399') throw new Error('connection lost');
+    return hub.post(route, body);
+  } };
+  await expect(core.sync(db, failing)).rejects.toThrow('connection lost');
+  await core.sync(db, hub);
+  await core.sync(db, hub);
+  expect(await db.all("SELECT name FROM items WHERE id='001'")).toEqual([{ name: 'Remote' }]);
 });
