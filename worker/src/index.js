@@ -281,6 +281,8 @@ async function ready(db) {
   let state = null;
   try { state = await audit(db); } catch (e) { if (!(e instanceof ScopeDenied)) throw e; }
   if (state && state.objects === prepared.get(db)) return;
+  // Rare by design; frequent lines mean schema churn or short-lived isolates.
+  console.log(JSON.stringify({ governance_setup: !state ? "audit failed" : prepared.has(db) ? "schema changed" : "new isolate" }));
   await ensureReady(db);
   prepared.set(db, (await audit(db)).objects);
 }
