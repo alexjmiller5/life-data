@@ -40,13 +40,13 @@ jobs:
         with:
           export-env: true
         env:
-          CLOUDFLARE_API_TOKEN: op://Life Data/Life Data CI Cloudflare Token/api-token
-          CLOUDFLARE_ACCOUNT_ID: op://Life Data/Life Data CI Cloudflare Token/account-id
-          APNS_CONFIG: op://Life Data/Life Data ENV/APNS_CONFIG
-          APNS_PRIVATE_KEY: op://Life Data/Life Data ENV/APNS_PRIVATE_KEY
-          ENROLLMENT_PROFILES: op://Life Data/Life Data ENV/ENROLLMENT_PROFILES
-          ROW_CREATION_POLICIES: op://Life Data/Life Data ENV/ROW_CREATION_POLICIES
-          BACKUP_API_TOKEN: op://Life Data/Life Data ENV/BACKUP_API_TOKEN
+          CLOUDFLARE_API_TOKEN: op://Soma/Soma CI Cloudflare Token/api-token
+          CLOUDFLARE_ACCOUNT_ID: op://Soma/Soma CI Cloudflare Token/account-id
+          APNS_CONFIG: op://Soma/Soma ENV/APNS_CONFIG
+          APNS_PRIVATE_KEY: op://Soma/Soma ENV/APNS_PRIVATE_KEY
+          ENROLLMENT_PROFILES: op://Soma/Soma ENV/ENROLLMENT_PROFILES
+          ROW_CREATION_POLICIES: op://Soma/Soma ENV/ROW_CREATION_POLICIES
+          BACKUP_API_TOKEN: op://Soma/Soma ENV/BACKUP_API_TOKEN
       # Every deploy pushes these from the ENV item, so the vault is the source of truth.
       # ENROLLMENT_PROFILES travels gzip-compressed: one secret is capped at 5.1 kB.
       - name: Sync service secrets
