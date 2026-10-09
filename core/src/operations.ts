@@ -10,6 +10,7 @@ import { readCatalog } from './catalog.ts';
 import { prepareReadPlan } from './read-plan.ts';
 import { referenceSources, referencedBy } from './references.ts';
 import { resolveSourceLink } from './source-links.ts';
+import { mentionedBy, mentionLabels, viewEmbed } from './mentions.ts';
 import { allowed } from './validate.ts';
 import { compileView, displayName } from './view.ts';
 import { isReadOnlyTable, writeability } from './write.ts';
@@ -73,6 +74,9 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     referenceSources: args => referenceSources(db, args),
     referencedBy: args => referencedBy(db, args),
     resolveSourceLink: args => resolveSourceLink(db, args),
+    mentionedBy: args => mentionedBy(db, args),
+    mentionLabels: args => mentionLabels(db, args),
+    viewEmbed: args => viewEmbed(db, args),
     calendarRows,
     boardRows,
     resolveDerived: ({ endpoint, ...args }) => resolveDerived(db, hub(endpoint), args),

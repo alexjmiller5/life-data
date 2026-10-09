@@ -2,6 +2,8 @@ import type { SourceLinkArgs, SourceLinkResult } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident } from './validate.ts';
+import { parseIrisHref } from './mentions.ts';
+import { loadSavedView } from './saved-views.ts';
 
 /** A narrow source parser also works in hosts without the URL global. */
 function notionPage(url: string): string | undefined {
@@ -15,7 +17,15 @@ export async function resolveSourceLink(db: SqlDriver, args: SourceLinkArgs): Pr
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.url !== 'string' || Object.keys(args).some(key => key !== 'url')) throw Error('Invalid source link');
   // An explicit local identity is not a URL or a provenance inference. Keep
   // the row ID byte-exact; never decode escapes or normalize case/Unicode.
-  const direct = args.url.length <= 4096
+  // iris:// mention and embed links carry the same identity, percent-encoded.
+  const iris = parseIrisHref(args.url);
+  if (iris?.kind === 'view') return db.transaction(async () => {
+    try {
+      const saved = await loadSavedView(db, iris.id);
+      return saved.tbl === iris.table && saved.id === iris.id ? { view: { table: iris.table, view: iris.id } } : {};
+    } catch { return {}; }
+  });
+  const direct = iris ? [args.url, iris.table, iris.id] : args.url.length <= 4096
     ? /^([A-Za-z_][A-Za-z0-9_]*)\/([^\s/\\?#\u0000-\u001f\u007f]+)$/.exec(args.url)
     : null;
   if (direct) return db.transaction(async () => {

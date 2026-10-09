@@ -212,6 +212,17 @@ reads never provision either store or rewrite saved definitions.
   Markdown is indexed, with conservative plain-text display cleanup only.
   Results list read-only system tables (`isReadOnlyTable`) after user tables,
   then order by relevance.
+- `core/src/mentions.ts` owns `iris://table/<table>/row|view/<id>` links
+  (percent-encoded, parentheses included) in Markdown bodies. The search
+  drain also fills `_core_search_mentions` from live rows' `markdown`
+  properties, so backlinks need no logged schema: a missing table resets the
+  whole cache and the next read backfills it. `mentionedBy` pages live
+  mentioning rows by table/label (self links excluded, any skipped table marks
+  it incomplete); `mentionLabels` resolves live display labels (null = gone);
+  `viewEmbed` previews one saved view (id plus up to five scalar columns) and
+  returns `calendar` when the host must repeat it with that day policy.
+  `resolveSourceLink` opens row links like `table/id` and returns `view` for
+  live saved views. `listViews` without `table` lists every table's views.
 - `core/src/remote.ts` provides transient read-only `remoteRows`/`remoteRow`
   operations through the existing paginated rows/pull API, one request each.
   Durable endpoint binding and known local table schema are checked before

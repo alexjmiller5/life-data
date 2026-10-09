@@ -3,6 +3,7 @@ import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { displayName } from './view.ts';
+import { markdownMentions } from './mentions.ts';
 import { isReadOnlyTable } from './write.ts';
 
 export const SEARCH_TEXT_TYPES = new Set(['text', 'markdown', 'select', 'url', 'email', 'phone', 'ref', 'date', 'datetime', 'date_or_datetime']);
@@ -40,7 +41,7 @@ export function isSearchTrigger(trigger: Row): boolean {
 
 async function initSearch(db: SqlDriver) {
   const names = new Set((await db.all("SELECT name FROM main.sqlite_master WHERE type='table' AND name GLOB '_core_search_*'")).map(r => r.name));
-  const complete = ['_core_search_fts', '_core_search_docs', '_core_search_dirty', '_core_search_state'].every(name => names.has(name));
+  const complete = ['_core_search_fts', '_core_search_docs', '_core_search_dirty', '_core_search_state', '_core_search_mentions'].every(name => names.has(name));
   try {
     await db.run("CREATE VIRTUAL TABLE IF NOT EXISTS _core_search_fts USING fts5(body, tokenize='unicode61')");
   } catch (error) {
@@ -52,17 +53,21 @@ async function initSearch(db: SqlDriver) {
   await db.run('CREATE TABLE IF NOT EXISTS _core_search_docs (docid INTEGER PRIMARY KEY, tbl TEXT NOT NULL, row_id TEXT NOT NULL, label TEXT NOT NULL, trashed INTEGER NOT NULL, UNIQUE(tbl,row_id))');
   await db.run('CREATE TABLE IF NOT EXISTS _core_search_dirty (tbl TEXT NOT NULL, row_id TEXT NOT NULL, PRIMARY KEY(tbl,row_id))');
   await db.run('CREATE TABLE IF NOT EXISTS _core_search_state (tbl TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)');
+  // Backlinks: Markdown mentions of live rows, rebuilt from bodies like the text index.
+  await db.run('CREATE TABLE IF NOT EXISTS _core_search_mentions (tbl TEXT NOT NULL, row_id TEXT NOT NULL, target_tbl TEXT NOT NULL, target_id TEXT NOT NULL, PRIMARY KEY(tbl,row_id,target_tbl,target_id)) WITHOUT ROWID');
+  await db.run('CREATE INDEX IF NOT EXISTS _core_search_mentions_target ON _core_search_mentions(target_tbl,target_id)');
   if (!complete) {
-    // These four tables form one disposable cache. Recreating just one would
+    // These tables form one disposable cache. Recreating just one would
     // leave apparently current fingerprints beside an empty or stale index.
     await db.run('DELETE FROM _core_search_fts');
     await db.run('DELETE FROM _core_search_docs');
     await db.run('DELETE FROM _core_search_dirty');
     await db.run('DELETE FROM _core_search_state');
+    await db.run('DELETE FROM _core_search_mentions');
   }
 }
 
-type IndexedTable = { table: string; columns: string[]; display?: string; fingerprint: string; sweep: boolean };
+type IndexedTable = { table: string; columns: string[]; markdown: string[]; display?: string; fingerprint: string; sweep: boolean };
 async function indexedTables(db: SqlDriver, catalog: Catalog, schema: Row[]): Promise<IndexedTable[]> {
   const result: IndexedTable[] = [];
   for (const entry of catalog.tables) {
@@ -76,14 +81,15 @@ async function indexedTables(db: SqlDriver, catalog: Catalog, schema: Row[]): Pr
     const names = new Set(columns.map(c => c.name));
     const text = catalog.properties.filter(p => p.tbl === table && SEARCH_TEXT_TYPES.has(p.type ?? 'text') && names.has(p.col)).map(p => p.col).sort();
     if (!text.length) continue;
+    const markdown = catalog.properties.filter(p => p.tbl === table && p.type === 'markdown' && names.has(p.col)).map(p => p.col).sort();
     const display = typeof entry.display === 'string' && names.has(entry.display) ? entry.display : undefined;
     const indexes = schema.filter(r => r.type === 'index' && r.tbl_name === table).map(r => r.sql).sort();
-    const fingerprint = JSON.stringify([1, physical.sql, indexes, text, display]);
+    const fingerprint = JSON.stringify([2, physical.sql, indexes, text, display, markdown]);
     // REPLACE can silently delete a victim of another UNIQUE constraint when
     // recursive_triggers is off. Only dirty tables with such constraints need
     // an indexed ID anti-join sweep; clean searches never scan source contents.
     const sweep = /unique|collate/i.test([physical.sql, ...indexes].join(' '));
-    result.push({ table, columns: text, display, fingerprint, sweep });
+    result.push({ table, columns: text, markdown, display, fingerprint, sweep });
   }
   return result;
 }
@@ -93,6 +99,7 @@ async function purgeTable(db: SqlDriver, table: string) {
   await db.run('DELETE FROM _core_search_docs WHERE tbl=?', [table]);
   await db.run('DELETE FROM _core_search_dirty WHERE tbl=?', [table]);
   await db.run('DELETE FROM _core_search_state WHERE tbl=?', [table]);
+  await db.run('DELETE FROM _core_search_mentions WHERE tbl=?', [table]);
 }
 
 /** Call only inside the same BEGIN IMMEDIATE transaction as the final query.
@@ -127,6 +134,7 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
     const dirty = await db.all('SELECT 1 FROM _core_search_dirty WHERE tbl=? LIMIT 1', [table]);
     if (dirty.length && indexed.sweep) {
       const orphan = `SELECT docid FROM _core_search_docs AS d WHERE tbl=? AND NOT EXISTS (SELECT 1 FROM ${qident(table)} AS s WHERE s.id=d.row_id AND s.id COLLATE BINARY=d.row_id COLLATE BINARY)`;
+      await db.run(`DELETE FROM _core_search_mentions WHERE tbl=? AND row_id IN (SELECT row_id FROM _core_search_docs WHERE docid IN (${orphan}))`, [table, table]);
       await db.run(`DELETE FROM _core_search_fts WHERE rowid IN (${orphan})`, [table]);
       await db.run(`DELETE FROM _core_search_docs WHERE docid IN (${orphan})`, [table]);
     }
@@ -144,6 +152,11 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
         body: columns.map(col => typeof row[col] === 'string' || typeof row[col] === 'number' ? String(row[col]) : '').join('\n') })));
       await db.run('DELETE FROM _core_search_fts WHERE rowid IN (SELECT docid FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?)))', [table, replacedIds]);
       await db.run('DELETE FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, replacedIds]);
+      await db.run('DELETE FROM _core_search_mentions WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, replacedIds]);
+      const mentions = JSON.stringify(rows.filter(row => row.deleted_at === null).flatMap(row => indexed.markdown
+        .flatMap(col => typeof row[col] === 'string' ? markdownMentions(row[col] as string) : [])
+        .map(target => [row.id, target.table, target.id])));
+      await db.run("INSERT OR IGNORE INTO _core_search_mentions(tbl,row_id,target_tbl,target_id) SELECT ?,json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?)", [table, mentions]);
       await db.run("INSERT INTO _core_search_docs(tbl,row_id,label,trashed) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.label'),json_extract(value,'$.trashed') FROM json_each(?)", [table, payload]);
       await db.run("INSERT INTO _core_search_fts(rowid,body) SELECT d.docid,json_extract(j.value,'$.body') FROM json_each(?) AS j JOIN _core_search_docs AS d ON d.tbl=? AND d.row_id=json_extract(j.value,'$.id')", [payload, table]);
       await db.run('DELETE FROM _core_search_dirty WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, ids]);

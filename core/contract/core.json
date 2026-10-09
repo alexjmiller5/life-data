@@ -1193,9 +1193,8 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "table"
-      ]
+      "required": [],
+      "description": "Omitting table lists live saved views of every table, ordered by table then name."
     },
     "SaveViewArgs": {
       "type": "object",
@@ -2138,6 +2137,9 @@
       "properties": {
         "destination": {
           "$ref": "#/$defs/SourceRecordDestination"
+        },
+        "view": {
+          "$ref": "#/$defs/SourceViewDestination"
         }
       },
       "required": []
@@ -5422,6 +5424,248 @@
       "required": [
         "backups"
       ]
+    },
+    "SourceViewDestination": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "view": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "view"
+      ]
+    },
+    "RecordTarget": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "id"
+      ]
+    },
+    "MentionLabelsArgs": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RecordTarget"
+          }
+        }
+      },
+      "required": [
+        "targets"
+      ]
+    },
+    "MentionLabel": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trashed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "label",
+        "trashed"
+      ],
+      "description": "label is null when the exact record or its table is unavailable; hosts then show the stored link text as unavailable."
+    },
+    "MentionedByArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "rowId": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "offset": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": [
+        "table",
+        "rowId"
+      ]
+    },
+    "MentionedByRow": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "id",
+        "label"
+      ]
+    },
+    "MentionedByPage": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MentionedByRow"
+          }
+        },
+        "nextOffset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "incomplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rows",
+        "nextOffset",
+        "incomplete"
+      ]
+    },
+    "ViewEmbedArgs": {
+      "type": "object",
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "viewId": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/$defs/Count"
+        },
+        "calendar": {
+          "$ref": "#/$defs/CalendarContext"
+        }
+      },
+      "required": [
+        "table",
+        "viewId"
+      ]
+    },
+    "ViewEmbedColumn": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "label",
+        "type"
+      ]
+    },
+    "CalendarPolicy": {
+      "type": "object",
+      "properties": {
+        "timeZone": {
+          "type": "string"
+        },
+        "dayStartMinutes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeZone",
+        "dayStartMinutes"
+      ]
+    },
+    "ViewEmbed": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ViewEmbedColumn"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceRow"
+          }
+        },
+        "more": {
+          "type": "boolean"
+        },
+        "calendar": {
+          "$ref": "#/$defs/CalendarPolicy"
+        },
+        "unavailable": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "rows",
+        "more"
+      ],
+      "description": "Read-only preview rows projected to id plus the displayed columns. calendar asks the host to repeat the request with that policy's CalendarContext."
     }
   },
   "operations": {
@@ -5943,6 +6187,36 @@
       "result": {
         "$ref": "#/$defs/HubBackup"
       }
+    },
+    "mentionLabels": {
+      "args": {
+        "$ref": "#/$defs/MentionLabelsArgs"
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/MentionLabel"
+        }
+      },
+      "description": "Live display labels for iris://table/<table>/row/<id> mentions, at most 200 exact identities per request."
+    },
+    "mentionedBy": {
+      "args": {
+        "$ref": "#/$defs/MentionedByArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/MentionedByPage"
+      },
+      "description": "Live records whose Markdown properties mention this exact record, from the local derived mentions index. Default 20, maximum 100, ordered by table and label."
+    },
+    "viewEmbed": {
+      "args": {
+        "$ref": "#/$defs/ViewEmbedArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/ViewEmbed"
+      },
+      "description": "A bounded read-only preview of one saved view for iris://table/<table>/view/<id> embeds. Default 10 rows, maximum 50."
     }
   }
 }
