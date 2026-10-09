@@ -903,6 +903,15 @@ reports this deployment's own consumption only, never the provider account's.
   Authorization, Content-Type, If-None-Match), and its responses, including
   the 429, expose `Retry-After`. Other routes' preflight goes to the hub.
 
+## Previous hostname
+
+`worker/previous-host/` is the `life-data` Worker: it forwards every request on the
+hub's previous hostname to `soma` through a service binding, for consumers whose
+stored hub URL still names it (installed apps' saved connections, service ENV
+items). It is deployed by hand (`cd worker/previous-host && bunx wrangler@4 deploy`)
+and has no state. Once nothing calls it (Workers analytics show no requests), delete
+it with `bunx wrangler@4 delete --name life-data` and remove this directory.
+
 ## Streams
 
 Append-only events, hub-backed by design (tables are local-first; streams are
