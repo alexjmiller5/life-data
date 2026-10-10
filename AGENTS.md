@@ -104,6 +104,10 @@ reads never provision either store or rewrite saved definitions.
   key affinity/collation. Source tombstones are excluded, target tombstones stay
   inspectable, and skipped source or target tables mark results incomplete.
   Hosts load groups lazily and re-read selected rows through guarded navigation.
+- `core/src/table-pull.js` (with `table-pull.d.ts`) and its twin
+  `src/soma/table_pull.py` - dependency-free consumer helpers consumers vendor:
+  per-table cursors over `/v1/cursor` and batched incremental pulls. The JS
+  tests run against the real Worker; keep both files in step.
 - `core/src/services.ts` - typed usage/feed/read-state clients over `ServiceHub`.
   `tests/fixtures/hub-usage-contract.json` is the hub contract. Feed reads walk
   from zero each time; presentation checkpoints and permissions belong to hosts.
@@ -339,6 +343,9 @@ reads never provision either store or rewrite saved definitions.
   `{batch:[page, ...]}` from one D1 batch. Past the byte budget it stops after
   at least one row and answers a prefix; a cut page's `next_cursor` is the last
   row sent. Core uses it; the Python client still pages one table at a time.
+  Consumers without a replica read through the table-pull helper
+  (`core/src/table-pull.js`, `src/soma/table_pull.py`; docs/consumer-access.md):
+  one cursor request per quiet round, then batched incremental pulls.
   A failed or nonadvancing page aborts before the sync cursors advance.
   Pull pages and push chunks retry a 5xx, timeout or dropped connection up
   to three times (`RETRY_DELAYS`); refusals never retry.
@@ -775,12 +782,18 @@ tokens get no governance authority. Core owns the optional profile expectation
 and receipt DTOs and the pure `soma-core/enrollment` entry; hosts own JSC,
 cryptography, HTTP, clocks and secure storage. Existing full enrollment remains
 available without a profile. Projected reads authorize returned columns and
-predicates before data access, require ID access and reject timestamp cursors.
+predicates before data access, require ID access and take a timestamp cursor
+(`since`) only with the `hub_at` grant.
 
 Exact `tables:read:<table>` / `tables:write:<table>` grants authorize canonical
-body.table before data access. Narrow consumers use bounded direct rows APIs;
-global schema/catalog/cursor/stats/history/provenance/internal/view/SQL routes stay
-denied. File grants remain independent. Narrow writes require a catalogued base
+body.table before data access. Narrow consumers use bounded direct rows APIs,
+plus `/v1/cursor` and `{batch:[...]}` pulls for the tables they may read with an
+arrival cursor (`authorizeCursor`/`authorizeRead`: a whole-table grant or a
+`hub_at` column grant; marks only, no estate `schema` mark). Narrow reads fetch
+the table check's first reads in one batch (`prefetchTables`), so a narrow
+cursor, page or batch meets the replica read budget
+(`worker/test/scoped-sync.test.js`). Global schema/catalog/stats/history/
+provenance/internal/view/SQL routes stay denied. File grants remain independent. Narrow writes require a catalogued base
 table with safe defaults and no generated expressions, arbitrary triggers,
 derivations, ineligible enforced SQL rules or physical foreign keys. An enforced
 table invariant is eligible when it matches one of the three anchored templates

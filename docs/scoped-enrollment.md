@@ -97,9 +97,12 @@ invocation and lifecycle adapter; do not copy policy into a second validator.
 `POST /v1/rows/pull` uses existing `{table,columns,limit?,after?,where?,since?}`.
 Projected credentials must explicitly list nonempty permitted columns. The
 `id` grant is required because keyset cursors expose IDs. `where` can use only
-permitted columns, with the existing scalar equality semantics. Omit `since`
-or send an empty string; timestamp cursors are not available to this slice.
-The page size is 1-200, default 100. Response remains `{rows,next_cursor}`.
+permitted columns, with the existing scalar equality semantics. A nonempty
+`since` (an inclusive `hub_at` arrival cursor) needs the `hub_at` grant; it then
+also opens `POST /v1/cursor` for the table and batched pulls
+(`{batch:[...]}`, up to 50 pulls and 5,000 rows), as used by the table-pull
+helper in [consumer-access.md](consumer-access.md). Whole-table grants include
+both. The page size is 1-200, default 100. Response remains `{rows,next_cursor}`.
 Deleted rows are returned when selected; consumers handle tombstones.
 
 Authorization precedes data lookups. Catalogued base-table checks and the

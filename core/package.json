@@ -15,6 +15,7 @@
     "./consumer-config": "./src/consumer-config.ts",
     "./query": "./src/query.ts",
     "./capture": "./src/capture.ts",
+    "./table-pull": "./src/table-pull.js",
     "./schema/catalog-log.json": "./schema/catalog-log.json"
   },
   "files": [

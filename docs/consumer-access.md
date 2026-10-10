@@ -70,6 +70,43 @@ consumer takes an unused prefix and adds its registry row in the same change
 that adds its profile. Prefixes do not overlap between writers. Retained files
 are listed with `GET /v1/files?prefix=` or `soma files list <prefix>`.
 
+## Reading a table repeatedly
+
+A consumer that reads the same tables on a schedule or per request and keeps no
+replica uses the table-pull helper, never a walk of the whole table every run:
+`core/src/table-pull.js` (`soma-core/table-pull`, or vendor the one
+dependency-free file) or `src/soma/table_pull.py` (vendor it; standard library
+only). Both expose `pullTable` / `pullTables` (`pull_table` / `pull_tables`).
+
+```js
+const { full, rows, deleted, state } = await pullTable({ endpoint, token, table: 'bookmarks', columns: ['url', 'title'], state: saved });
+// full: replace your copy with rows. Otherwise upsert rows and drop the deleted ids.
+```
+
+- **One request per quiet round.** `POST /v1/cursor {tables}` answers each
+  table's newest arrival (`tables`) and how many rows share it (`at_mark`). A
+  table whose mark and count equal what the consumer holds is not asked again;
+  the rest are pulled `since` the held mark (inclusive, `hub_at >= since`)
+  through `{batch:[...]}`, up to 5,000 rows per request. A cold read of a
+  small table is two requests.
+- **State is the consumer's.** `{v, endpoint, tables: {<t>: {columns, since, n}}}`
+  is small JSON kept in the consumer's own store (extension storage, a Durable
+  Object, a Modal Volume, a state file), written only after the consumer has
+  applied the changes. Losing it costs one full pull.
+- **Every pull carries `id`, `hub_at` and `deleted_at`**; the helper adds them.
+  A tombstone arrives as a `deleted` id.
+- **Resets.** Another endpoint, another column list, or a mark behind the held
+  cursor (a replaced or restored table, a purged newest row) pulls that table
+  in full. A schema change that rewrites existing values in place needs the
+  consumer to drop its state. A purge of an older row is invisible to
+  incremental pulls: a consumer that must forget purged content drops its state
+  now and then.
+- **Grants.** A whole-table grant `tables:read:<t>`, or column grants that
+  include `id`, `hub_at` and `deleted_at`, or broad `tables:read`. A narrow
+  token gets marks only for tables it may read with an arrival cursor.
+- **Errors** (a refusal, a malformed answer) throw, with the HTTP status on
+  `status`, and leave the caller's state untouched: the next round retries.
+
 ## New consumer checklist
 
 1. Choose the grants (grammar in [scoped-enrollment.md](scoped-enrollment.md)).
