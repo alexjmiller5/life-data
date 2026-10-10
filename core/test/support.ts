@@ -1,9 +1,13 @@
 import { Database } from 'bun:sqlite';
 import type { Hub, SqlDriver, Value } from '../src/driver.ts';
+import { searchIndexStep } from '../src/search.ts';
 // @ts-ignore The production Worker is JavaScript, exercised through its real HTTP interface.
 import worker from '../../worker/src/index.js';
 // @ts-ignore Existing D1-compatible SQLite test adapter.
 import { D1Shim } from '../../worker/test/d1shim.js';
+
+/** Runs the search index step to completion, as hosts do after rounds and writes. */
+export async function indexSearch(db: SqlDriver) { while (!(await searchIndexStep(db, { budgetMs: 60_000 })).done); }
 
 export const T0 = '2026-01-01T00:00:00.000Z';
 export const T1 = '2026-01-02T00:00:00.000Z';

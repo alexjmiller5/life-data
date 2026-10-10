@@ -9,7 +9,7 @@ import type { SqlDriver } from "./driver.ts";
 import { readCatalog } from "./catalog.ts";
 import { syncStatus } from "./status.ts";
 import { getRelatedViewDefault } from "./view-defaults.ts";
-import { prepareSearch } from "./search.ts";
+import { openSearchIndex } from "./search.ts";
 import { displayName,compileReferenceView } from "./view.ts";
 
 function checkArgs(
@@ -103,7 +103,7 @@ export async function referencedBy(
     if(args.expectedViewUpdatedAt!==undefined && args.expectedViewUpdatedAt!==preference.view?.updated_at)throw Error('The related-record view changed; refresh relationships before retrying.');
     const view={...(preference.view?.view ?? {table:source.table}),columns:undefined,trash:false,limit:limit+1,offset,calendar:args.calendar};
     const query=compileReferenceView(view,catalog.properties,{table:args.table,rowId:args.rowId,column:source.column,type:source.type});
-    if(view.search)await prepareSearch(db,catalog);
+    if(view.search)await openSearchIndex(db);
     const rows=await db.all(query.sql,query.params);
     const display = catalog.tables.find(
       (table) => table.id === source.table,

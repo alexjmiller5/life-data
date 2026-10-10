@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import * as core from '../src/index.ts';
-import { schema, TestSql, T0 } from './support.ts';
+import { schema, TestSql, T0, indexSearch } from './support.ts';
 import usage from '../../tests/fixtures/hub-usage-contract.json';
 
 const databases: TestSql[] = [];
@@ -19,6 +19,7 @@ test('shared row view applies filters, sorting, paging and the core display name
   const db = await local();
   const rows = await core.readRows(db, { table: 'items', filters: [{ column: 'qty', op: 'gte', value: 2 }], sort: [{ column: 'qty', direction: 'desc' }], limit: 2, offset: 1 });
   expect(rows.map(r => [r.record.id, r.label])).toEqual([['4', 'Item 4'], ['3', 'Item 3']]);
+  await indexSearch(db);
   expect((await core.readRows(db, { table: 'items', search: 'Item 2' })).map(r => r.record.id)).toEqual(['2']);
   expect((await core.readRows(db, { table: 'items', filters: [{ column: 'id', op: 'eq', value: '3' }] }))[0].label).toBe('Item 3');
   await expect(core.readRows(db, { table: 'unknown' })).rejects.toThrow('Table is not in the catalog');
@@ -38,11 +39,12 @@ test('typed handlers execute the same core reads, writes, receipts and service m
     requests.push(route); return { data: route === '/v1/usage' ? usage.usage : usage.notifications };
   }, async post(route, body) { requests.push([route, body]); return { data: usage.mark_read }; } };
   const handlers = core.createCoreHandlers(db, endpoint => { expect(endpoint).toBe(hub.endpoint); return hub; }, 'fixture');
-  expect(Object.keys(handlers).sort()).toEqual(['resolveViewDefinition', 'prepareReadPlan', 'calendarRows', 'boardRows', 'listSidebarPins', 'pinTable', 'unpinTable', 'moveTablePin', 'historyEvents', 'previewChanges', 'createProposal', 'listProposals', 'getProposal', 'editProposal', 'previewProposal', 'approveProposal', 'rejectProposal', 'resolveSourceLink', 'mentionedBy', 'mentionLabels', 'viewEmbed', 'resolveDerived', 'saveCatalogProperty', 'saveCatalogRule', 'catalog', 'catalogRevision', 'rows', 'referenceSources', 'referencedBy', 'remoteRows', 'remoteRow', 'search', 'listViews', 'getViewDefault', 'ensureDefaultView', 'setViewDefault', 'getRelatedViewDefault', 'setRelatedViewDefault', 'saveView', 'deleteView', 'options', 'write', 'runRowAction', 'undo', 'undoStatus', 'writeability', 'status', 'rejections', 'sync', 'serviceUsage', 'serviceNotifications', 'markNotificationsRead', 'notificationPresentation', 'enrollmentApproval', 'validateDeviceSession', 'enrollmentPollResult', 'sessionRevocationResult', 'validateBackup', 'previewRestore', 'restoreReplica', 'exportReplica', 'hubBackups', 'createHubBackup'].sort());
+  expect(Object.keys(handlers).sort()).toEqual(['resolveViewDefinition', 'prepareReadPlan', 'calendarRows', 'boardRows', 'listSidebarPins', 'pinTable', 'unpinTable', 'moveTablePin', 'historyEvents', 'previewChanges', 'createProposal', 'listProposals', 'getProposal', 'editProposal', 'previewProposal', 'approveProposal', 'rejectProposal', 'resolveSourceLink', 'mentionedBy', 'mentionLabels', 'viewEmbed', 'resolveDerived', 'saveCatalogProperty', 'saveCatalogRule', 'catalog', 'catalogRevision', 'rows', 'referenceSources', 'referencedBy', 'remoteRows', 'remoteRow', 'search', 'searchIndexStep', 'listViews', 'getViewDefault', 'ensureDefaultView', 'setViewDefault', 'getRelatedViewDefault', 'setRelatedViewDefault', 'saveView', 'deleteView', 'options', 'write', 'runRowAction', 'undo', 'undoStatus', 'writeability', 'status', 'rejections', 'sync', 'serviceUsage', 'serviceNotifications', 'markNotificationsRead', 'notificationPresentation', 'enrollmentApproval', 'validateDeviceSession', 'enrollmentPollResult', 'sessionRevocationResult', 'validateBackup', 'previewRestore', 'restoreReplica', 'exportReplica', 'hubBackups', 'createHubBackup'].sort());
   expect((await handlers.resolveViewDefinition({ table: 'items', definition: { version: 2, columns: ['name'] } })).view).toEqual({ table: 'items', columns: ['name'] });
   expect(await handlers.resolveSourceLink({url:'https://example.com'})).toEqual({});
   expect(await handlers.rejections({})).toEqual({ rejections: [], nextOffset: null });
   expect(await handlers.writeability({ table: 'items' })).toEqual({ writable: true, reason: null });
+  expect(await handlers.searchIndexStep({})).toEqual({ indexing: false, pending: 0, done: true });
   expect((await handlers.search({ text: 'item', table: 'items', limit: 2 })).map(r => r.id)).toEqual(['1', '2']);
   expect((await handlers.catalog({})).tables[0].readOnly).toBe(false);
   const saved = await handlers.write({ table: 'items', patch: { id: '1', name: 'Changed' }, expectedUpdatedAt: T0 });

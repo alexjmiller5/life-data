@@ -31,7 +31,15 @@ async function local(file = false) {
     ['a', 'Café field guide', '# Offline\n\n**Searching** with [links](https://example.test) and `code`.', 42, 'invisible', T0, T0]);
   return { db, path };
 }
+/** Hosts run the index step after rounds and writes; reads only see what it built. */
+async function drain(db: core.SqlDriver) {
+  for (let steps = 0; ; steps++) {
+    const status = await core.searchIndexStep(db, { budgetMs: 60_000 });
+    if (status.done) return steps + 1;
+  }
+}
 async function search(db: core.SqlDriver, args: { text: string; table?: string; limit?: number; offset?: number }) {
+  await drain(db);
   return core.search(db, args);
 }
 async function ids(db: core.SqlDriver, text: string) { return (await search(db, { text })).map(r => r.id); }
@@ -88,6 +96,7 @@ test('MATCH operators, punctuation and SQL-shaped input are literal and bounded'
 test('table search uses FTS before filtering, sorting and paging; contains stays substring based', async () => {
   const { db } = await local();
   for (let i = 0; i < 5; i++) await db.run('INSERT INTO items(id,name,qty) VALUES (?,?,?)', [`b${i}`, 'Searching', i]);
+  await drain(db);
   const rows = await core.readRows(db, { table: 'items', search: 'search', filters: [{ column: 'qty', op: 'gte', value: 2 }], sort: [{ column: 'qty', direction: 'desc' }], limit: 2, offset: 1 });
   expect(rows.map(r => r.record.id)).toEqual(['b4', 'b3']);
   expect((await core.readRows(db, { table: 'items', search: 'arching' }))).toEqual([]);
@@ -343,6 +352,7 @@ test('NOCASE ID aliases across drain batches replace the actual row identity exa
     expect((await db.all("SELECT count(*) AS n FROM _core_search_fts WHERE _core_search_fts MATCH 'needle'"))[0].n).toBe(101);
   }
   await db.run('UPDATE folded SET id=lower(id)');
+  await drain(db);
   expect((await core.readRows(db, { table: 'folded', search: 'needle', limit: 200 })).map(r => r.record.id)).toEqual(original);
 });
 
@@ -426,7 +436,7 @@ test('draining dirty rows looks up index entries by identity instead of ranging 
   expect(await search(db, { text: 'second', limit: 200 })).toHaveLength(200);
   db.all = all; db.run = run;
   const plans: string[] = [];
-  for (const [sql, params] of statements.filter(([sql]) => /_core_search_(docs|dirty)/.test(sql) && !/^CREATE|LIMIT 1$/.test(sql)))
+  for (const [sql, params] of statements.filter(([sql]) => /_core_search_(docs|dirty)/.test(sql) && !/^CREATE|LIMIT 1$|^SELECT count\(\*\)/.test(sql)))
     for (const row of await all('EXPLAIN QUERY PLAN ' + sql, params)) plans.push(`${row.detail}  <-  ${sql.slice(0, 80)}`);
   // A per-batch statement that reads every queued or indexed row of the table grows with the table.
   expect(plans.filter(p => /\bSCAN (d|_core_search_docs|_core_search_dirty)\b|\(tbl=\?\)  /.test(p))).toEqual([]);
@@ -495,3 +505,125 @@ test('an unchanged, fully indexed database searches without re-reading catalog p
   await db.run("UPDATE items SET body='rewritten' WHERE id='a'");
   expect(await ids(db, 'rewritten')).toEqual(['a']);
 });
+
+async function table(db: core.SqlDriver, name: string, rows: number, text = 'needle') {
+  await db.run(`CREATE TABLE ${name} (id TEXT PRIMARY KEY, note TEXT, deleted_at TEXT)`);
+  await db.run('INSERT INTO catalog_tables(id) VALUES (?)', [name]);
+  await db.run('INSERT INTO catalog_properties(id,tbl,col,type) VALUES (?,?,?,?)', [`${name}.note`, name, 'note', 'text']);
+  await db.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO ${name}(id,note) SELECT '${name}'||printf('%07d',i),? FROM n`, [rows, text]);
+}
+const docs = async (db: core.SqlDriver, tbl: string) => Number((await db.all('SELECT count(*) AS n FROM _core_search_docs WHERE tbl=?', [tbl]))[0].n);
+
+test('search, backlinks and view search read only what the index step built; they never build it', async () => {
+  const { db } = await local();
+  for (let i = 0; i < 450; i++) await db.run('INSERT INTO items(id,name,body) VALUES (?,?,?)', [`r${i}`, 'Row', 'offline copy']);
+  const statements: string[] = [];
+  const all = db.all.bind(db), run = db.run.bind(db);
+  db.all = async (sql, params) => { statements.push(sql); return all(sql, params); };
+  db.run = async (sql, params) => { statements.push(sql); return run(sql, params); };
+  expect(await core.search(db, { text: 'offline' })).toEqual([]);
+  expect(await core.readRows(db, { table: 'items', search: 'offline' })).toEqual([]);
+  expect((await core.mentionedBy(db, { table: 'items', rowId: 'a' }))).toMatchObject({ rows: [], indexing: true });
+  db.all = all; db.run = run;
+  expect(statements.filter(sql => /^CREATE TRIGGER|INSERT INTO _core_search_(docs|fts|dirty)|PRAGMA main\.table_info/.test(sql))).toEqual([]);
+  expect(await drain(db)).toBe(1);
+  expect((await core.search(db, { text: 'offline', limit: 200 })).length).toBe(200);
+  expect((await core.mentionedBy(db, { table: 'items', rowId: 'a' })).indexing).toBe(false);
+});
+
+test('the index step works in bounded chunks, resumes across calls and reports what is left', async () => {
+  const { db } = await local();
+  for (let i = 0; i < 450; i++) await db.run('INSERT INTO items(id,name,body) VALUES (?,?,?)', [`r${String(i).padStart(3, '0')}`, 'Row', 'offline copy']);
+  const first = await core.searchIndexStep(db, { budgetMs: 0 });
+  expect(first).toMatchObject({ indexing: true, done: false });
+  expect(first.pending).toBeGreaterThan(0);
+  expect(first.pending).toBeLessThan(451);
+  // A zero budget still does one chunk, so every call makes progress; search sees that much.
+  expect(await docs(db, 'items')).toBe(200);
+  expect(await core.search(db, { text: 'offline', limit: 200, offset: 199 })).toHaveLength(1);
+  let last = first, steps = 1;
+  while (!last.done) {
+    const next = await core.searchIndexStep(db, { budgetMs: 0 });
+    expect(next.pending).toBeLessThanOrEqual(last.pending);
+    last = next; steps++;
+  }
+  expect(steps).toBeGreaterThan(2);
+  expect(last).toEqual({ indexing: false, pending: 0, done: true });
+  expect(await search(db, { text: 'offline', limit: 200, offset: 400 })).toHaveLength(51);
+  // A clean step is idle: no reconciliation and no writes.
+  expect(await core.searchIndexStep(db, {})).toEqual({ indexing: false, pending: 0, done: true });
+  await db.run("UPDATE items SET body='changed' WHERE id='r001'");
+  expect(await core.searchIndexStep(db, { budgetMs: 0 })).toEqual({ indexing: false, pending: 0, done: true });
+  expect(await ids(db, 'changed')).toEqual(['r001']);
+  await expect(core.searchIndexStep(db, { budgetMs: -1 })).rejects.toThrow(/budget/i);
+  await expect(core.searchIndexStep(db, { budgetMs: 1.5 } as never)).rejects.toThrow(/budget/i);
+});
+
+test('provenance and tables over the size rule stay out of the index unless opted in per table', async () => {
+  const { db } = await local();
+  await core.initCore(db);
+  await db.run("UPDATE items SET name='needle'");
+  await table(db, 'provenance', 3);
+  await table(db, 'big', 4);
+  await table(db, 'unstated', core.SEARCH_MAX_ROWS + 1);
+  // The size rule reads the hub's counts when sync stored them, else the local table.
+  await db.run("INSERT INTO _core_state(key,value) VALUES ('hub_stats',?)", [JSON.stringify({ at: T0, tables: { items: 1, provenance: 3, big: core.SEARCH_MAX_ROWS + 1 } })]);
+  const tables = async () => [...new Set((await search(db, { text: 'needle', limit: 200 })).map(h => h.table))].sort();
+  expect(await tables()).toEqual(['items']);
+  expect((await db.all("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB '_core_search_*'")).map(r => r.name).sort())
+    .toEqual(['_core_search_items_delete', '_core_search_items_insert', '_core_search_items_update']);
+  await db.run("INSERT INTO _core_state(key,value) VALUES (?,?)", [core.SEARCH_TABLES_KEY, JSON.stringify({ provenance: true, big: true, items: false })]);
+  expect(await tables()).toEqual(['big', 'provenance']);
+  expect(await docs(db, 'items')).toBe(0);
+  await db.run("UPDATE _core_state SET value=? WHERE key=?", [JSON.stringify({ unstated: true }), core.SEARCH_TABLES_KEY]);
+  await drain(db);
+  // Ranking covers the newest matches only, so count entries: 50,001 new ones outnumber it.
+  expect([await docs(db, 'items'), await docs(db, 'unstated'), await docs(db, 'provenance')]).toEqual([1, core.SEARCH_MAX_ROWS + 1, 0]);
+  // An unreadable setting falls back to the defaults instead of stopping the index.
+  await db.run("UPDATE _core_state SET value='not json' WHERE key=?", [core.SEARCH_TABLES_KEY]);
+  expect(await tables()).toEqual(['items']);
+}, 30_000);
+
+test('an index built before an exclusion is purged in bounded chunks while the rest stays searchable', async () => {
+  const { db } = await local();
+  await core.initCore(db);
+  await db.run("UPDATE items SET name='needle'");
+  await table(db, 'provenance', 1200);
+  await db.run("INSERT INTO _core_state(key,value) VALUES (?,?)", [core.SEARCH_TABLES_KEY, '{"provenance":true}']);
+  await drain(db);
+  expect(await docs(db, 'provenance')).toBe(1200);
+  await db.run('DELETE FROM _core_state WHERE key=?', [core.SEARCH_TABLES_KEY]);
+  const first = await core.searchIndexStep(db, { budgetMs: 0 });
+  expect(first).toMatchObject({ indexing: false, done: false });
+  const left = await docs(db, 'provenance');
+  expect(left).toBeGreaterThan(0);
+  expect(left).toBeLessThan(1200);
+  // A table leaving the index stops answering at once; its entries go in later chunks.
+  expect((await core.search(db, { text: 'needle', limit: 200 })).map(h => h.table)).toEqual(['items']);
+  expect(await docs(db, 'items')).toBe(1);
+  await drain(db);
+  expect(await docs(db, 'provenance')).toBe(0);
+  expect(await db.all('SELECT * FROM _core_search_work')).toEqual([]);
+});
+
+test('a fresh large replica answers search, backlinks and a table open quickly while the index catches up', async () => {
+  const { db } = await local();
+  await core.initCore(db);
+  await table(db, 'provenance', 600_000, 'origin edge');
+  await table(db, 'notes', 40_000, 'everyday note');
+  const timed = async <T>(body: () => Promise<T>) => { const started = performance.now(); await body(); return performance.now() - started; };
+  const budget = 300;
+  expect(await timed(() => core.search(db, { text: 'note' }))).toBeLessThan(budget);
+  expect(await timed(() => core.mentionedBy(db, { table: 'notes', rowId: 'notes0000001' }))).toBeLessThan(budget);
+  expect(await timed(() => core.readRows(db, { table: 'notes', limit: 50 }))).toBeLessThan(budget);
+  // Each step is bounded (the first one also reconciles the schema), so requests never wait long behind it.
+  let status: core.SearchIndexStatus | undefined;
+  expect(await timed(async () => { status = await core.searchIndexStep(db, { budgetMs: 50 }); })).toBeLessThan(budget);
+  expect(status).toMatchObject({ indexing: true, done: false });
+  expect(await timed(() => core.search(db, { text: 'note' }))).toBeLessThan(budget);
+  expect((await core.search(db, { text: 'note' })).length).toBeGreaterThan(0);
+  expect(await timed(() => core.searchIndexStep(db, { budgetMs: 50 }))).toBeLessThan(budget);
+  await drain(db);
+  expect(await docs(db, 'provenance')).toBe(0);
+  expect(await docs(db, 'notes')).toBe(40_000);
+}, 120_000);

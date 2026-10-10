@@ -4,6 +4,8 @@ import { COVERAGE_VERSION, coverageProblem, coverageSchema, incrementalProof, in
 import type { SyncSettings, SyncResult } from './contract.generated.ts';
 export type { SyncResult } from './contract.generated.ts';
 export type SyncOptions = SyncSettings & { now?: () => Date; maxClockSkewMs?: number };
+/** The size rule: without a host's maxRows, a round skips tables holding more rows than this. */
+export const SIZE_RULE_ROWS = 50_000;
 
 export async function initCore(db: SqlDriver): Promise<void> {
   await db.run("CREATE TABLE IF NOT EXISTS _schema_log (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), ddl TEXT NOT NULL)");
@@ -186,7 +188,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub_stats',?)",[JSON.stringify({at:now().toISOString(),tables:fresh})]);
     return fresh;
   })();
-  const tables=await refOrder(db,allTables.filter(t=>t.startsWith('catalog_') || (options.tables?.[t] ?? (Number.isFinite(counts?.[t]) && counts[t] <= (options.maxRows ?? 50_000)))));
+  const tables=await refOrder(db,allTables.filter(t=>t.startsWith('catalog_') || (options.tables?.[t] ?? (Number.isFinite(counts?.[t]) && counts[t] <= (options.maxRows ?? SIZE_RULE_ROWS)))));
   tables.sort((a,b)=>Number(a==='history')-Number(b==='history'));
   result.skipped=allTables.filter(t=>!tables.includes(t));
   await db.transaction(async()=>{

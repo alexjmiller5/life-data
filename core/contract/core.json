@@ -1029,6 +1029,38 @@
         "excerpt"
       ]
     },
+    "SearchIndexStepArgs": {
+      "type": "object",
+      "description": "budgetMs: milliseconds of indexing work before returning (default 50); at least one chunk always runs.",
+      "properties": {
+        "budgetMs": {
+          "$ref": "#/$defs/Count"
+        }
+      },
+      "required": []
+    },
+    "SearchIndexStatus": {
+      "type": "object",
+      "description": "pending counts rows still waiting to be indexed.",
+      "properties": {
+        "indexing": {
+          "type": "boolean",
+          "description": "Rows still wait to be indexed; search and backlinks may be incomplete."
+        },
+        "pending": {
+          "$ref": "#/$defs/Count"
+        },
+        "done": {
+          "type": "boolean",
+          "description": "No work is left, including removing entries of tables that left the index. Hosts call again until true."
+        }
+      },
+      "required": [
+        "indexing",
+        "pending",
+        "done"
+      ]
+    },
     "SavedViewDefinition": {
       "type": "object",
       "properties": {
@@ -5591,12 +5623,17 @@
         },
         "incomplete": {
           "type": "boolean"
+        },
+        "indexing": {
+          "type": "boolean",
+          "description": "Rows still wait for the search index step, so the list may be missing recent mentions."
         }
       },
       "required": [
         "rows",
         "nextOffset",
-        "incomplete"
+        "incomplete",
+        "indexing"
       ]
     },
     "ViewEmbedArgs": {
@@ -5816,6 +5853,15 @@
           "$ref": "#/$defs/SearchHit"
         }
       }
+    },
+    "searchIndexStep": {
+      "args": {
+        "$ref": "#/$defs/SearchIndexStepArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/SearchIndexStatus"
+      },
+      "description": "Builds and maintains the local search and backlink index in one bounded transaction: indexes rows changed since the last call, backfills newly indexed tables and removes tables that left it. Provenance and tables over the sync size rule are skipped unless `_core_state` key `search_tables` opts them in. Search and backlinks never build the index themselves."
     },
     "listViews": {
       "args": {

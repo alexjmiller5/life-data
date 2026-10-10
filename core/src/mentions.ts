@@ -1,7 +1,7 @@
 import type { MentionLabel, MentionLabelsArgs, MentionedByArgs, MentionedByPage, ViewEmbed, ViewEmbedArgs, ViewEmbedColumn } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
-import { prepareSearch } from './search.ts';
+import { openSearchIndex, searchIndexing } from './search.ts';
 import { loadSavedView } from './saved-views.ts';
 import { syncStatus } from './status.ts';
 import { qident } from './validate.ts';
@@ -46,24 +46,26 @@ function page(args: { limit?: number; offset?: number }, fallback: number, maxim
 }
 const text = (value: unknown) => typeof value === 'string' && value.length > 0;
 
-/** Backlinks come from the derived `_core_search_mentions` index that search
- * maintains from Markdown properties; nothing new is stored or synced. */
+/** Backlinks come from the derived `_core_search_mentions` index that the search index
+ * step maintains from Markdown properties; nothing new is stored or synced. A lookup never
+ * builds it: `indexing` says rows still wait for the step, so the list may be incomplete. */
 export async function mentionedBy(db: SqlDriver, args: MentionedByArgs): Promise<MentionedByPage> {
   if (!args || typeof args !== 'object' || !text(args.table) || !text(args.rowId)) throw Error('Invalid mention arguments');
   const { limit, offset } = page(args, 20, 100);
   return db.transaction(async () => {
-    const catalog = await readCatalog(db);
+    const catalog = await readCatalog(db, [args.table]);
     if (!catalog.tables.some(t => t.id === args.table)) throw Error('Table is not in the catalog');
-    await prepareSearch(db, catalog);
+    await openSearchIndex(db);
     // ponytail: exact binary target identity; mention links are written from exact IDs.
     const rows = await db.all(`SELECT DISTINCT m.tbl AS "table", m.row_id AS id, d.label FROM _core_search_mentions AS m
       JOIN _core_search_docs AS d ON d.tbl=m.tbl AND d.row_id=m.row_id
-      WHERE m.target_tbl=? AND m.target_id=? AND NOT (m.tbl=? AND m.row_id=?)
+      WHERE m.target_tbl=? AND m.target_id=? AND NOT (m.tbl=? AND m.row_id=?) AND m.tbl IN (SELECT tbl FROM _core_search_state)
       ORDER BY m.tbl, d.label, m.row_id LIMIT ? OFFSET ?`, [args.table, args.rowId, args.table, args.rowId, limit + 1, offset]);
     return {
       rows: rows.slice(0, limit) as MentionedByPage['rows'],
       nextOffset: rows.length > limit ? offset + limit : null,
       incomplete: (await syncStatus(db)).skippedTables.length > 0,
+      indexing: await searchIndexing(db),
     };
   });
 }
@@ -116,7 +118,7 @@ export async function viewEmbed(db: SqlDriver, args: ViewEmbedArgs): Promise<Vie
       columns.push({ column, label: property.label?.trim() || column, type: property.type ?? 'text' });
     }
     const query = compileView({ ...saved.view, columns: undefined, limit: limit + 1, offset: 0, calendar: args.calendar }, catalog.properties);
-    if (saved.view.search) await prepareSearch(db, catalog);
+    if (saved.view.search) await openSearchIndex(db);
     const rows = await db.all(query.sql, query.params);
     return {
       name: saved.name, columns, more: rows.length > limit,

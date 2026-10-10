@@ -220,19 +220,21 @@ reads never provision either store or rewrite saved definitions.
   Generated DTOs alone do not activate an adapter or advertise this protocol.
 - `core/src/search.ts` owns local FTS5/unicode61 search and its durable
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
-  including independent Python edits; index draining and searching share one
-  driver transaction. Cache DDL never enters `_schema_log`. `View.search`
+  including independent Python edits. Only `searchIndexStep` builds the index,
+  in budgeted, resumable chunks hosts run after rounds, writes and while idle;
+  reads never build it. Provenance and size-rule tables are left out unless
+  `_core_state` `search_tables` opts them in. Cache DDL never enters `_schema_log`. `View.search`
   uses literal word prefixes; `contains` retains substring semantics. Raw
   Markdown is indexed, with conservative plain-text display cleanup only.
   Results list read-only system tables (`isReadOnlyTable`) after user tables,
   then order by relevance.
 - `core/src/mentions.ts` owns `iris://table/<table>/row|view/<id>` links
   (percent-encoded, parentheses included) in Markdown bodies. The search
-  drain also fills `_core_search_mentions` from live rows' `markdown`
+  index step also fills `_core_search_mentions` from live rows' `markdown`
   properties, so backlinks need no logged schema: a missing table resets the
-  whole cache and the next read backfills it. `mentionedBy` pages live
+  whole cache and the next step backfills it. `mentionedBy` pages live
   mentioning rows by table/label (self links excluded, any skipped table marks
-  it incomplete); `mentionLabels` resolves live display labels (null = gone);
+  it incomplete, `indexing` while the step is behind); `mentionLabels` resolves live display labels (null = gone);
   `viewEmbed` previews one saved view (id plus up to five scalar columns) and
   returns `calendar` when the host must repeat it with that day policy.
   `resolveSourceLink` opens row links like `table/id` and returns `view` for

@@ -223,34 +223,49 @@ artifact and must verify FTS reads through their read-only SQL adapter. Native
 hosts verify the actual GRDB/JSC connection, not a separate CLI SQLite binary.
 
 The search cache uses `_core_search_fts`, `_core_search_docs`,
-`_core_search_dirty` and `_core_search_state`. Queue-only persistent triggers
-record OLD/NEW IDs in the same transaction as writes, including pulls and
-independent Python writes. They invoke no FTS functions in those writers.
-Before searching, core reconciles catalog/schema fingerprints, drains dirty
-rows in batches, and reads results under one BEGIN IMMEDIATE transaction.
-Each drain batch is a keyset range of the queue and looks up index entries by
-identity (`CROSS JOIN` keeps the batch outermost; a plain join lets SQLite
-range over all of the table's entries per batch), so its cost does not grow
-with the table. `test/search.test.ts` asserts these query plans.
-Queued IDs and actual returned IDs are both replaced in the binary-keyed
-cache, so source collations such as NOCASE cannot collide across batches.
-Failed drains roll back and retain their queue; missing cache components or
-triggers cause a rebuild. Dropped/renamed tables and catalog changes purge or
-rebuild affected entries. None of this local DDL is logged or synced, and cache
-work does not create history, pending UI edits or revisions on source rows.
+`_core_search_dirty`, `_core_search_state`, `_core_search_mentions` and
+`_core_search_work`. Queue-only persistent triggers record OLD/NEW IDs in the
+same transaction as writes, including pulls and independent Python writes. They
+invoke no FTS functions in those writers.
 
-Clean searches read metadata and the FTS index, not source table contents.
-After a complete preparation core records a readiness stamp (the catalog
-revision and every table, index and trigger definition, built and compared in
-SQLite so no host's row-object key order matters); while nothing is queued and
-the stamp still matches, a search skips reconciliation and reads only the
-catalog's table entries, a few statements instead of several per table.
-Initial backfills and schema changes scan affected tables. A dirty table with
-UNIQUE constraints or custom collation also gets an indexed ID anti-join to
-remove silent `INSERT/UPDATE OR REPLACE` victims when SQLite delete triggers
-are disabled. Other edits read only queued IDs. Use `readRows` for searched
-views; callers using `compileView` directly must first call `prepareSearch`
-inside the same driver transaction as the query.
+Only `searchIndexStep({budgetMs})` builds the index. Hosts call it after each
+sync round, after local writes and while idle, until it returns `done`; each
+call is one BEGIN IMMEDIATE transaction that works in chunks until the budget
+(default 50 ms, at least one chunk) passes, so requests between calls never
+wait long. It reconciles first when the catalog, schema or settings moved
+(a stamp built and compared in SQLite, so no host's row-object key order
+matters): that records per-table work in `_core_search_work` and installs or
+drops triggers, without touching rows. Then it purges entries of retired or
+changed tables (500 per chunk), indexes queued IDs (200 per chunk), and
+backfills newly indexed tables by walking their primary key from a saved cursor
+(200 per chunk). It returns `{indexing, pending, done}`: `indexing` while rows
+wait to be indexed, `pending` how many, `done` when no work, including purges,
+is left. `search`, `mentionedBy` (which reports `indexing`), `viewEmbed`,
+`referencedBy` and searched `readRows` never build or drain anything; they read
+what exists, and a replica the step has not reached answers from an empty
+index. A retired table stops answering at once, before its entries are purged.
+
+Provenance and every table over the sync size rule (`SIZE_RULE_ROWS`, judged
+by sync's stored hub counts, else a local count capped just past the limit) stay
+out of the index. The `_core_state` key `search_tables` (`SEARCH_TABLES_KEY`)
+holds a JSON object of table to `true` (index it anyway) or `false` (leave it
+out); an unreadable value counts as absent. Sizes are judged when
+reconciliation runs, which hub count refreshes and setting edits trigger.
+
+Each chunk is a keyset range of the queue or table and looks up index entries
+by identity (`CROSS JOIN` keeps the batch outermost; a plain join lets SQLite
+range over all of the table's entries per batch), so its cost does not grow
+with the table. `test/search.test.ts` asserts these query plans. Queued IDs and
+actual returned IDs are both replaced in the binary-keyed cache, so source
+collations such as NOCASE cannot collide across batches. A failed step rolls
+back and retains its queue and cursors; missing cache components drop and
+rebuild the whole cache, and missing triggers re-backfill their table. None of
+this local DDL is logged or synced, and cache work does not create history,
+pending UI edits or revisions on source rows. A dirty table with UNIQUE
+constraints or custom collation also gets an indexed ID anti-join to remove
+silent `INSERT/UPDATE OR REPLACE` victims when SQLite delete triggers are
+disabled. Use `readRows` for searched views; callers using `compileView`
+directly call `openSearchIndex` inside the same driver transaction first.
 
 `writeRow` supports deterministic, table-scoped enforced SQL invariants after
 verified replication coverage. `before` contains the selected row before an

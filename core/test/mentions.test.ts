@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import * as core from '../src/index.ts';
 import views from '../schema/saved-views.json';
-import { schema, TestSql, T0 } from './support.ts';
+import { schema, TestSql, T0, indexSearch } from './support.ts';
 
 const databases: TestSql[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.db.close(); });
@@ -32,8 +32,10 @@ async function local() {
 }
 const handlers = (db: TestSql): any => core.createCoreHandlers(db, () => { throw Error('Mentions stay local'); });
 const mention = (id: string, label = 'x') => `[${label}](${core.irisHref('row', 'people', id)})`;
-const backlinks = async (db: TestSql, rowId: string, extra: object = {}) =>
-  (await handlers(db).mentionedBy({ table: 'people', rowId, ...extra }));
+const backlinks = async (db: TestSql, rowId: string, extra: object = {}) => {
+  await indexSearch(db);
+  return handlers(db).mentionedBy({ table: 'people', rowId, ...extra });
+};
 
 test('iris hrefs round-trip exact table and record identities, escaping Markdown link syntax', () => {
   for (const id of ['p1', 'p(2)', 'MiXeD-雪', 'a/b?c#d', "it's *bold*", '100%']) {
@@ -60,8 +62,8 @@ test('backlinks backfill existing bodies, follow writes, edits and deletions, an
   const db = await local();
   await db.run("INSERT INTO items(id,name,body,notes,updated_at) VALUES ('a','Alpha',?,?,?),('b','Beta','plain',?,?)",
     [`Met ${mention('p1')} and ${mention('p(2)')}`, mention('p1'), T0, mention('p1'), T0]);
-  // Existing rows are indexed by the first read: the one-time backfill.
-  expect(await backlinks(db, 'p1')).toEqual({ rows: [{ table: 'items', id: 'a', label: 'Alpha' }], nextOffset: null, incomplete: false });
+  // Existing rows are indexed by the index step's one-time backfill.
+  expect(await backlinks(db, 'p1')).toEqual({ rows: [{ table: 'items', id: 'a', label: 'Alpha' }], nextOffset: null, incomplete: false, indexing: false });
   expect((await backlinks(db, 'p(2)')).rows.map((r: any) => r.id)).toEqual(['a']);
   // The single write path updates the index; text (non-Markdown) columns never count.
   const row = (await db.all("SELECT updated_at FROM items WHERE id='b'"))[0];
@@ -90,7 +92,7 @@ test('backlinks page by label and backfill an existing search cache that predate
   expect(first.rows.map((r: any) => r.label)).toEqual(['Alpha', 'Bravo']);
   expect(first.nextOffset).toBe(2);
   const second = await backlinks(db, 'p1', { limit: 2, offset: 2 });
-  expect(second).toEqual({ rows: [{ table: 'items', id: 'c', label: 'Charlie' }], nextOffset: null, incomplete: false });
+  expect(second).toEqual({ rows: [{ table: 'items', id: 'c', label: 'Charlie' }], nextOffset: null, incomplete: false, indexing: false });
   await db.run("INSERT INTO _core_state(key,value) VALUES ('skipped_tables','[\"items\"]') ON CONFLICT(key) DO UPDATE SET value=excluded.value");
   expect((await backlinks(db, 'p1')).incomplete).toBe(true);
 });
@@ -170,4 +172,14 @@ test('rows silently replaced through another unique constraint drop their mentio
   await db.run("INSERT OR REPLACE INTO items(id,name,body,updated_at) VALUES ('y','Same','none',?)", [T0]);
   expect((await backlinks(db, 'p1')).rows).toEqual([]);
   expect(await db.all("SELECT * FROM _core_search_mentions WHERE row_id='x'")).toEqual([]);
+});
+
+test('backlinks report a catching-up index and drop a table that left it before its entries are purged', async () => {
+  const db = await local();
+  await db.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<600) INSERT INTO items(id,name,body) SELECT 'm'||i,'Row',? FROM n`, [mention('p1')]);
+  expect(await handlers(db).mentionedBy({ table: 'people', rowId: 'p1' })).toEqual({ rows: [], nextOffset: null, incomplete: false, indexing: true });
+  expect((await backlinks(db, 'p1', { limit: 100 })).nextOffset).toBe(100);
+  await db.run('INSERT INTO _core_state(key,value) VALUES (?,?)', [core.SEARCH_TABLES_KEY, '{"items":false}']);
+  expect(await core.searchIndexStep(db, { budgetMs: 0 })).toMatchObject({ indexing: false, done: false });
+  expect(await handlers(db).mentionedBy({ table: 'people', rowId: 'p1' })).toEqual({ rows: [], nextOffset: null, incomplete: false, indexing: false });
 });

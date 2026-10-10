@@ -19,7 +19,7 @@ import { enrollmentApproval, validateDeviceSession, enrollmentPollResult, sessio
 import { sync } from './sync.ts';
 import { syncStatus } from './status.ts';
 import { readRejections } from './rejections.ts';
-import { prepareSearch, search } from './search.ts';
+import { openSearchIndex, search, searchIndexStep } from './search.ts';
 import { readRemoteRows, readRemoteRow } from './remote.ts';
 import { resolveDerived } from './resolve-derived.ts';
 import { listViews, saveView, deleteView, resolveViewDefinition } from './saved-views.ts';
@@ -34,7 +34,7 @@ export async function readRows(db: SqlDriver, view: View): Promise<WorkspaceRow[
     const table = catalog.tables.find(t => t.id === view.table);
     if (!table) throw new Error('Table is not in the catalog');
     const query = compileView(view, catalog.properties);
-    if (view.search) await prepareSearch(db, catalog);
+    if (view.search) await openSearchIndex(db);
     const rows = await db.all(query.sql, query.params);
     return rows.map(record => ({ record, label: displayName(record, typeof table.display === 'string' ? table.display : undefined) }));
   };
@@ -84,6 +84,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
     remoteRows: ({ endpoint, ...args }) => readRemoteRows(db, hub(endpoint), args),
     remoteRow: ({ endpoint, ...args }) => readRemoteRow(db, hub(endpoint), args),
     search: args => search(db, args),
+    searchIndexStep: args => searchIndexStep(db, args),
     listViews: args => listViews(db, args),
     resolveViewDefinition: args => resolveViewDefinition(db, args),
     getRelatedViewDefault: args => getRelatedViewDefault(db,args),

@@ -18,10 +18,10 @@ def search(path, text):
             "--eval",
             """
 import { Database } from 'bun:sqlite';
-import { TestSql } from './core/test/support.ts';
+import { TestSql, indexSearch } from './core/test/support.ts';
 import { search } from './core/src/index.ts';
 const db = new TestSql(); db.db.close(); db.db = new Database(process.argv[1]);
-try { console.log(JSON.stringify(await search(db, { text: process.argv[2], table: 'documents' }))); }
+try { await indexSearch(db); console.log(JSON.stringify(await search(db, { text: process.argv[2], table: 'documents' }))); }
 finally { db.db.close(); }
 """,
             str(path),

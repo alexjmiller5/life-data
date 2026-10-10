@@ -5,12 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '../src/index.ts';
 import manifest from '../schema/saved-views.json';
-import { schema, setup, TestSql, T0, T1 } from './support.ts';
+import { schema, setup, TestSql, T0, T1, indexSearch } from './support.ts';
 
 const databases: { close(): void }[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
-function handlers(db: core.SqlDriver) {
-  return core.createCoreHandlers(db, () => { throw new Error('Undo must not use a hub'); }, 'fixture');
+function handlers(db: core.SqlDriver): core.CoreHandlers {
+  const h = core.createCoreHandlers(db, () => { throw new Error('Undo must not use a hub'); }, 'fixture');
+  // Hosts run the index step after writes; a search reads what it built.
+  return { ...h, search: async args => { await indexSearch(db); return h.search(args); } };
 }
 async function local() {
   const db = new TestSql(); databases.push(db.db);
