@@ -221,3 +221,11 @@ test('session pin commands serialize and do not replace the last record undo rec
   expect((await db.all("SELECT name FROM items WHERE id='record'"))[0].name).toBe('Before');
   expect(await handlers.listSidebarPins({})).toEqual(stored);
 });
+
+test('every sidebar-pins schema property carries a description (the estate column-descriptions rule refuses provisioning without one)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const schema = JSON.parse(readFileSync(new URL('../schema/sidebar-pins.json', import.meta.url), 'utf8'));
+  for (const property of schema.properties) {
+    expect(typeof property.description === 'string' && property.description.trim().length > 0, property.col).toBe(true);
+  }
+});

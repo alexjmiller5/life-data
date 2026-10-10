@@ -10,7 +10,6 @@ async function fixture(){
  await db.run('CREATE TABLE catalog_tables(id TEXT PRIMARY KEY,kind TEXT,display TEXT,deleted_at TEXT)');
  await db.run("INSERT INTO catalog_tables VALUES ('items','table','name',NULL)");
  await db.run('ALTER TABLE catalog_properties ADD COLUMN label TEXT');
- await db.run('ALTER TABLE catalog_properties ADD COLUMN description TEXT');
  await db.run('ALTER TABLE catalog_rules ADD COLUMN scope TEXT');
  await db.run('ALTER TABLE catalog_rules ADD COLUMN cmd TEXT');
  await db.run('CREATE TABLE catalog_log(id TEXT PRIMARY KEY,tbl TEXT,row_id TEXT,action TEXT,payload TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)');

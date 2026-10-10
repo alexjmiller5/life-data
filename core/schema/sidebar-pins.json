@@ -18,7 +18,8 @@
       "sort": 10,
       "ref_table": "catalog_tables",
       "source": "life-core",
-      "source_ref": "sidebar-pins/v1"
+      "source_ref": "sidebar-pins/v1",
+      "description": "The pinned table (a catalog_tables row)."
     },
     {
       "id": "sidebar_pins.position",
@@ -26,7 +27,8 @@
       "col": "position",
       "type": "int",
       "required": 1,
-      "sort": 20
+      "sort": 20,
+      "description": "Sort position of the pin in the sidebar, lowest first."
     }
   ]
 }

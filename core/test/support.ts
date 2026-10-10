@@ -24,7 +24,7 @@ export class TestSql implements SqlDriver {
 }
 export const schema = [
   'CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT, qty INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
-  'CREATE TABLE catalog_properties (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, type TEXT, required INTEGER, sort INTEGER, options TEXT, inputs TEXT, default_value TEXT, options_sql TEXT, ref_table TEXT, derived_by TEXT, immutable INTEGER, deprecated INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
+  'CREATE TABLE catalog_properties (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, type TEXT, required INTEGER, sort INTEGER, options TEXT, inputs TEXT, default_value TEXT, options_sql TEXT, ref_table TEXT, derived_by TEXT, immutable INTEGER, deprecated INTEGER, description TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
   'CREATE TABLE catalog_rules (id TEXT PRIMARY KEY, tbl TEXT, col TEXT, kind TEXT, enforce INTEGER, sql TEXT, text TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
   'CREATE TABLE history (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, col TEXT, old TEXT, new TEXT, origin TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT, hub_at TEXT)',
 ];
