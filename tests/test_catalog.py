@@ -1253,3 +1253,17 @@ def test_mixed_calendar_property_stores_both_precisions(db):
         next(r for r in execute_sql(db, "PRAGMA table_info(items)") if r["name"] == "due")["type"]
         == "TEXT"
     )
+
+
+def test_option_colors_use_the_notion_palette(db):
+    create_table(db, "places", ["name:text", "status:text"])
+    prop = set_property(
+        db,
+        "places",
+        "status",
+        type="select",
+        options=[{"v": "want", "color": " Blue "}, {"v": "been", "color": None}, {"v": "live"}],
+    )
+    assert prop["options"] == [{"v": "want", "color": "blue"}, {"v": "been"}, {"v": "live"}]
+    with pytest.raises(ValueError, match="color"):
+        set_property(db, "places", "status", options=[{"v": "want", "color": "teal"}])

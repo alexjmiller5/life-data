@@ -250,6 +250,15 @@ reads never provision either store or rewrite saved definitions.
   Only an explicit new-property request adds a nullable logged column;
   catalog editing never rewrites existing record values or provisions missing
   engine storage. Ordinary record writes still reject catalog tables.
+  Option items are `{v, d?, sort?, color?}`: `color` is one of the ten Notion
+  palette names (`OPTION_COLORS`: default, gray, brown, orange, yellow, green,
+  blue, purple, pink, red), trimmed and lowercased by catalog edits and
+  `soma property set`; a null color clears it. Hub option metadata
+  (`/v1/catalog/options`, `/v1/catalog/projection`, `publicOptions` in
+  `scopes.js`) passes palette colors through and drops any other value.
+  `scripts/notion-option-colors.py` is the idempotent one-off that copies
+  Notion option colors onto migrated catalogs from an operator-supplied
+  table -> data source map, through `soma property set`.
 - `core/src/saved-views.ts` recognizes operator-provisioned ordinary synced
   `views` storage from the canonical DDL/catalog manifest
   `core/schema/saved-views.json`, also checked against the Python operator CLI.

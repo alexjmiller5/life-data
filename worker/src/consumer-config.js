@@ -1,6 +1,6 @@
 import {enrollmentProfile} from './enrollment-profile.js';
 import {checkedReads,readGuards,queryBudget} from './write.js';
-import {scopedTable,ScopeDenied} from './scopes.js';
+import {scopedTable,ScopeDenied,publicOptions} from './scopes.js';
 
 // Injected by table creation: whether each is NOT NULL.
 const ENGINE_COLUMNS={id:true,created_at:true,updated_at:true,hub_at:false,deleted_at:false};
@@ -57,7 +57,7 @@ export async function catalogProjection(request,tenant) {
         options=JSON.parse(p.options);
         if(!Array.isArray(options) || options.some(o=>!o || typeof o.v!=='string'
           || (o.d!==undefined && typeof o.d!=='string') || (o.sort!==undefined && !Number.isFinite(o.sort)))) throw new ScopeDenied();
-        options=options.map(({v,d,sort})=>({v,...(d===undefined?{}:{d}),...(sort===undefined?{}:{sort})}));
+        options=publicOptions(options);
       }
       const readOnly=['id','created_at','updated_at','hub_at','deleted_at'].includes(column)
         || !!p.derived_by || !!p.immutable || !!p.options_sql || !tenant.scopes.includes(`tables:patch:${body.table}:${column}`);

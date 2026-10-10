@@ -111,3 +111,19 @@ test('malformed prior option metadata can be repaired without changing stored re
  expect(row.options).toEqual([{v:'Fixed',d:'Valid option'}]);
  expect(await db.all('SELECT name FROM items')).toEqual([{name:'Existing'}]);
 });
+test('option colors use the Notion palette, normalize case and reject unknown names',async()=>{
+ const db=await fixture();
+ const row=await edit.saveCatalogProperty(db,{table:'items',column:'name',expectedUpdatedAt:T0,fields:{type:'select',options:[{v:'Draft',color:' Blue '},{v:'Ready',d:'Reviewed',color:'default'},{v:'Plain'}]}});
+ expect(row.options).toEqual([{v:'Draft',color:'blue'},{v:'Ready',d:'Reviewed',color:'default'},{v:'Plain'}]);
+ const stored=await db.all("SELECT options FROM catalog_properties WHERE id='items.name'");
+ expect(JSON.parse(String(stored[0].options))[0]).toEqual({v:'Draft',color:'blue'});
+ expect(JSON.parse(String((await db.all('SELECT payload FROM catalog_log'))[0].payload)).options[0]).toEqual({v:'Draft',color:'blue'});
+ for(const color of ['teal','',3])
+  await expect(edit.saveCatalogProperty(db,{table:'items',column:'name',expectedUpdatedAt:String(row.updated_at),fields:{options:[{v:'Draft',color}]}})).rejects.toThrow(/color/i);
+ expect(edit.OPTION_COLORS).toEqual(['default','gray','brown','orange','yellow','green','blue','purple','pink','red']);
+});
+test('a null option color clears it',async()=>{
+ const db=await fixture();
+ const row=await edit.saveCatalogProperty(db,{table:'items',column:'name',expectedUpdatedAt:T0,fields:{type:'select',options:[{v:'Draft',color:null}]}});
+ expect(row.options).toEqual([{v:'Draft'}]);
+});

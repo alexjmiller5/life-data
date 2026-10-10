@@ -382,7 +382,39 @@ def _soft_delete(path: Path, table: str, row_id: str) -> None:
     write(path, run)
 
 
+# Option chip colors: the Notion palette names, stored lowercase (core OPTION_COLORS).
+OPTION_COLORS = (
+    "default",
+    "gray",
+    "brown",
+    "orange",
+    "yellow",
+    "green",
+    "blue",
+    "purple",
+    "pink",
+    "red",
+)
+
+
+def _option_colors(options: list) -> list:
+    out = []
+    for o in options:
+        if isinstance(o, dict) and "color" in o:
+            o = dict(o)
+            color = o.pop("color")
+            if color is not None:
+                name = color.strip().lower() if isinstance(color, str) else color
+                if name not in OPTION_COLORS:
+                    raise ValueError(f"option color {color!r}; one of {', '.join(OPTION_COLORS)}")
+                o["color"] = name
+        out.append(o)
+    return out
+
+
 def set_property(path: Path, tbl: str, col: str, **fields) -> dict:
+    if isinstance(fields.get("options"), list):
+        fields["options"] = _option_colors(fields["options"])
     if "type" in fields and fields["type"] not in TYPES:
         raise ValueError(f"unknown type {fields['type']!r}; one of {sorted(TYPES)}")
     if fields.get("derived_by") and not fields["derived_by"].startswith("http:"):

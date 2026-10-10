@@ -142,6 +142,21 @@
         },
         "sort": {
           "type": "number"
+        },
+        "color": {
+          "type": "string",
+          "enum": [
+            "default",
+            "gray",
+            "brown",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "pink",
+            "red"
+          ]
         }
       },
       "required": [
@@ -4682,6 +4697,21 @@
         },
         "sort": {
           "type": "number"
+        },
+        "color": {
+          "type": "string",
+          "enum": [
+            "default",
+            "gray",
+            "brown",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "pink",
+            "red"
+          ]
         }
       },
       "required": [

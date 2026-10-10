@@ -9,6 +9,16 @@ import {supportedRuleSql} from './rule-sql.ts';
 const storage:Record<string,string>={text:'TEXT',markdown:'TEXT',number:'REAL',int:'INTEGER',bool:'INTEGER',date:'TEXT',datetime:'TEXT',date_or_datetime:'TEXT',json:'TEXT',select:'TEXT',multi_select:'TEXT',ref:'TEXT',multi_ref:'TEXT',url:'TEXT',email:'TEXT',phone:'TEXT'};
 const propertyFields=new Set(['label','sort','type','required','default_value','options','options_sql','min_items','max_items','pattern','ref_table','derived_by','inputs','immutable','deprecated','description','source','source_ref']);
 const ruleFields=new Set(['scope','col','kind','text','sql','cmd','enforce']);
+/** Option chip colors: the Notion palette names, stored lowercase. */
+export const OPTION_COLORS=['default','gray','brown','orange','yellow','green','blue','purple','pink','red'] as const;
+function optionColors(options:unknown):unknown {
+ if(!Array.isArray(options))return options;
+ return options.map(option=>{
+  if(!option||typeof option!=='object'||Array.isArray(option)||!Object.hasOwn(option,'color'))return option;
+  const {color,...rest}=option as Record<string,unknown>;
+  return color==null?rest:{...rest,color:typeof color==='string'?color.trim().toLowerCase():color};
+ });
+}
 type Edit={table:string;expectedUpdatedAt:string|null;fields:Row};
 type CatalogPropertyEdit=SaveCatalogPropertyArgs;
 type CatalogRuleEdit=SaveCatalogRuleArgs;
@@ -60,7 +70,8 @@ function property(value:Row):void {
   if(!Array.isArray(value.options)||value.options.length>1000)throw Error('Options must be a bounded list.');
   const names=new Set<string>();
   for(const option of value.options){
-   if(!option||typeof option!=='object'||Array.isArray(option)||Object.keys(option).some(k=>!['v','d','sort'].includes(k))||typeof option.v!=='string'||!option.v||option.d!=null&&typeof option.d!=='string'||option.sort!=null&&(typeof option.sort!=='number'||!Number.isFinite(option.sort))||names.has(option.v))throw Error('Options need distinct values and optional text descriptions.');
+   if(!option||typeof option!=='object'||Array.isArray(option)||Object.keys(option).some(k=>!['v','d','sort','color'].includes(k))||typeof option.v!=='string'||!option.v||option.d!=null&&typeof option.d!=='string'||option.sort!=null&&(typeof option.sort!=='number'||!Number.isFinite(option.sort))||names.has(option.v))throw Error('Options need distinct values and optional text descriptions.');
+   if(option.color!=null&&!OPTION_COLORS.includes(option.color))throw Error(`Option colors must be one of: ${OPTION_COLORS.join(', ')}.`);
    names.add(option.v);
   }
  }
@@ -99,6 +110,7 @@ export async function saveCatalogProperty(db:SqlDriver,value:CatalogPropertyEdit
  const args=input(value,['table','column','fields','expectedUpdatedAt','addColumn']);
  if(typeof args.column!=='string'||['id','created_at','updated_at','hub_at','deleted_at'].includes(args.column))throw Error('Choose a user property.');
  qident(args.column);fields(args.fields,propertyFields);
+ if(Object.hasOwn(args.fields,'options'))args.fields.options=optionColors(args.fields.options) as Row['options'];
  if(args.addColumn!==undefined&&typeof args.addColumn!=='boolean')throw Error('Invalid add-column request.');
  return db.transaction(async()=>{
   await guard(db,args.table);

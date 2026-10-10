@@ -1879,7 +1879,10 @@ def main(argv: list[str] | None = None) -> int:
     pr_set.add_argument("--sort", type=int)
     pr_set.add_argument("--required", type=int, choices=(0, 1))
     pr_set.add_argument("--default", dest="default_value")
-    pr_set.add_argument("--options", help="JSON array of {v,d,sort} or a comma list of values")
+    pr_set.add_argument(
+        "--options",
+        help="JSON array of {v,d,sort,color} (color: a Notion palette name) or a comma list of values",
+    )
     pr_set.add_argument("--options-sql", dest="options_sql")
     pr_set.add_argument("--min-items", dest="min_items", type=int)
     pr_set.add_argument("--max-items", dest="max_items", type=int)

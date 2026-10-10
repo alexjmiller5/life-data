@@ -249,6 +249,12 @@ test('exact read grant exposes only static option metadata',async()=>{
   expect(await (await call(optionsPath)).json()).toEqual({options:[]});
 });
 
+test('option metadata carries palette colors and drops unknown ones',async()=>{
+  const db=captureDb(),{call}=await setup(['tables:read:articles'],db);
+  db.db.exec(`UPDATE catalog_properties SET options='[{"v":"Source","color":"blue"},{"v":"Other","color":"teal"},{"v":"Plain"}]' WHERE col='tags'`);
+  expect(await (await call(optionsPath)).json()).toEqual({options:[{v:'Source',color:'blue'},{v:'Other'},{v:'Plain'}]});
+});
+
 test('options authorization rejects wrong grants and malformed targets before data reads',async()=>{
   for(const scopes of [['streams:append'],['tables:write:articles'],['tables:read:secrets']]) {
     const {call}=await setup(scopes);

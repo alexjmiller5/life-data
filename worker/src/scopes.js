@@ -303,7 +303,14 @@ export async function scopedOptions(params, db, scopes) {
     || (o.d !== undefined && typeof o.d !== 'string')
     || (o.sort !== undefined && (typeof o.sort !== 'number' || !Number.isFinite(o.sort))))) deny();
   await db.batch(readGuards(db,view.reads));
-  return {options:options.map(({v,d,sort})=>({v,...(d===undefined?{}:{d}),...(sort===undefined?{}:{sort})}))};
+  return {options:publicOptions(options)};
+}
+
+const OPTION_COLORS=new Set(['default','gray','brown','orange','yellow','green','blue','purple','pink','red']);
+// Static option metadata for consumers; a color outside the palette is dropped, not fatal.
+export function publicOptions(options) {
+  return options.map(({v,d,sort,color})=>({v,...(d===undefined?{}:{d}),...(sort===undefined?{}:{sort}),
+    ...(OPTION_COLORS.has(color)?{color}:{})}));
 }
 
 // One page's SQL once its table passes the read check; `view` records the

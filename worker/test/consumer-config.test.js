@@ -59,6 +59,13 @@ test('metadata projection requires every grant and discloses only static propert
  expect((await call(env,'/v1/catalog/projection',request)).status).toBe(403);
 });
 
+test('metadata projection carries palette option colors and drops unknown ones',async()=>{
+ const env=await fixture();
+ env.DB.db.exec(`UPDATE catalog_properties SET options='[{"v":"open","color":"green"},{"v":"done","color":"Teal"}]'`);
+ const data=await (await call(env,'/v1/catalog/projection',{table:'items',columns:['status']})).json();
+ expect(data.properties[0].options).toEqual([{v:'open',color:'green'},{v:'done'}]);
+});
+
 test('uncataloged engine columns project built-in read-only metadata; other columns still need a catalog row',async()=>{
  const env=await fixture();
  env.DB.db.exec('ALTER TABLE items ADD COLUMN extra TEXT');
