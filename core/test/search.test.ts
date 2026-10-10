@@ -543,11 +543,17 @@ test('the index step works in bounded chunks, resumes across calls and reports w
   expect(await docs(db, 'items')).toBe(200);
   expect(await core.search(db, { text: 'offline', limit: 200, offset: 199 })).toHaveLength(1);
   let last = first, steps = 1;
+  const statements: string[] = [];
+  const all = db.all.bind(db);
+  db.all = async (sql, params) => { statements.push(sql); return all(sql, params); };
   while (!last.done) {
     const next = await core.searchIndexStep(db, { budgetMs: 0 });
     expect(next.pending).toBeLessThanOrEqual(last.pending);
     last = next; steps++;
   }
+  db.all = all;
+  // Progress comes from stored estimates: a step never counts a source table.
+  expect(statements.filter(sql => /count\(\*\)[^;]*"items"/.test(sql))).toEqual([]);
   expect(steps).toBeGreaterThan(2);
   expect(last).toEqual({ indexing: false, pending: 0, done: true });
   expect(await search(db, { text: 'offline', limit: 200, offset: 400 })).toHaveLength(51);
@@ -566,7 +572,7 @@ test('provenance and tables over the size rule stay out of the index unless opte
   await db.run("UPDATE items SET name='needle'");
   await table(db, 'provenance', 3);
   await table(db, 'big', 4);
-  await table(db, 'unstated', core.SEARCH_MAX_ROWS + 1);
+  await table(db, 'unstated', core.SEARCH_MAX_ROWS + 300);
   // The size rule reads the hub's counts when sync stored them, else the local table.
   await db.run("INSERT INTO _core_state(key,value) VALUES ('hub_stats',?)", [JSON.stringify({ at: T0, tables: { items: 1, provenance: 3, big: core.SEARCH_MAX_ROWS + 1 } })]);
   const tables = async () => [...new Set((await search(db, { text: 'needle', limit: 200 })).map(h => h.table))].sort();
@@ -577,9 +583,11 @@ test('provenance and tables over the size rule stay out of the index unless opte
   expect(await tables()).toEqual(['big', 'provenance']);
   expect(await docs(db, 'items')).toBe(0);
   await db.run("UPDATE _core_state SET value=? WHERE key=?", [JSON.stringify({ unstated: true }), core.SEARCH_TABLES_KEY]);
+  // An opted-in table is sized in full: its progress estimate is not capped at the limit.
+  expect((await core.searchIndexStep(db, { budgetMs: 0 })).pending).toBe(1 + core.SEARCH_MAX_ROWS + 300);
   await drain(db);
   // Ranking covers the newest matches only, so count entries: 50,001 new ones outnumber it.
-  expect([await docs(db, 'items'), await docs(db, 'unstated'), await docs(db, 'provenance')]).toEqual([1, core.SEARCH_MAX_ROWS + 1, 0]);
+  expect([await docs(db, 'items'), await docs(db, 'unstated'), await docs(db, 'provenance')]).toEqual([1, core.SEARCH_MAX_ROWS + 300, 0]);
   // An unreadable setting falls back to the defaults instead of stopping the index.
   await db.run("UPDATE _core_state SET value='not json' WHERE key=?", [core.SEARCH_TABLES_KEY]);
   expect(await tables()).toEqual(['items']);
@@ -649,4 +657,15 @@ test('reads index a small queue of edits themselves once the index is current; l
   await db.run("INSERT INTO later(id,note) VALUES ('x','queued while owed')");
   await db.run("UPDATE _core_search_work SET backfill='later9' WHERE tbl='later'");
   expect(await core.search(db, { text: 'queued' })).toEqual([]);
+});
+
+test('a table outgrowing its size estimate still reads as indexing until its walk ends', async () => {
+  const { db } = await local();
+  await core.initCore(db);
+  for (let i = 0; i < 450; i++) await db.run('INSERT INTO items(id,name) VALUES (?,?)', [`r${String(i).padStart(3, '0')}`, 'Row']);
+  // The hub counted 1 row when sync last asked; the replica holds 451 now.
+  await db.run("INSERT INTO _core_state(key,value) VALUES ('hub_stats',?)", [JSON.stringify({ at: T0, tables: { items: 1 } })]);
+  expect(await core.searchIndexStep(db, { budgetMs: 0 })).toEqual({ indexing: true, pending: 1, done: false });
+  await drain(db);
+  expect(await docs(db, 'items')).toBe(451);
 });

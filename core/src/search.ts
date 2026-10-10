@@ -74,9 +74,10 @@ async function initSearch(db: SqlDriver) {
   // Backlinks: Markdown mentions of live rows, rebuilt from bodies like the text index.
   await db.run('CREATE TABLE IF NOT EXISTS _core_search_mentions (tbl TEXT NOT NULL, row_id TEXT NOT NULL, target_tbl TEXT NOT NULL, target_id TEXT NOT NULL, PRIMARY KEY(tbl,row_id,target_tbl,target_id)) WITHOUT ROWID');
   await db.run('CREATE INDEX IF NOT EXISTS _core_search_mentions_target ON _core_search_mentions(target_tbl,target_id)');
-  // Per-table work the index step still owes: remove its entries (purge), then
-  // index its rows in id order from `backfill` (NULL once complete or retired).
-  await db.run('CREATE TABLE IF NOT EXISTS _core_search_work (tbl TEXT PRIMARY KEY, purge INTEGER NOT NULL, backfill TEXT)');
+  // Per-table work the index step still owes: remove its entries (purge), then index
+  // its rows in id order from `backfill` (NULL once complete or retired); `left` is
+  // the estimated rows still to walk, so reporting progress never counts a table.
+  await db.run('CREATE TABLE IF NOT EXISTS _core_search_work (tbl TEXT PRIMARY KEY, purge INTEGER NOT NULL, backfill TEXT, left INTEGER NOT NULL DEFAULT 0)');
 }
 
 type IndexedTable = { table: string; columns: string[]; markdown: string[]; display?: string; fingerprint: string; sweep: boolean };
@@ -115,13 +116,15 @@ async function searchSettings(db: SqlDriver) {
   const counts = parse('hub_stats').tables;
   return { counts: (counts && typeof counts === 'object' ? counts : {}) as Record<string, unknown>, chosen: parse(SEARCH_TABLES_KEY) };
 }
-async function searched(db: SqlDriver, table: string, { counts, chosen }: Awaited<ReturnType<typeof searchSettings>>): Promise<boolean> {
-  if (typeof chosen[table] === 'boolean') return chosen[table] as boolean;
-  if (UNSEARCHED.has(table)) return false;
-  if (Number.isSafeInteger(counts[table])) return (counts[table] as number) <= SEARCH_MAX_ROWS;
+/** Whether the table is indexed, and roughly how many rows it holds (to report progress). */
+async function searched(db: SqlDriver, table: string, { counts, chosen }: Awaited<ReturnType<typeof searchSettings>>): Promise<{ include: boolean; rows: number }> {
+  const hub = Number.isSafeInteger(counts[table]) ? counts[table] as number : null;
+  if (chosen[table] === false || (chosen[table] !== true && UNSEARCHED.has(table))) return { include: false, rows: 0 };
+  // An opted-in table may be any size; a hub count or a full local count sizes it.
+  const limit = chosen[table] === true ? '' : ` LIMIT ${SEARCH_MAX_ROWS + 1}`;
   // No hub count (never synced, or a local table): count locally, stopping just past the limit.
-  const [row] = await db.all(`SELECT count(*) AS n FROM (SELECT 1 FROM ${qident(table)} LIMIT ${SEARCH_MAX_ROWS + 1})`);
-  return Number(row?.n) <= SEARCH_MAX_ROWS;
+  const rows = hub ?? Number((await db.all(`SELECT count(*) AS n FROM (SELECT 1 FROM ${qident(table)}${limit})`))[0]?.n ?? 0);
+  return { include: chosen[table] === true || rows <= SEARCH_MAX_ROWS, rows };
 }
 
 /** The _core_state row recording the schema, catalog and settings of the last reconciliation. */
@@ -156,10 +159,13 @@ async function reconcile(db: SqlDriver): Promise<void> {
   const catalog = await readCatalog(db);
   const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger')");
   const settings = await searchSettings(db);
-  const tables: IndexedTable[] = [];
+  const tables: IndexedTable[] = [], sizes = new Map<string, number>();
   for (const entry of catalog.tables) {
     const indexed = await describeTable(db, entry, catalog, schema);
-    if (indexed && await searched(db, indexed.table, settings)) tables.push(indexed);
+    const size = indexed && await searched(db, indexed.table, settings);
+    if (!indexed || !size?.include) continue;
+    tables.push(indexed);
+    sizes.set(indexed.table, size.rows);
   }
   const expected = new Map(tables.flatMap(t => searchTriggers(t.table).map(trigger => [trigger.name, trigger.sql] as const)));
   for (const trigger of schema.filter(r => r.type === 'trigger' && String(r.name).startsWith('_core_search_'))) {
@@ -185,7 +191,7 @@ async function reconcile(db: SqlDriver): Promise<void> {
     if (intact && states.find(s => s.tbl === table)?.fingerprint === indexed.fingerprint) continue;
     // Triggers queue every later change; the backfill walks the rows already there.
     const stale = (await db.all('SELECT 1 FROM _core_search_docs WHERE tbl=? LIMIT 1', [table])).length;
-    await db.run("INSERT INTO _core_search_work(tbl,purge,backfill) VALUES (?,?,'') ON CONFLICT(tbl) DO UPDATE SET purge=excluded.purge,backfill=''", [table, stale]);
+    await db.run("INSERT INTO _core_search_work(tbl,purge,backfill,left) VALUES (?,?,'',?) ON CONFLICT(tbl) DO UPDATE SET purge=excluded.purge,backfill='',left=excluded.left", [table, stale, sizes.get(table) ?? 0]);
     for (const trigger of triggers) {
       if (!schema.some(s => s.type === 'trigger' && s.name === trigger.name && s.sql === trigger.sql)) await db.run(trigger.sql);
     }
@@ -279,20 +285,18 @@ async function indexChunk(db: SqlDriver, describe: (table: string) => Promise<In
   if (!ids.length) await db.run('DELETE FROM _core_search_work WHERE tbl=?', [table]);
   else {
     await indexBatch(db, indexed!, ids);
-    await db.run('UPDATE _core_search_work SET backfill=? WHERE tbl=?', [ids[ids.length - 1]!, table]);
+    await db.run('UPDATE _core_search_work SET backfill=?,left=max(left-?,0) WHERE tbl=?', [ids[ids.length - 1]!, ids.length, table]);
   }
   return true;
 }
 
+/** Queued rows plus each walking table's estimate; a walk past its estimate still counts one. */
 async function indexStatus(db: SqlDriver): Promise<SearchIndexStatus> {
-  let pending = Number((await db.all('SELECT count(*) AS n FROM _core_search_dirty'))[0]?.n ?? 0), purging = false;
-  for (const work of await db.all('SELECT tbl,purge,backfill FROM _core_search_work')) {
-    purging ||= !!work.purge;
-    if (work.backfill === null) continue;
-    const [row] = await db.all(`SELECT count(*) AS n FROM ${qident(String(work.tbl))} WHERE typeof(id)='text' AND id>?`, [String(work.backfill)]);
-    pending += Number(row?.n ?? 0);
-  }
-  return { indexing: pending > 0, pending, done: pending === 0 && !purging };
+  const [row] = await db.all(`SELECT (SELECT count(*) FROM _core_search_dirty) AS queued,
+    (SELECT ifnull(sum(max(left,1)),0) FROM _core_search_work WHERE backfill IS NOT NULL) AS walking,
+    EXISTS(SELECT 1 FROM _core_search_work) AS owed`);
+  const pending = Number(row?.queued ?? 0) + Number(row?.walking ?? 0);
+  return { indexing: pending > 0, pending, done: pending === 0 && !row?.owed };
 }
 
 /** The only operation that builds the search index. Hosts call it after each sync round,
