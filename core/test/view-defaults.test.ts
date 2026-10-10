@@ -1,6 +1,6 @@
 import {afterEach, expect, test} from 'bun:test';
 import * as core from '../src/index.ts';
-import {TestSql,schema} from './support.ts';
+import {TestSql,schema,setup,T0,T1} from './support.ts';
 import views from '../schema/saved-views.json';
 import defaults from '../schema/view-defaults.json';
 const opened:TestSql[]=[];
@@ -174,4 +174,26 @@ test('opening a table reads only the catalog rows of the tables it involves',asy
  read.length=0;
  await core.mentionLabels(db,{targets:[{table:'items',id:'missing'}]});
  expect([...tablesOf()]).toEqual(['items']);
+});
+
+test('a table opened on a hub replica pushes its new view before the preference that points at it',async()=>{
+ const {db,remote,hub}=setup();opened.push(db,remote as unknown as TestSql);
+ const ddl=['ALTER TABLE catalog_properties ADD COLUMN source TEXT','ALTER TABLE catalog_properties ADD COLUMN source_ref TEXT',
+  'CREATE TABLE catalog_tables (id TEXT PRIMARY KEY,kind TEXT,display TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)',
+  ...views.ddl,...defaults.ddl];
+ for(const sql of ddl){remote.db.exec(sql);remote.db.query('INSERT INTO _schema_log(applied_at,ddl) VALUES (?,?)').run(T0,sql);}
+ for(const table of [{id:'items',kind:'table',display:'name'},views.table,defaults.table])remote.db.query('INSERT INTO catalog_tables(id,kind,display,updated_at,hub_at) VALUES (?,?,?,?,?)').run(table.id,table.kind,table.display,T0,T1);
+ for(const p of [...views.properties,...defaults.properties,{id:'items.name',tbl:'items',col:'name',type:'text'}]){
+  const row={...p,updated_at:T0,hub_at:T1};const keys=Object.keys(row);
+  remote.db.query(`INSERT INTO catalog_properties(${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`).run(...(Object.values(row) as never[]));
+ }
+ await core.sync(db,hub);
+ const handlers=core.createCoreHandlers(db,()=>{throw new Error('unused');},'fixture');
+ const shown=await handlers.ensureDefaultView({table:'items'});
+ expect(shown.view?.name).toBe('Default view');
+ const round=await core.sync(db,hub);
+ expect(round.rejected).toEqual([]);
+ expect(await db.all('SELECT * FROM _core_rejected')).toEqual([]);
+ expect((await handlers.status({})).pendingUiEdits).toBe(0);
+ expect(remote.db.query('SELECT view_id FROM view_defaults').all()).toEqual([{view_id:shown.view!.id}]);
 });

@@ -98,6 +98,9 @@ reads never provision either store or rewrite saved definitions.
   The `date_or_datetime` TEXT property preserves either existing date-only or
   UTC-millisecond precision. Relative queries use the host calendar context;
   callers never truncate instants or turn all-day dates into midnight values.
+  Core sync walks catalogs first, then each table after the tables its catalog
+  refs point at (name order otherwise, `history` last), so a new row and a
+  reference to it (a saved view and its `view_defaults` pointer) land in one round.
 - `core/src/source-links.ts` resolves explicit `table/id` identities against live
   catalog tables and exact row IDs, and supported Notion URLs through live,
   whole-record `imported_from` provenance. It never infers a destination from

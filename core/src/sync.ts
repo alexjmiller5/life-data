@@ -45,6 +45,22 @@ export async function sync(db: SqlDriver, hub: Hub, options: SyncOptions = {}): 
   }
 }
 
+/** Walk order: each table after the tables its catalog refs point at, so a new row and a
+ * reference to it reach the hub in one round. Catalogs stay first; cycles keep name order. */
+async function refOrder(db: SqlDriver, tables: string[]): Promise<string[]> {
+  const cataloged=(await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='catalog_properties'")).length>0;
+  const refs=cataloged ? await db.all("SELECT tbl,ref_table FROM main.catalog_properties WHERE deleted_at IS NULL AND type IN ('ref','multi_ref') AND ref_table IS NOT NULL AND ref_table<>tbl") : [];
+  const needs=new Map<string,Set<string>>();
+  for(const {tbl,ref_table} of refs) if(tables.includes(String(tbl)) && tables.includes(String(ref_table)) && !String(ref_table).startsWith('catalog_'))
+    needs.set(String(tbl),(needs.get(String(tbl)) ?? new Set()).add(String(ref_table)));
+  const ordered: string[]=[], left=[...tables];
+  while(left.length) {
+    const next=left.findIndex(t=>[...(needs.get(t) ?? [])].every(r=>ordered.includes(r)));
+    ordered.push(...left.splice(next<0 ? 0 : next,1));
+  }
+  return ordered;
+}
+
 function rowJSON(columns: string[]): string {
   // Stay below SQLite's argument limit, including wide user tables. json_set
   // preserves null-valued keys, unlike JSON merge-patch semantics.
@@ -170,7 +186,7 @@ async function syncLocked(db: SqlDriver, hub: Hub, options: SyncOptions): Promis
     await db.run("INSERT OR REPLACE INTO _core_state(key,value) VALUES ('hub_stats',?)",[JSON.stringify({at:now().toISOString(),tables:fresh})]);
     return fresh;
   })();
-  const tables=allTables.filter(t=>t.startsWith('catalog_') || (options.tables?.[t] ?? (Number.isFinite(counts?.[t]) && counts[t] <= (options.maxRows ?? 50_000))));
+  const tables=await refOrder(db,allTables.filter(t=>t.startsWith('catalog_') || (options.tables?.[t] ?? (Number.isFinite(counts?.[t]) && counts[t] <= (options.maxRows ?? 50_000)))));
   tables.sort((a,b)=>Number(a==='history')-Number(b==='history'));
   result.skipped=allTables.filter(t=>!tables.includes(t));
   await db.transaction(async()=>{
