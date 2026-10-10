@@ -241,9 +241,13 @@ backfills newly indexed tables by walking their primary key from a saved cursor
 (200 per chunk). It returns `{indexing, pending, done}`: `indexing` while rows
 wait to be indexed, `pending` how many, `done` when no work, including purges,
 is left. `search`, `mentionedBy` (which reports `indexing`), `viewEmbed`,
-`referencedBy` and searched `readRows` never build or drain anything; they read
-what exists, and a replica the step has not reached answers from an empty
-index. A retired table stops answering at once, before its entries are purged.
+`referencedBy` and searched `readRows` never build the index; they read what
+exists, and a replica the step has not reached answers from an empty index.
+The one exception keeps local edits visible whatever order a host runs things
+in: once the index is otherwise current (reconciled, nothing owed), a read
+indexes a queue of at most one batch itself; a larger queue (a pulled page)
+waits for the step. A retired table stops answering at once, before its
+entries are purged.
 
 Provenance and every table over the sync size rule (`SIZE_RULE_ROWS`, judged
 by sync's stored hub counts, else a local count capped just past the limit) stay

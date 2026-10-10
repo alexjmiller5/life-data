@@ -218,6 +218,21 @@ async function indexBatch(db: SqlDriver, indexed: IndexedTable, ids: unknown[]) 
 }
 
 const BATCH = 200, PURGE_BATCH = 500;
+/** Tracked tables' index metadata, read once per transaction. Call only while reconciliation
+ * is current, so a tracked table's description still matches its fingerprint. */
+function describer(db: SqlDriver) {
+  const described = new Map<string, Promise<IndexedTable | null>>();
+  return (table: string) => {
+    if (!described.has(table)) described.set(table, (async () => {
+      if (!(await db.all('SELECT 1 FROM _core_search_state WHERE tbl=? AND tbl<>?', [table, READY])).length) return null;
+      const catalog = await readCatalog(db, [table]);
+      const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index') AND tbl_name=?", [table]);
+      return catalog.tables[0] ? describeTable(db, catalog.tables[0], catalog, schema) : null;
+    })());
+    return described.get(table)!;
+  };
+}
+
 /** One unit of owed work, in order: purges, queued changes, backfills. False when none is left. */
 async function indexChunk(db: SqlDriver, describe: (table: string) => Promise<IndexedTable | null>, swept: Set<string>): Promise<boolean> {
   const [purge] = await db.all('SELECT tbl FROM _core_search_work WHERE purge=1 LIMIT 1');
@@ -293,17 +308,7 @@ export async function searchIndexStep(db: SqlDriver, args: SearchIndexStepArgs =
   return db.transaction(async () => {
     const started = Date.now();
     if (!(await reconciled(db))) await reconcile(db);
-    const described = new Map<string, Promise<IndexedTable | null>>(), swept = new Set<string>();
-    // Reconciliation is current, so a tracked table's description still matches its fingerprint.
-    const describe = (table: string) => {
-      if (!described.has(table)) described.set(table, (async () => {
-        if (!(await db.all('SELECT 1 FROM _core_search_state WHERE tbl=? AND tbl<>?', [table, READY])).length) return null;
-        const catalog = await readCatalog(db, [table]);
-        const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index') AND tbl_name=?", [table]);
-        return catalog.tables[0] ? describeTable(db, catalog.tables[0], catalog, schema) : null;
-      })());
-      return described.get(table)!;
-    };
+    const describe = describer(db), swept = new Set<string>();
     while (await indexChunk(db, describe, swept) && Date.now() - started < budgetMs);
     return indexStatus(db);
   });
@@ -315,9 +320,17 @@ export async function assertSearchSupport(db: SqlDriver): Promise<void> {
   await db.transaction(async () => { await initSearch(db); });
 }
 
-/** Reads that join the index (view search, backlinks) call this so a replica the step has not
- * reached yet answers from an empty index instead of failing. It never indexes anything. */
-export const openSearchIndex = initSearch;
+/** Reads that use the index call this inside their transaction. A replica the step has not
+ * reached answers from an empty index instead of failing. Once the index is otherwise current,
+ * a queue of at most one batch (a few local edits) is indexed here, so a read never misses an
+ * edit that a host's next step would only catch after it; anything larger waits for the step. */
+export async function openSearchIndex(db: SqlDriver): Promise<void> {
+  await initSearch(db);
+  const [queue] = await db.all('SELECT (SELECT count(*) FROM (SELECT 1 FROM _core_search_dirty LIMIT ?)) AS queued, EXISTS(SELECT 1 FROM _core_search_work) AS owed', [BATCH + 1]);
+  if (!queue?.queued || Number(queue.queued) > BATCH || queue.owed || !(await reconciled(db))) return;
+  const describe = describer(db), swept = new Set<string>();
+  while (await indexChunk(db, describe, swept));
+}
 /** Whether rows still wait for the index step, for reads that report it. */
 export async function searchIndexing(db: SqlDriver): Promise<boolean> {
   await initSearch(db);
@@ -359,7 +372,7 @@ export async function search(db: SqlDriver, args: SearchArgs): Promise<SearchHit
     // Searching reads the index as the step left it; only the table entries are needed.
     const catalog = await readCatalogTables(db);
     if (table !== undefined && !catalog.tables.some(t => t.id === table)) throw new Error('Table is not in the catalog');
-    await initSearch(db);
+    await openSearchIndex(db);
     if (!query) return [];
     // Read-only system rows (history, provenance, catalog) repeat user text; list them after records.
     const system = catalog.tables.filter(t => isReadOnlyTable(String(t.id), t)).map(t => String(t.id));

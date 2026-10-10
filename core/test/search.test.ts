@@ -436,9 +436,10 @@ test('draining dirty rows looks up index entries by identity instead of ranging 
   expect(await search(db, { text: 'second', limit: 200 })).toHaveLength(200);
   db.all = all; db.run = run;
   const plans: string[] = [];
-  for (const [sql, params] of statements.filter(([sql]) => /_core_search_(docs|dirty)/.test(sql) && !/^CREATE|LIMIT 1$|^SELECT count\(\*\)/.test(sql)))
+  for (const [sql, params] of statements.filter(([sql]) => /_core_search_(docs|dirty)/.test(sql) && !/^CREATE|LIMIT 1$|count\(\*\)/.test(sql)))
     for (const row of await all('EXPLAIN QUERY PLAN ' + sql, params)) plans.push(`${row.detail}  <-  ${sql.slice(0, 80)}`);
   // A per-batch statement that reads every queued or indexed row of the table grows with the table.
+  // (Counts are per step or bounded probes, not per batch.)
   expect(plans.filter(p => /\bSCAN (d|_core_search_docs|_core_search_dirty)\b|\(tbl=\?\)  /.test(p))).toEqual([]);
 });
 
@@ -627,3 +628,25 @@ test('a fresh large replica answers search, backlinks and a table open quickly w
   expect(await docs(db, 'provenance')).toBe(0);
   expect(await docs(db, 'notes')).toBe(40_000);
 }, 120_000);
+
+test('reads index a small queue of edits themselves once the index is current; larger queues wait for the step', async () => {
+  const { db } = await local();
+  await core.initCore(db); // as on any replica: the first write would otherwise create these
+  await drain(db);
+  await core.writeRow(db, 'items', { id: 'a', body: 'freshly edited' });
+  // One write: the search sees it without a step, and so do searched views.
+  expect((await core.search(db, { text: 'freshly' })).map(h => h.id)).toEqual(['a']);
+  await db.run("UPDATE items SET body='view edit' WHERE id='a'");
+  expect((await core.readRows(db, { table: 'items', search: 'view' })).map(r => r.record.id)).toEqual(['a']);
+  // More than a batch queued (a pulled page, say) is the step's job.
+  await db.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<201) INSERT INTO items(id,name) SELECT 'p'||i,'pulled' FROM n`);
+  expect(await core.search(db, { text: 'pulled' })).toEqual([]);
+  expect((await core.mentionedBy(db, { table: 'items', rowId: 'a' })).indexing).toBe(true);
+  expect((await search(db, { text: 'pulled', limit: 200 })).length).toBe(200);
+  // Nor does a read index anything while the step still owes a backfill.
+  await table(db, 'later', 3);
+  await core.searchIndexStep(db, { budgetMs: 0 });
+  await db.run("INSERT INTO later(id,note) VALUES ('x','queued while owed')");
+  await db.run("UPDATE _core_search_work SET backfill='later9' WHERE tbl='later'");
+  expect(await core.search(db, { text: 'queued' })).toEqual([]);
+});

@@ -222,7 +222,7 @@ reads never provision either store or rewrite saved definitions.
   `_core_search_*` cache. Exact queue-only triggers capture writes and pulls,
   including independent Python edits. Only `searchIndexStep` builds the index,
   in budgeted, resumable chunks hosts run after rounds, writes and while idle;
-  reads never build it. Provenance and size-rule tables are left out unless
+  reads never build it (they index at most one queued batch once it is current). Provenance and size-rule tables are left out unless
   `_core_state` `search_tables` opts them in. Cache DDL never enters `_schema_log`. `View.search`
   uses literal word prefixes; `contains` retains substring semantics. Raw
   Markdown is indexed, with conservative plain-text display cleanup only.
