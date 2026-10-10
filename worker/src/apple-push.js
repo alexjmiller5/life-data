@@ -282,3 +282,32 @@ export async function deliverPush(env,send=fetch,now=Date.now()){
     }
   }
 }
+
+/** Silent wake for closed or backgrounded apps after a hub change: one
+ * content-available push per active installation, no feed event, receipt or
+ * retry (the app's next round covers a lost one). ChangeSignal throttles it. */
+export async function deliverBackgroundPush(env,send=fetch,now=Date.now()){
+  const config=pushConfiguration(env);
+  if(!config)return;
+  const db=env.AUTH_DB;
+  await ensurePush(db);
+  const {results}=await db.prepare(`SELECT r.app_profile,r.device_token FROM _push_registrations r
+    JOIN _tokens t ON t.hash=r.token_hash AND t.revoked_at IS NULL
+    JOIN _push_enrollments e ON e.token_hash=r.token_hash AND e.app_profile=r.app_profile
+    WHERE r.state='active' AND r.device_token IS NOT NULL
+      AND r.app_profile IN (${config.profiles.map(()=>'?').join(',')})
+    ORDER BY r.updated_at LIMIT 20`).bind(...config.profiles.map(p=>p.id)).all();
+  if(!results.length)return;
+  const jwt=await providerToken(config,env.APNS_PRIVATE_KEY,now);
+  await Promise.all(results.map(async registration=>{
+    const profile=config.profiles.find(p=>p.id===registration.app_profile);
+    try{
+      const response=await send(`https://${profile.environment==='sandbox'?'api.sandbox.push.apple.com':'api.push.apple.com'}/3/device/${registration.device_token}`,{
+        method:'POST',redirect:'manual',signal:AbortSignal.timeout(10000),
+        headers:{authorization:`bearer ${jwt}`,'content-type':'application/json','apns-topic':profile.topic,
+          'apns-push-type':'background','apns-priority':'5','apns-expiration':String(Math.floor(now/1000)+1200)},
+        body:JSON.stringify({aps:{'content-available':1},somaSync:1})});
+      if(response.status!==200)console.warn('APNs background push refused',response.status);
+    }catch{console.warn('APNs background push failed');}
+  }));
+}

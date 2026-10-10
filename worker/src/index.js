@@ -6,7 +6,7 @@
 // changing that function and nothing else — no route, no query, no sync logic
 // knows how the caller was authenticated.
 
-import { pushChecked, queryBudget } from "./write.js";
+import { pushChecked, queryBudget, checkedReads, readGuards } from "./write.js";
 import {pushConfiguration,pushCapability,pushRegistrationRoute,handlePushRegistration} from './apple-push.js';
 import {handleCreation,creationCapability,hasCreationScope,creationPolicies,creationGrant} from "./creation.js";
 import {captureGateway,captureCapability} from './capture-gateway.js';
@@ -27,12 +27,12 @@ import {configuration as governanceConfiguration,limits as governanceLimits} fro
 import {ensureProposalStorage} from './governance-proposals.js';
 import { putFile, deleteFile, rehomeFile, fileHeaders, listFiles } from "./files.js";
 import { ensureUsage, notify } from "./usage.js";
-import { changesRoute, markChanged, withChangeSignal } from "./changes.js";
+import { changesRoute, markChanged, socketToken, withChangeSignal } from "./changes.js";
 import { backup } from "./backup.js";
 import { backupsAllowed, handleBackups } from "./backups.js";
 import { handleLogin, loginPath } from "./login.js";
 import { applySubscriptionSchema, handleSubscription } from "./subscriptions.js";
-import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRowRead, authorizeRowPatch, authorizeEdges, edgePolicy, scopedPatchTable, scopedTable, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
+import { hasSchemaAccess, scopedReplicaUnsupported, sessionCapabilities, broadTableAccess, authorizeTable, authorizeRead, authorizeRowPatch, authorizeEdges, edgePolicy, scopedPatchTable, scopedTable, scopedQuery, prefetchTables, scopedRows, scopedOptions, scopedResult, ScopeDenied } from "./scopes.js";
 
 // Must match the trigger in wrangler.jsonc.
 const SWEEP_CRON = "*/15 * * * *";
@@ -89,6 +89,8 @@ async function resolveTenant(request, env, ctx) {
     } catch {
       return null;
     }
+  } else if (new URL(request.url).pathname === "/v1/changes") {
+    token = socketToken(request);
   }
   if (!token || !env.HUB_TOKEN) return null;
   if (tokensMatch(token, env.HUB_TOKEN)) {
@@ -424,7 +426,7 @@ function pullPage(body, rows, includeId, nextCursor = rows.length === body.limit
 const PULL_BATCH = { items: 50, rows: 5000, bytes: 4 * 1024 * 1024 };
 const COMPOUND_TERMS = 5; // D1: "too many terms in compound SELECT" past five
 
-async function pullBatch(items, db) {
+async function pullBatch(items, db, narrow = false) {
   if (!Array.isArray(items) || !items.length || items.length > PULL_BATCH.items) {
     return json({ error: `batch must list 1 to ${PULL_BATCH.items} pulls` }, 400);
   }
@@ -438,10 +440,24 @@ async function pullBatch(items, db) {
   if (items.reduce((n, item) => n + item.limit, 0) > PULL_BATCH.rows) {
     return json({ error: `a batch reads at most ${PULL_BATCH.rows} rows` }, 400);
   }
-  await ensureHubAtIndexes(db);
-  const kinds = await arrivalColumns(db, items.map((item) => item.table));
-  const queries = items.map((item) => pullQuery(item, kinds.get(item.table) === "hub_at"));
-  const pages = await db.batch(queries.map(({ sql, args }) => db.prepare(sql).bind(...args)));
+  let queries, guards = [];
+  if (narrow) {
+    // Each item passes the narrow table check; its guards ride the same batch.
+    const view = checkedReads(db);
+    await prefetchTables(view, items.map((item) => item.table));
+    queries = [];
+    for (const item of items) {
+      const query = await scopedQuery(view, item, PULL_BATCH.rows);
+      if (!query) return json({ error: "invalid row request" }, 400);
+      queries.push(query);
+    }
+    guards = readGuards(db, view.reads);
+  } else {
+    await ensureHubAtIndexes(db);
+    const kinds = await arrivalColumns(db, items.map((item) => item.table));
+    queries = items.map((item) => pullQuery(item, kinds.get(item.table) === "hub_at"));
+  }
+  const pages = (await db.batch([...guards, ...queries.map(({ sql, args }) => db.prepare(sql).bind(...args))])).slice(guards.length);
   const batch = [];
   let bytes = 0;
   for (const [i, item] of items.entries()) {
@@ -459,6 +475,60 @@ async function pullBatch(items, db) {
     batch.push(pullPage(item, rows, queries[i].includeId));
   }
   return { batch };
+}
+
+// A table the hub lacks (renamed or dropped by a replay the caller has not
+// run yet) has no arrivals. With the newest arrival comes how many rows share
+// that stamp (index-only): a reader whose cursor sits on it can tell a
+// same-millisecond late commit from nothing new.
+function markTerms(tables, kinds) {
+  return tables.map((t, i) => {
+    const col = kinds.get(t);
+    if (!col) return `SELECT ${i} AS i, '' AS m, NULL AS n`;
+    if (col !== "hub_at") return `SELECT ${i} AS i, max(${col}) AS m, NULL AS n FROM ${qident(t)}`;
+    return `SELECT ${i} AS i, (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`;
+  });
+}
+// D1 spends a few milliseconds per statement of a batch, whatever the
+// statement reads, and refuses a compound SELECT of more than five terms:
+// five tables per statement is the floor for an estate's cursor.
+function compound(db, terms) {
+  const statements = [];
+  for (let i = 0; i < terms.length; i += COMPOUND_TERMS) statements.push(db.prepare(terms.slice(i, i + COMPOUND_TERMS).join(" UNION ALL ")));
+  return statements;
+}
+function markRows(results) {
+  const rows = [];
+  for (const { results: part } of results) for (const row of part ?? []) rows[row.i] = row;
+  return rows;
+}
+// `tables` is each table's own newest arrival: a reader pulls only the tables
+// whose mark reached its cursor. `at_mark`: rows stamped with that arrival.
+function cursorMarks(tables, rows) {
+  let top = "";
+  const marks = {};
+  const at_mark = {};
+  tables.forEach((t, i) => {
+    const m = rows[i]?.m ?? "";
+    marks[t] = m;
+    const n = rows[i]?.n;
+    if (m && Number.isSafeInteger(n)) at_mark[t] = n;
+    if (m > top) top = m;
+  });
+  return { max_hub_at: top, max_updated_at: top, tables: marks, at_mark };
+}
+
+// A narrow reader's marks: only its granted tables (authorizeCursor), each
+// past the narrow table check, read under that check's guards. No estate
+// schema mark: a narrow reader replays no schema.
+async function scopedCursor(tables, db) {
+  await ensureHubAtIndexes(db);
+  const view = checkedReads(db);
+  await prefetchTables(view, tables);
+  for (const t of tables) await scopedTable(view, t);
+  const guards = readGuards(db, view.reads);
+  const results = await db.batch([...guards, ...compound(db, markTerms(tables, new Map(tables.map((t) => [t, "hub_at"]))))]);
+  return { ...cursorMarks(tables, markRows(results.slice(guards.length))), pull_batch: PULL_BATCH };
 }
 
 // `stampHubAt` is the hub's role: hub_at is dropped from whatever the client
@@ -514,7 +584,7 @@ const ROUTES = {
     if (applied) {
       indexed.delete(db); // a replayed CREATE TABLE needs its index
       arrivalKinds.delete(db);
-      markChanged();
+      markChanged(["_schema_log"]);
     }
     return { applied };
   },
@@ -666,29 +736,12 @@ const ROUTES = {
     // and one round trip per table made the read cost seconds on a large estate.
     // The last entry is the schema log itself: its newest id lets a replica
     // whose own log has not moved skip the whole-log pull while this has not
-    // moved either. Not one UNION ALL statement: D1 refuses a compound SELECT
-    // of more than five terms, and the batch costs D1 ~5 ms for 118 tables.
-    // D1 spends a few milliseconds per statement of a batch, whatever the
-    // statement reads, and refuses a compound SELECT of more than five
-    // terms: five tables per statement is the floor for an estate's cursor.
+    // moved either.
     const read = async () => {
       const kinds = await arrivalColumns(db, [...tables, "_schema_log"]);
-      const terms = tables.map((t, i) => {
-        const col = kinds.get(t);
-        // A table the hub lacks (renamed or dropped by a replay the caller has
-        // not run yet) has no arrivals. With the newest arrival comes how many
-        // rows share that stamp (index-only): a replica whose cursor sits on
-        // it can tell a same-millisecond late commit from nothing new.
-        if (!col) return `SELECT ${i} AS i, '' AS m, NULL AS n`;
-        if (col !== "hub_at") return `SELECT ${i} AS i, max(${col}) AS m, NULL AS n FROM ${qident(t)}`;
-        return `SELECT ${i} AS i, (SELECT max(hub_at) FROM ${qident(t)}) AS m, (SELECT count(*) FROM ${qident(t)} WHERE hub_at = (SELECT max(hub_at) FROM ${qident(t)})) AS n`;
-      });
+      const terms = markTerms(tables, kinds);
       terms.push(kinds.get("_schema_log") ? `SELECT ${tables.length} AS i, coalesce(max(id), 0) AS m, NULL AS n FROM _schema_log` : `SELECT ${tables.length} AS i, 0 AS m, NULL AS n`);
-      const statements = [];
-      for (let i = 0; i < terms.length; i += COMPOUND_TERMS) statements.push(db.prepare(terms.slice(i, i + COMPOUND_TERMS).join(" UNION ALL ")));
-      const rows = [];
-      for (const { results } of await db.batch(statements)) for (const row of results ?? []) rows[row.i] = row;
-      return rows;
+      return markRows(await db.batch(compound(db, terms)));
     };
     let rows;
     try { rows = await read(); } catch (e) {
@@ -696,24 +749,10 @@ const ROUTES = {
       arrivalKinds.delete(db);
       rows = await read();
     }
-    const schema = rows[tables.length]?.m ?? 0;
-    let top = "";
-    const marks = {};
-    const at_mark = {};
-    tables.forEach((t, i) => {
-      const m = rows[i]?.m ?? "";
-      marks[t] = m;
-      const n = rows[i]?.n;
-      if (m && Number.isSafeInteger(n)) at_mark[t] = n;
-      if (m > top) top = m;
-    });
-    // `tables` is each table's own newest arrival: a replica pulls only the
-    // tables whose mark reached its cursor instead of asking every table.
     // max_updated_at kept for clients from before the hub_at cursor: same value, so an
     // old client keeps syncing (full-pull semantics) until it is upgraded.
     // pull_batch: this hub answers `/v1/rows/pull` with many pages per request.
-    // at_mark: rows stamped with each table's newest arrival.
-    return { max_hub_at: top, max_updated_at: top, tables: marks, at_mark, schema, pull_batch: PULL_BATCH };
+    return { ...cursorMarks(tables, rows), schema: rows[tables.length]?.m ?? 0, pull_batch: PULL_BATCH };
   },
 };
 
@@ -1006,7 +1045,8 @@ export default {
       if (request.method === "OPTIONS") return preflight(request, env);
       const response = await handle(request, env, ctx, url);
       const origin = corsOrigin(request, env);
-      return origin ? withCors(response, origin) : response;
+      // A copied 101 loses its WebSocket, and CORS does not apply to one.
+      return origin && response.status !== 101 ? withCors(response, origin) : response;
     });
   },
 
@@ -1065,7 +1105,7 @@ async function handle(request, env, ctx, url) {
     return json(scopedReplicaUnsupported, 403);
   }
   const rowOperation = request.method === "POST"
-    ? ({"/v1/rows/pull":"read","/v1/rows/push":"write","/v1/rows/insert":"write","/v1/rows/patch":"write"})[url.pathname] : null;
+    ? ({"/v1/rows/pull":"read","/v1/cursor":"read","/v1/rows/push":"write","/v1/rows/insert":"write","/v1/rows/patch":"write"})[url.pathname] : null;
   const narrowRows = rowOperation && !broadTableAccess(tenant.scopes,rowOperation);
   const optionsRequest = url.pathname === '/v1/catalog/options' && request.method === 'GET';
   if (!narrowRows && !optionsRequest && !allowed(url.pathname, request.method, tenant.scopes)) {
@@ -1076,14 +1116,15 @@ async function handle(request, env, ctx, url) {
     if (optionsRequest) return json(await scopedOptions(url.searchParams,tenant.db,tenant.scopes));
     if (narrowRows) {
       const body = await request.json();
-      if (!body || !(rowOperation === 'read' ? authorizeRowRead(tenant.scopes,body)
+      if (!body || !(rowOperation === 'read' ? authorizeRead(tenant.scopes,url.pathname,body)
         : authorizeTable(tenant.scopes,rowOperation,body.table)
           || (url.pathname === '/v1/rows/patch' && authorizeRowPatch(tenant.scopes,body))
           || (url.pathname === '/v1/rows/insert' && authorizeEdges(tenant.scopes,body))) || Object.hasOwn(body,"history")) {
         return json({error:"insufficient scope"},403);
       }
       if (rowOperation === "read") {
-        const out = await scopedRows(body,tenant.db);
+        const out = url.pathname === "/v1/cursor" ? await scopedCursor(body.tables,tenant.db)
+          : body.batch !== undefined ? await pullBatch(body.batch,tenant.db,true) : await scopedRows(body,tenant.db);
         return out instanceof Response ? out : json(out);
       }
       if (url.pathname === '/v1/rows/patch') {
@@ -1154,7 +1195,7 @@ async function handle(request, env, ctx, url) {
     }
     if (url.pathname === "/v1/backups" || url.pathname.startsWith("/v1/backups/")) return await handleBackups(request, env, url);
     if (url.pathname.startsWith("/v1/streams/")) return await handleStreams(request, env, url);
-    if (url.pathname === "/v1/changes" && request.method === "GET") return await changesRoute(env, url);
+    if (url.pathname === "/v1/changes" && request.method === "GET") return await changesRoute(env, url, request);
     if (
       url.pathname.startsWith("/v1/archive/") &&
       (request.method === "GET" || request.method === "HEAD")

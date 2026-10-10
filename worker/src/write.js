@@ -65,6 +65,23 @@ export function checkedReads(db) {
       };
       return { bind(...values) { args = values; return this; }, all: () => read(false), first: () => read(true) };
     },
+    // Many independent reads in one round trip, cached as the reads later
+    // asked for. A failed batch (a missing table) leaves them to run one by
+    // one, and so does a row with an unsafe integer, which needs the re-read.
+    async prefetch(list) {
+      const todo = new Map();
+      for (const [sql, args, first] of list) {
+        const query = first ? `SELECT * FROM (${sql}) LIMIT 1` : sql, key = JSON.stringify([query, args]);
+        todo.set(key, { sql: query, args });
+      }
+      let results;
+      try { results = await db.batch([...todo.values()].map(({ sql, args }) => db.prepare(sql).bind(...args))); } catch { return; }
+      [...todo].forEach(([key, read], i) => {
+        const rows = results[i].results ?? [];
+        if (rows.some(row=>Object.values(row).some(v=>typeof v==='number' && Number.isInteger(v) && !Number.isSafeInteger(v)))) return;
+        reads.set(key, { ...read, rows });
+      });
+    },
   };
 }
 
@@ -258,7 +275,7 @@ export async function commitChecked(db, reads, table, rules, statements, now, hi
   const plan=await prepareChecked(db,table,rules,statements,now,history,expected,props,transitions,probe);
   try {
     const result = await db.batch([...guards,...plan.begin,...plan.statements,...plan.end]);
-    if (!probe && transitions.length) markChanged();
+    if (!probe && transitions.length) markChanged([table]);
     return result.slice(guards.length+plan.begin.length,guards.length+plan.begin.length+plan.statements.length);
   }
   catch (e) {

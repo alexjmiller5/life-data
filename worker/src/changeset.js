@@ -120,7 +120,7 @@ export async function commitChangeset(plan,{after=[],probe=false}={}){
   }
   try{
     const result=await db.batch(statements);
-    if(!probe)markChanged();
+    if(!probe)markChanged(operations.map(op=>op.table));
     return {rows:operations.map((op,i)=>{
       const row=result[offset+i].results[0];
       return {table:op.table,id:row.id,kind:op.kind,revision:{updated_at:row.updated_at,hub_at:row.hub_at}};

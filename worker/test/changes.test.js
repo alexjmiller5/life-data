@@ -3,7 +3,7 @@
 // or a replica re-pushing no-op or rejected rows would wake every replica forever.
 import { expect, test } from "bun:test";
 import worker, { ROUTES } from "../src/index.js";
-import { ChangeSignal, withChangeSignal } from "../src/changes.js";
+import { ChangeSignal, PUSH_GAP_MS, withChangeSignal } from "../src/changes.js";
 import { D1Shim } from "./d1shim.js";
 
 function storage() {
@@ -13,9 +13,9 @@ function storage() {
 
 // The runtime holds every request until blockConcurrencyWhile settles.
 async function signal(store = storage()) {
-  const loading = [];
-  const s = new ChangeSignal({ storage: store, blockConcurrencyWhile: (fn) => loading.push(fn()) });
-  await Promise.all(loading);
+  const { state, loaded } = socketState(store);
+  const s = new ChangeSignal(state);
+  await loaded();
   return s;
 }
 
@@ -171,4 +171,172 @@ test("the cursor reports the schema log mark and tolerates tables the hub lacks"
   expect(before.tables.renamed_away).toBe("");
   await ROUTES["/v1/schema/push"]({ entries: [{ applied_at: T1, ddl: "ALTER TABLE people ADD COLUMN bio TEXT" }] }, db);
   expect((await ROUTES["/v1/cursor"]({ tables: ["people"] }, db)).schema).toBe(1);
+});
+
+// --- WebSocket wake signal ---------------------------------------------------
+// Workers provide WebSocketPair and the hibernation auto-response pair; Bun does
+// not. These stand-ins record what the object sends and accepts.
+class FakeSocket {
+  sent = [];
+  closed = null;
+  send(message) { this.sent.push(message); }
+  close(code, reason) { this.closed = { code, reason }; }
+}
+globalThis.WebSocketPair ??= class { constructor() { this[0] = new FakeSocket(); this[1] = new FakeSocket(); } };
+globalThis.WebSocketRequestResponsePair ??= class { constructor(request, response) { Object.assign(this, { request, response }); } };
+
+function socketState(store = storage()) {
+  const accepted = [], loading = [];
+  const state = {
+    storage: store,
+    autoResponse: null,
+    blockConcurrencyWhile: (fn) => loading.push(fn()),
+    acceptWebSocket: (ws) => accepted.push(ws),
+    getWebSockets: () => accepted,
+    setWebSocketAutoResponse: (pair) => (state.autoResponse = pair),
+  };
+  return { state, accepted, loaded: () => Promise.all(loading) };
+}
+const upgrade = (s, protocols) => s.fetch(new Request("https://change-signal/", {
+  headers: { Upgrade: "websocket", ...(protocols ? { "Sec-WebSocket-Protocol": protocols } : {}) },
+}));
+const bumpTables = (s, tables) =>
+  s.fetch(new Request("https://change-signal/", { method: "POST", body: JSON.stringify({ tables }) }));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test("a socket gets one coalesced message per burst naming every changed table", async () => {
+  const { state, accepted, loaded } = socketState();
+  const s = new ChangeSignal(state);
+  await loaded();
+  const response = await upgrade(s, "soma-changes-v1, soma-token.secret");
+  expect(response.status).toBe(101);
+  // The selected protocol is echoed; the token never is.
+  expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("soma-changes-v1");
+  expect(accepted).toHaveLength(1);
+  await bumpTables(s, ["people"]);
+  await bumpTables(s, ["notes"]);
+  await bumpTables(s, ["people"]);
+  expect(accepted[0].sent).toEqual([]);
+  await sleep(150);
+  expect(accepted[0].sent.map((m) => JSON.parse(m))).toEqual([{ seq: 3, tables: ["notes", "people"] }]);
+  await bumpTables(s, ["tasks"]);
+  await sleep(150);
+  expect(accepted[0].sent.map((m) => JSON.parse(m)).at(-1)).toEqual({ seq: 4, tables: ["tasks"] });
+});
+
+test("keepalive pings are answered without waking the object", async () => {
+  const { state } = socketState();
+  new ChangeSignal(state);
+  expect(state.autoResponse).toMatchObject({ request: "ping", response: "pong" });
+});
+
+test("a socket that offered no protocol gets none back, and long polls still wake", async () => {
+  const { state, loaded } = socketState();
+  const s = new ChangeSignal(state);
+  await loaded();
+  expect((await upgrade(s)).headers.get("Sec-WebSocket-Protocol")).toBeNull();
+  const held = wait(s, "since=0&wait=25");
+  await bumpTables(s, ["people"]);
+  expect(await seqOf(held)).toBe(1);
+});
+
+// A CHANGES binding backed by a real signal that records each bump's tables.
+async function tablesBinding() {
+  const { state, accepted, loaded } = socketState();
+  const s = new ChangeSignal(state);
+  await loaded();
+  const bodies = [];
+  return {
+    bodies, accepted,
+    idFromName: (name) => name,
+    get: () => ({
+      fetch: async (url, init) => {
+        const request = url instanceof Request ? url : new Request(url, init);
+        if (request.method === "POST") bodies.push(await request.clone().json());
+        return s.fetch(request);
+      },
+    }),
+  };
+}
+
+test("writers name the tables they committed", async () => {
+  const CHANGES = await tablesBinding(), env = { CHANGES }, db = await peopleDb();
+  await push(env, db, [{ id: "a", name: "Ada", updated_at: T2 }]);
+  await db.prepare("CREATE TABLE IF NOT EXISTS _schema_log (id INTEGER PRIMARY KEY, applied_at TEXT, ddl TEXT)").run();
+  await inRequest(env, () => ROUTES["/v1/schema/push"]({ entries: [{ applied_at: T1, ddl: "ALTER TABLE people ADD COLUMN bio TEXT" }] }, db, env));
+  expect(CHANGES.bodies).toEqual([{ tables: ["people"] }, { tables: ["_schema_log"] }]);
+});
+
+async function socketHub(scopes) {
+  const CHANGES = await tablesBinding();
+  const env = { HUB_TOKEN: "operator", AUTH_DB: new D1Shim(), DB: await peopleDb(), CHANGES, CORS_ORIGINS: "https://app.test" };
+  const ctx = { waitUntil() {} };
+  const mint = await worker.fetch(new Request("https://hub.test/v1/tokens/create", {
+    method: "POST", headers: { Authorization: "Bearer operator" },
+    body: JSON.stringify({ name: "replica", scopes }),
+  }), env, ctx);
+  const { token } = await mint.json();
+  const open = (headers) => worker.fetch(new Request("https://hub.test/v1/changes", {
+    headers: { Upgrade: "websocket", ...headers },
+  }), env, ctx);
+  return { token, open, CHANGES };
+}
+
+test("GET /v1/changes upgrades a reader to a socket; browsers authenticate with the token subprotocol", async () => {
+  const { token, open, CHANGES } = await socketHub("full");
+  const native = await open({ Authorization: `Bearer ${token}` });
+  expect(native.status).toBe(101);
+  // A browser cannot set headers on a WebSocket: the token rides as a subprotocol.
+  const browser = await open({ Origin: "https://app.test", "Sec-WebSocket-Protocol": `soma-changes-v1, soma-token.${token}` });
+  expect(browser.status).toBe(101);
+  expect(browser.headers.get("Sec-WebSocket-Protocol")).toBe("soma-changes-v1");
+  // CORS never rewraps the upgrade: a copied 101 would lose its socket.
+  expect(browser.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  expect(CHANGES.accepted).toHaveLength(2);
+  expect((await open({ "Sec-WebSocket-Protocol": "soma-changes-v1, soma-token.wrong" })).status).toBe(403);
+  expect((await open({})).status).toBe(403);
+});
+
+test("the socket needs table read access, like the long poll", async () => {
+  const { token, open } = await socketHub("streams:append");
+  expect((await open({ Authorization: `Bearer ${token}` })).status).toBe(403);
+});
+
+function alarmStorage() {
+  const s = storage();
+  let alarm = null;
+  return { ...s, getAlarm: async () => alarm, setAlarm: async (t) => void (alarm = t), get alarm() { return alarm; } };
+}
+
+test("a change sends a background push at once, then one trailing push per gap", async () => {
+  const store = alarmStorage();
+  const { state, loaded } = socketState(store);
+  const s = new ChangeSignal(state, { APNS_CONFIG: JSON.stringify({ deploymentIdentity: "d", teamId: "TEAMTEST01", keyId: "KEYTEST001",
+    profiles: [{ id: "phone", platform: "ios", topic: "org.example.phone", environment: "production" }] }), APNS_PRIVATE_KEY: "k" });
+  await loaded();
+  let pushes = 0;
+  s.deliver = async () => void pushes++;
+  await bumpTables(s, ["people"]);
+  await sleep(150);
+  expect(pushes).toBe(1);
+  expect(store.alarm).toBeNull();
+  await bumpTables(s, ["people"]);
+  await sleep(150);
+  expect(pushes).toBe(1);
+  expect(store.alarm).toBeGreaterThan(Date.now() + PUSH_GAP_MS - 5_000);
+  await s.alarm();
+  expect(pushes).toBe(2);
+});
+
+test("without push configuration a change never schedules a push", async () => {
+  const store = alarmStorage();
+  const { state, loaded } = socketState(store);
+  const s = new ChangeSignal(state, {});
+  await loaded();
+  let pushes = 0;
+  s.deliver = async () => void pushes++;
+  await bumpTables(s, ["people"]);
+  await sleep(150);
+  expect(pushes).toBe(0);
+  expect(await store.get("nextPush")).toBeUndefined();
 });

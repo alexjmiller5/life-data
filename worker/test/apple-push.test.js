@@ -294,3 +294,35 @@ test('sender uses supported manual redirect mode and never follows a provider re
   expect(await env.AUTH_DB.prepare('SELECT outcome FROM _push_deliveries').first()).toEqual({outcome:'retry'});
   expect(await env.AUTH_DB.prepare('SELECT read_at FROM _notifications').first()).toEqual({read_at:null});
 });
+
+// A hub change wakes closed native apps with a silent push: no banner, no feed
+// event, no delivery receipt. The app runs one sync round.
+test('a background push reaches every active installation and nothing else',async()=>{
+  const env=await providerEnvironment();
+  await enroll(env,'device-two','phone');
+  await post(env,registration({appProfile:'phone',deviceToken:'ccdd',requestId:'phone'}),undefined,'device-two');
+  await enroll(env,'device-three','phone');
+  const third=await post(env,registration({appProfile:'phone',deviceToken:'eeff',requestId:'third'}),undefined,'device-three');
+  await post(env,{appProfile:'phone',expectedRevision:third.body.receipt.registration.revision,requestId:'gone'},'/v1/push/registration/revoke','device-three');
+  const requests=[];
+  await push.deliverBackgroundPush(env,async(url,options)=>{requests.push({url,options});return new Response(null,{status:200});});
+  expect(requests.map(r=>r.url).sort()).toEqual(['https://api.push.apple.com/3/device/aabb','https://api.push.apple.com/3/device/ccdd']);
+  for(const {url,options} of requests){
+    expect(options.headers['apns-push-type']).toBe('background');
+    expect(options.headers['apns-priority']).toBe('5');
+    expect(options.headers['apns-topic']).toBe(url.endsWith('aabb')?'org.example.desktop':'org.example.phone');
+    expect(options.headers.authorization).toStartWith('bearer ');
+    expect(options.redirect).toBe('manual');
+    expect(JSON.parse(options.body)).toEqual({aps:{'content-available':1},somaSync:1});
+  }
+  expect((await env.AUTH_DB.prepare('SELECT count(*) AS n FROM _push_deliveries').first()).n).toBe(0);
+});
+
+test('a background push is a no-op without configuration and survives a provider failure',async()=>{
+  const env=await providerEnvironment();
+  let sent=0;
+  await push.deliverBackgroundPush({...env,APNS_CONFIG:undefined},async()=>{sent++;return new Response(null,{status:200});});
+  expect(sent).toBe(0);
+  await push.deliverBackgroundPush(env,async()=>{sent++;throw Error('Network connection lost.');});
+  expect(sent).toBe(1);
+});

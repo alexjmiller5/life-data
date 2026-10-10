@@ -44,10 +44,22 @@ export function authorizeRowRead(scopes, body) {
   if (!body || !ordinaryName(body.table)) return false;
   if (authorizeTable(scopes,'read',body.table)) return true;
   const granted = column => identifier(column) && scopes.includes(`tables:read:${body.table}:${column}`);
+  // An arrival cursor is a predicate on hub_at, so it needs that column's grant.
   return granted('id') && Array.isArray(body.columns) && body.columns.length > 0
-    && body.columns.every(granted) && (body.since === undefined || body.since === '')
+    && body.columns.every(granted) && (body.since === undefined || body.since === '' || granted('hub_at'))
     && (body.where === undefined || (body.where !== null && typeof body.where === 'object'
       && !Array.isArray(body.where) && Object.keys(body.where).every(granted)));
+}
+
+// Marks are hub_at values: a whole-table grant or a hub_at column grant reads them.
+export function authorizeCursor(scopes, body) {
+  return !!body && Array.isArray(body.tables) && body.tables.length > 0 && body.tables.length <= 50
+    && body.tables.every(t => ordinaryName(t) && (authorizeTable(scopes,'read',t) || scopes.includes(`tables:read:${t}:hub_at`)));
+}
+export function authorizeRead(scopes, path, body) {
+  if (path === '/v1/cursor') return authorizeCursor(scopes,body);
+  if (body?.batch !== undefined) return Array.isArray(body.batch) && body.batch.every(item => authorizeRowRead(scopes,item));
+  return authorizeRowRead(scopes,body);
 }
 
 // Revision-guarded existing-row edits only, never push/insert or lifecycle edits.
@@ -218,6 +230,15 @@ function derivationUntouched(prop,patched) {
 export function changesetTable(view,table,write=false,rowIds=null){
   return inspectTable(view,table,write,rowIds,table==='provenance',false,true);
 }
+// The table check's first reads, for any number of tables, in one round trip.
+export function prefetchTables(view, tables) {
+  return view.prefetch?.(tables.flatMap(table => [
+    ["SELECT name,type,sql FROM sqlite_master WHERE name=?", [table], true],
+    ["SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_tables'", [], true],
+    ['SELECT * FROM catalog_tables WHERE id=? AND deleted_at IS NULL', [table], true],
+    ['SELECT * FROM pragma_table_xinfo(?) ORDER BY cid', [table], false],
+  ]));
+}
 async function inspectTable(view, table, write, rowIds, origin, livePatch=false, changeset=false, patched=null) {
   if (!ordinaryName(table) && !(origin && table === 'provenance')) deny();
   if (write && (!Array.isArray(rowIds) || rowIds.some(id=>typeof id !== 'string' || !id.trim()))) deny();
@@ -285,24 +306,33 @@ export async function scopedOptions(params, db, scopes) {
   return {options:options.map(({v,d,sort})=>({v,...(d===undefined?{}:{d}),...(sort===undefined?{}:{sort})}))};
 }
 
-export async function scopedRows(body,db) {
-  const view=checkedReads(db),schema=await scopedTable(view,body.table);
+// One page's SQL once its table passes the read check; `view` records the
+// reads the caller's guards replay. A table without hub_at has no narrow cursor.
+export async function scopedQuery(view,body,maxLimit=200) {
+  const schema=await scopedTable(view,body.table);
   const names=new Set(schema.map(c=>c.name)),limit=body.limit ?? 100;
   const columns=body.columns ?? [...names],where=body.where ?? {},since=body.since ?? '';
-  const bad=()=>new Response(JSON.stringify({error:'invalid row request'}),{status:400,headers:{'Content-Type':'application/json'}});
-  if (!Number.isInteger(limit) || limit<1 || limit>200 || !Array.isArray(columns) || !columns.length
+  if (!Number.isInteger(limit) || limit<1 || limit>maxLimit || !Array.isArray(columns) || !columns.length
     || columns.some(c=>!names.has(c)) || typeof since!=='string' || (body.after!==undefined && typeof body.after!=='string')
     || !where || typeof where!=='object' || Array.isArray(where)
-    || Object.entries(where).some(([c,v])=>!names.has(c) || !['string','number'].includes(typeof v))) return bad();
+    || Object.entries(where).some(([c,v])=>!names.has(c) || !['string','number'].includes(typeof v))) return null;
   const selected=[...new Set([...columns,'id'])],args=[],conditions=[];
-  if(since) {conditions.push(`${names.has('hub_at')?'hub_at':'updated_at'} >= ?`);args.push(since);}
+  if(since) {conditions.push('hub_at >= ?');args.push(since);}
   for(const [c,v] of Object.entries(where)){conditions.push(`${qident(c)} = ?`);args.push(v);}
-  const id=since && names.has('hub_at')?'+id':'id';
+  const id=since?'+id':'id';
   if(body.after!==undefined){conditions.push(`${id} > ?`);args.push(body.after);}
   const sql=`SELECT ${selected.map(qident).join(',')} FROM ${qident(body.table)} ${conditions.length?'WHERE '+conditions.join(' AND '):''} ORDER BY ${id} LIMIT ?`;
-  const result=await db.batch([...readGuards(db,view.reads),db.prepare(sql).bind(...args,limit)]);
-  const rows=result.at(-1).results ?? [],next_cursor=rows.length===limit?rows.at(-1).id:null;
-  if(!columns.includes('id')) for(const row of rows) delete row.id;
+  return {sql,args:[...args,limit],limit,includeId:!columns.includes('id')};
+}
+
+export async function scopedRows(body,db) {
+  const view=checkedReads(db);
+  await prefetchTables(view,[body.table]);
+  const query=await scopedQuery(view,body);
+  if (!query) return new Response(JSON.stringify({error:'invalid row request'}),{status:400,headers:{'Content-Type':'application/json'}});
+  const result=await db.batch([...readGuards(db,view.reads),db.prepare(query.sql).bind(...query.args)]);
+  const rows=result.at(-1).results ?? [],next_cursor=rows.length===query.limit?rows.at(-1).id:null;
+  if(query.includeId) for(const row of rows) delete row.id;
   return {rows,next_cursor};
 }
 

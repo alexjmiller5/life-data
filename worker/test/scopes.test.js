@@ -144,9 +144,11 @@ test('a policy change between eligibility and commit cannot create side effects'
 });
 
 test('a base table replaced by a view before read is denied before the view runs',async()=>{
-  const db=rowDb(),batch=db.batch.bind(db);let changed=false;
+  const db=rowDb(),batch=db.batch.bind(db),prepare=db.prepare.bind(db),guarded=new WeakSet();let changed=false;
+  db.prepare=sql=>{const stmt=prepare(sql);if(sql.includes('life_write_conflict'))guarded.add(stmt);return stmt;};
+  // After the table check (which may prefetch in a batch of its own), before the guarded read.
   db.batch=async statements=>{
-    if(!changed){changed=true;db.db.exec('ALTER TABLE articles RENAME TO previous_articles; CREATE VIEW articles AS SELECT id,value AS url,updated_at FROM secrets');}
+    if(!changed && statements.some(s=>guarded.has(s))){changed=true;db.db.exec('ALTER TABLE articles RENAME TO previous_articles; CREATE VIEW articles AS SELECT id,value AS url,updated_at FROM secrets');}
     return batch(statements);
   };
   const {call}=await setup(['tables:read:articles'],db);

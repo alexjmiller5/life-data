@@ -74,7 +74,9 @@ reads never provision either store or rewrite saved definitions.
   R2 bindings, the `ChangeSignal` Durable Object and backup cron (those
   declarations ARE the provisioning).
 - `worker/src/changes.js` - instant sync: the `ChangeSignal` Durable Object
-  (one per hub) holds a change sequence that `GET /v1/changes` long-polls.
+  (one per hub) holds a change sequence. Open clients hold a hibernatable
+  WebSocket on `GET /v1/changes`; older replicas long-poll the same route. It
+  also sends the throttled silent APNs wake (see Apple push).
 - `worker/src/backup.js` - the backup cron: D1 export API → gzip → R2
   retention tiers, with failure/recovery notifications.
   `worker/src/backups.js` - consumer `GET/POST /v1/backups` routes
@@ -695,18 +697,31 @@ sequence (its first answer included) starts a round, and ends the loop's 1 s
 tick at once (`RemoteChanges.wait`; the runner only while idle, since other
 states ignore signals and a failed iteration may never take one). While that channel fails
 the loops poll every `poll_seconds`; while it is live, `SAFETY_SECONDS` (600)
-is the only timer. The hub bumps the sequence through `markChanged()` from
+is the only timer. The hub bumps the sequence through `markChanged(tables)` from
 `withChangeSignal`, which wraps every request and cron run: `commitChecked`
 marks only a non-probe commit with transitions (so no-op, stale and rejected
 pushes never wake replicas - a re-pushing replica would otherwise loop every
-replica), and schema push, row creation and changeset commits mark
-explicitly. A new writer that bypasses those must call `markChanged()` too;
+replica), and schema push (`_schema_log`), row creation and changeset commits
+mark explicitly, each naming the tables it committed. A new writer that
+bypasses those must call `markChanged(tables)` too;
 a missed bump costs up to `SAFETY_SECONDS`. Our own push echoes back one
 quiet round. Both loops reset their file fingerprint after a round, which
 also absorbs a local write made while it ran, so after a clean round
 `pending_local_writes` (a dirty receipt, or a row stamped between the round's
 snapshot and now) starts another round at once. The window ends at now, so a
 row from a clock running ahead cannot keep rounds going.
+
+UI clients hold the WebSocket form instead: `GET /v1/changes` with `Upgrade:
+websocket` passes the same auth and table-read scope as the long poll, then the
+Worker hands the upgrade to the object, which accepts it through the Hibernation
+API. Native clients send their Bearer header; a browser cannot set headers on a
+WebSocket, so it offers `soma-changes-v1` plus `soma-token.<token>` as
+subprotocols and only `soma-changes-v1` is echoed. The object coalesces bumps
+into one `{seq, tables}` message per 100 ms burst. Clients send `ping` and the
+runtime answers `pong` without waking the object. A message costs no D1 round
+trip, the object holds no per-device state and never retries: every client
+opening (or reopening) a socket runs one full round, which covers anything
+dropped. CORS never rewraps the 101 (a copied response loses its socket).
 
 A quiet round stays cheap: `/v1/cursor` also returns `schema` (the hub's
 newest `_schema_log` id) and blank marks for tables the hub lacks. A replica
@@ -1196,5 +1211,12 @@ OS presentation and shared read state remain separate. Deployment/event identity
 uses the 43-byte base64url SHA-256 JSON tuple in `docs/apple-push.md`; delivery
 receipts also bind the installation. Configure the dedicated provider key and
 profiles through the owning project's service ENV, never client settings.
+A hub change also wakes closed and backgrounded apps: `ChangeSignal` sends one
+silent push (`apns-push-type: background`, priority 5, body
+`{"aps":{"content-available":1},"somaSync":1}`) to every active installation
+through `deliverBackgroundPush`. The first change after a quiet gap sends at
+once; later changes share one trailing push when the 20-minute gap ends (a DO
+alarm), the most Apple delivers without throttling. No feed event, receipt or
+retry: the app's next round covers a lost push.
 
 Transient UI definitions are validated by `resolveViewDefinition` through the saved-view compiler. This read operation copies finite JSON before awaiting catalog/schema reads and never provisions views or writes saved configuration, history or pending edits. Hosts supply current calendar bounds and keep stored action revisions separate from ephemeral display/query configuration.

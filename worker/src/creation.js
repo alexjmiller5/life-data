@@ -150,7 +150,7 @@ export async function handleCreation(request,tenant,env) {
     const receipts=await db.batch([...begin,...target.statements,...origin.statements,target.assertion,origin.assertion,...origin.end,...target.end]);
     const created=receipts[begin.length]?.results?.[0];
     if(!created || created.id!==id)throw new Error('creation_unavailable');
-    markChanged();
+    markChanged([p.table,'provenance']);
     return Response.json({kind:'created',policy:body.policy,id,revision:{updated_at:created.updated_at,hub_at:created.hub_at},originId});
   } catch(error) {
     const message=String(error);
