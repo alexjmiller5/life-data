@@ -233,16 +233,19 @@ sync round, after local writes and while idle, until it returns `done`; each
 call is one BEGIN IMMEDIATE transaction that works in chunks until the budget
 (default 50 ms, at least one chunk) passes, so requests between calls never
 wait long. It reconciles first when the catalog, schema or settings moved
-(a few statements for the whole catalog plus the triggers it installs, since
-each statement crosses a host bridge)
 (a stamp built and compared in SQLite, so no host's row-object key order
-matters): that records per-table work in `_core_search_work` and installs or
-drops triggers, without touching rows. Then it purges entries of retired or
-changed tables (500 per chunk), indexes queued IDs (200 per chunk), and
-backfills newly indexed tables by walking their primary key from a saved cursor
-(200 per chunk). It returns `{indexing, pending, done}`: `indexing` while rows
-wait to be indexed, `pending` how many, `done` when no work, including purges,
-is left. `search`, `mentionedBy` (which reports `indexing`), `viewEmbed`,
+matters): in a few statements for the whole catalog (each crosses a host
+bridge) plus any triggers it drops, it records per-table work in
+`_core_search_work` without touching rows. Then it purges entries of retired or
+changed tables (500 per chunk), indexes queued IDs, and backfills newly indexed
+tables by walking their primary key from a saved cursor; a walk installs its
+table's queue triggers as it starts (the walk itself reads every earlier change)
+and records that schema change as reconciled. Index chunks hold at most 200 rows
+and about 256 KB of text, and shrink after one overruns its time target. Labels
+and FTS bodies are built in SQL from the source rows; only Markdown containing
+`iris://table/` links reaches JavaScript, for mentions. It returns `{indexing, pending, done}`: `indexing` while rows
+wait to be indexed, `pending` about how many (estimates stored per table, so a
+step never counts one), `done` when no work, including purges, is left. `search`, `mentionedBy` (which reports `indexing`), `viewEmbed`,
 `referencedBy` and searched `readRows` never build the index; they read what
 exists, and a replica the step has not reached answers from an empty index.
 The one exception keeps local edits visible whatever order a host runs things

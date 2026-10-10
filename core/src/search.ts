@@ -2,7 +2,6 @@ import type { Catalog, SearchArgs, SearchHit, SearchIndexStatus, SearchIndexStep
 import type { SqlDriver } from './driver.ts';
 import { catalogRevisionSQL, readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
-import { displayName } from './view.ts';
 import { markdownMentions } from './mentions.ts';
 import { isReadOnlyTable } from './write.ts';
 import { SIZE_RULE_ROWS } from './sync.ts';
@@ -81,20 +80,35 @@ async function initSearch(db: SqlDriver) {
 }
 
 type IndexedTable = { table: string; columns: string[]; markdown: string[]; display?: string; fingerprint: string; sweep: boolean; rowid: boolean };
-/** `columns` are the table's PRAGMA table_info rows. */
-function describeTable(entry: Row, catalog: Catalog, schema: Row[], columns: Row[]): IndexedTable | null {
+/** sqlite_master rows by name, so describing every table stays linear: on a host whose
+ * JavaScript runs without a JIT, per-table scans of the whole schema add up. */
+type Schema = { tables: Map<string, Row>; indexes: Map<string, string[]>; triggers: Map<string, unknown> };
+function indexSchema(rows: Row[]): Schema {
+  const schema: Schema = { tables: new Map(), indexes: new Map(), triggers: new Map() };
+  for (const row of rows) {
+    if (row.type === 'table') schema.tables.set(String(row.name), row);
+    else if (row.type === 'trigger') schema.triggers.set(String(row.name), row.sql);
+    else if (row.type === 'index') {
+      const list = schema.indexes.get(String(row.tbl_name));
+      if (list) list.push(String(row.sql)); else schema.indexes.set(String(row.tbl_name), [String(row.sql)]);
+    }
+  }
+  return schema;
+}
+/** `properties` are the table's catalog properties; `columns` its PRAGMA table_info rows. */
+function describeTable(entry: Row, properties: Catalog['properties'], schema: Schema, columns: Row[]): IndexedTable | null {
   const table = String(entry.id);
   if (/^(_|sqlite_)/i.test(table)) return null;
-  const physical = schema.find(r => r.type === 'table' && r.name === table);
+  const physical = schema.tables.get(table);
   if (!physical || /^CREATE VIRTUAL TABLE/i.test(String(physical.sql))) return null;
   if (!columns.some(c => c.name === 'id' && c.pk === 1) || columns.filter(c => c.pk).length !== 1
     || !columns.some(c => c.name === 'deleted_at')) return null;
   const names = new Set(columns.map(c => c.name));
-  const text = catalog.properties.filter(p => p.tbl === table && SEARCH_TEXT_TYPES.has(p.type ?? 'text') && names.has(p.col)).map(p => p.col).sort();
+  const text = properties.filter(p => SEARCH_TEXT_TYPES.has(p.type ?? 'text') && names.has(p.col)).map(p => p.col).sort();
   if (!text.length) return null;
-  const markdown = catalog.properties.filter(p => p.tbl === table && p.type === 'markdown' && names.has(p.col)).map(p => p.col).sort();
+  const markdown = properties.filter(p => p.type === 'markdown' && names.has(p.col)).map(p => p.col).sort();
   const display = typeof entry.display === 'string' && names.has(entry.display) ? entry.display : undefined;
-  const indexes = schema.filter(r => r.type === 'index' && r.tbl_name === table).map(r => r.sql).sort();
+  const indexes = [...schema.indexes.get(table) ?? []].sort();
   const fingerprint = JSON.stringify([2, physical.sql, indexes, text, display, markdown]);
   // REPLACE can silently delete a victim of another UNIQUE constraint when
   // recursive_triggers is off. Only dirty tables with such constraints need
@@ -174,20 +188,36 @@ async function catchingUp(db: SqlDriver): Promise<boolean> {
 
 /** Brings tracked tables, triggers and fingerprints in line with the schema, catalog and
  * settings. It only records work (purges and backfills); the index step does it in chunks. */
+/** Just the catalog columns describing tables needs: each value read crosses a host bridge. */
+async function searchCatalog(db: SqlDriver): Promise<Catalog> {
+  const names = new Set((await db.all("SELECT name FROM main.sqlite_master WHERE type='table' AND name IN ('catalog_tables','catalog_properties')")).map(r => r.name));
+  return {
+    tables: names.has('catalog_tables') ? await db.all('SELECT * FROM catalog_tables WHERE deleted_at IS NULL ORDER BY id') : [],
+    properties: names.has('catalog_properties') ? await db.all('SELECT tbl,col,type FROM catalog_properties WHERE deleted_at IS NULL ORDER BY id') as Catalog['properties'] : [],
+    rules: [],
+  };
+}
+
 async function reconcile(db: SqlDriver): Promise<void> {
   await initSearch(db);
-  const catalog = await readCatalog(db);
-  const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger')");
+  const catalog = await searchCatalog(db);
+  const rows = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger')");
+  const schema = indexSchema(rows);
+  const properties = new Map<string, Catalog['properties']>();
+  for (const p of catalog.properties) {
+    const list = properties.get(String(p.tbl));
+    if (list) list.push(p); else properties.set(String(p.tbl), [p]);
+  }
   const columns = new Map<string, Row[]>();
   for (const row of await db.all(`SELECT m.name AS tbl,p.name,p.pk FROM main.sqlite_master AS m JOIN pragma_table_info(m.name) AS p
     WHERE m.type='table' AND m.name IN (SELECT value FROM json_each(?))`, [JSON.stringify(catalog.tables.map(t => t.id))])) {
     columns.set(String(row.tbl), [...columns.get(String(row.tbl)) ?? [], row]);
   }
-  const candidates = catalog.tables.flatMap(entry => describeTable(entry, catalog, schema, columns.get(String(entry.id)) ?? []) ?? []);
+  const candidates = catalog.tables.flatMap(entry => describeTable(entry, properties.get(String(entry.id)) ?? [], schema, columns.get(String(entry.id)) ?? []) ?? []);
   const sizes = await sizeTables(db, candidates, await searchSettings(db));
   const tables = candidates.filter(t => sizes.has(t.table));
   const expected = new Map(tables.flatMap(t => searchTriggers(t.table).map(trigger => [trigger.name, trigger.sql] as const)));
-  for (const trigger of schema.filter(r => r.type === 'trigger' && String(r.name).startsWith('_core_search_'))) {
+  for (const trigger of rows.filter(r => r.type === 'trigger' && String(r.name).startsWith('_core_search_'))) {
     if (expected.get(String(trigger.name)) !== trigger.sql) {
       // Never replace somebody else's trigger merely because its name matches.
       if (!isSearchTrigger(trigger)) throw new Error('Search trigger definition does not match the core contract.');
@@ -203,47 +233,63 @@ async function reconcile(db: SqlDriver): Promise<void> {
     await db.run('DELETE FROM _core_search_state WHERE tbl=?', [retired]);
     await db.run('INSERT INTO _core_search_work(tbl,purge,backfill) VALUES (?,1,NULL) ON CONFLICT(tbl) DO UPDATE SET purge=1,backfill=NULL', [retired]);
   }
-  const changed = tables.filter(t => !(states.find(s => s.tbl === t.table)?.fingerprint === t.fingerprint
-    && searchTriggers(t.table).every(trigger => schema.some(s => s.type === 'trigger' && s.name === trigger.name && s.sql === trigger.sql))));
-  // Triggers queue every later change; the backfill walks the rows already there,
-  // after purging any entries an earlier definition left.
+  const fingerprints = new Map(states.map(s => [String(s.tbl), s.fingerprint]));
+  const changed = tables.filter(t => !(fingerprints.get(t.table) === t.fingerprint
+    && searchTriggers(t.table).every(trigger => schema.triggers.get(trigger.name) === trigger.sql)));
+  // The backfill walks the rows already there, after purging any entries an earlier
+  // definition left; it installs the table's queue triggers as it starts (armWalk).
   const stale = new Set((await db.all('SELECT value AS tbl FROM json_each(?) WHERE EXISTS (SELECT 1 FROM _core_search_docs WHERE tbl=value)',
     [JSON.stringify(changed.map(t => t.table))])).map(r => String(r.tbl)));
   await db.run(`INSERT INTO _core_search_work(tbl,purge,backfill,left) SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),'',json_extract(value,'$[2]')
     FROM json_each(?) WHERE true ON CONFLICT(tbl) DO UPDATE SET purge=excluded.purge,backfill='',left=excluded.left`,
     [JSON.stringify(changed.map(t => [t.table, stale.has(t.table) ? 1 : 0, sizes.get(t.table) ?? 0]))]);
-  for (const trigger of changed.flatMap(t => searchTriggers(t.table))) {
-    if (!schema.some(s => s.type === 'trigger' && s.name === trigger.name && s.sql === trigger.sql)) await db.run(trigger.sql);
-  }
   await db.run(`INSERT INTO _core_search_state(tbl,fingerprint) SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)
     WHERE true ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint`, [JSON.stringify(changed.map(t => [t.table, t.fingerprint]))]);
   await db.run(`INSERT INTO _core_search_state(tbl,fingerprint) SELECT ?,${await searchStampSQL(db)} WHERE true ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint`, [READY]);
 }
 
 /** Replaces the index entries of these queued or walked IDs with their rows' current text. */
+/** SQL forms of displayName and of the indexed text: a value of a scalar type as text, else nothing.
+ * Building entries in SQL keeps row text off host bridges; only Markdown with links reaches JavaScript. */
+const scalarText = (col: string) => `CASE WHEN typeof(s.${qident(col)}) IN ('text','integer','real') THEN CAST(s.${qident(col)} AS TEXT) END`;
+const labelText = (col: string) => `nullif(trim(${scalarText(col)},' '||char(9,10,11,12,13)),'')`;
 async function indexBatch(db: SqlDriver, indexed: IndexedTable, ids: unknown[]) {
-  const { table, columns, display } = indexed;
-  const select = [...new Set(['id', 'deleted_at', ...columns, ...(display ? [display] : [])])].map(qident).join(',');
-  const rows = await db.all(`SELECT ${select} FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`, [JSON.stringify(ids)]);
+  const { table, columns, display, markdown } = indexed;
+  const source = qident(table), queued = JSON.stringify(ids);
+  const found = await db.all(`SELECT id FROM ${source} WHERE id IN (SELECT value FROM json_each(?))`, [queued]);
   // Source PK collation can resolve a queued spelling to a different ID.
   // Replace both identities: aliases in later batches may resolve to a row
   // already indexed by an earlier batch. Cache and queue keys are binary.
-  const replacedIds = JSON.stringify([...new Set([...ids, ...rows.map(r => r.id)])]);
-  const payload = JSON.stringify(rows.map(row => ({ id: row.id, label: displayName(row, display), trashed: row.deleted_at === null ? 0 : 1,
-    body: columns.map(col => typeof row[col] === 'string' || typeof row[col] === 'number' ? String(row[col]) : '').join('\n') })));
+  const replacedIds = JSON.stringify([...new Set([...ids, ...found.map(r => r.id)])]);
   await db.run('DELETE FROM _core_search_fts WHERE rowid IN (SELECT docid FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?)))', [table, replacedIds]);
   await db.run('DELETE FROM _core_search_docs WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, replacedIds]);
   await db.run('DELETE FROM _core_search_mentions WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, replacedIds]);
-  const mentions = JSON.stringify(rows.filter(row => row.deleted_at === null).flatMap(row => indexed.markdown
+  const label = `coalesce(${display ? `${labelText(display)},` : ''}${labelText('id')},'Untitled')`;
+  // Source columns are qualified: a table may have its own tbl, row_id or label column.
+  await db.run(`INSERT INTO _core_search_docs(tbl,row_id,label,trashed) SELECT ?,s.id,${label},s.deleted_at IS NOT NULL FROM ${source} AS s
+    WHERE s.id IN (SELECT value FROM json_each(?))`, [table, queued]);
+  // The source batch stays outermost: one docs lookup per row, never a range over the table's docs.
+  await db.run(`INSERT INTO _core_search_fts(rowid,body) SELECT d.docid,${columns.map(col => `ifnull(${scalarText(col)},'')`).join("||char(10)||")}
+    FROM ${source} AS s CROSS JOIN _core_search_docs AS d ON d.tbl=? AND d.row_id=s.id WHERE s.id IN (SELECT value FROM json_each(?))`, [table, queued]);
+  if (!markdown.length) return;
+  const linked = await db.all(`SELECT id,${markdown.map(qident).join(',')} FROM ${source} WHERE id IN (SELECT value FROM json_each(?))
+    AND deleted_at IS NULL AND (${markdown.map(col => `instr(${qident(col)},'iris://table/')>0`).join(' OR ')})`, [queued]);
+  const mentions = JSON.stringify(linked.flatMap(row => markdown
     .flatMap(col => typeof row[col] === 'string' ? markdownMentions(row[col] as string) : [])
     .map(target => [row.id, target.table, target.id])));
   await db.run("INSERT OR IGNORE INTO _core_search_mentions(tbl,row_id,target_tbl,target_id) SELECT ?,json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?)", [table, mentions]);
-  await db.run("INSERT INTO _core_search_docs(tbl,row_id,label,trashed) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.label'),json_extract(value,'$.trashed') FROM json_each(?)", [table, payload]);
-  // CROSS JOIN keeps the batch outermost: one docs lookup per row, never a range over the table's docs.
-  await db.run("INSERT INTO _core_search_fts(rowid,body) SELECT d.docid,json_extract(j.value,'$.body') FROM json_each(?) AS j CROSS JOIN _core_search_docs AS d ON d.tbl=? AND d.row_id=json_extract(j.value,'$.id')", [payload, table]);
 }
 
 const BATCH = 200, PURGE_BATCH = 500;
+/** Rows per indexing chunk, per database: halved after a chunk overruns its time target and
+ * grown back after quick ones, so wide rows or a host without a JIT keep chunks short. */
+const batches = new WeakMap<SqlDriver, number>();
+async function timedBatch(db: SqlDriver, indexed: IndexedTable, ids: unknown[], targetMs: number) {
+  const started = Date.now(), size = batches.get(db) ?? BATCH;
+  await indexBatch(db, indexed, ids);
+  const elapsed = Date.now() - started;
+  batches.set(db, elapsed > targetMs ? Math.max(10, size >> 1) : elapsed * 4 < targetMs ? Math.min(BATCH, size * 2) : size);
+}
 /** Tracked tables' index metadata, read once per transaction. Call only while reconciliation
  * is current, so a tracked table's description still matches its fingerprint. */
 function describer(db: SqlDriver) {
@@ -252,15 +298,46 @@ function describer(db: SqlDriver) {
     if (!described.has(table)) described.set(table, (async () => {
       if (!(await db.all('SELECT 1 FROM _core_search_state WHERE tbl=? AND tbl<>?', [table, READY])).length) return null;
       const catalog = await readCatalog(db, [table]);
-      const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index') AND tbl_name=?", [table]);
-      return catalog.tables[0] ? describeTable(catalog.tables[0], catalog, schema, await db.all(`PRAGMA main.table_info(${qident(table)})`)) : null;
+      const schema = indexSchema(await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index') AND tbl_name=?", [table]));
+      return catalog.tables[0] ? describeTable(catalog.tables[0], catalog.properties, schema, await db.all(`PRAGMA main.table_info(${qident(table)})`)) : null;
     })());
     return described.get(table)!;
   };
 }
 
 /** One unit of owed work, in order: purges, queued changes, backfills. False when none is left. */
-async function indexChunk(db: SqlDriver, describe: (table: string) => Promise<IndexedTable | null>, swept: Set<string>): Promise<boolean> {
+type ChunkContext = { describe: (table: string) => Promise<IndexedTable | null>; swept: Set<string>; targetMs: number; armed: boolean };
+function chunkContext(db: SqlDriver, targetMs: number): ChunkContext {
+  return { describe: describer(db), swept: new Set(), targetMs, armed: false };
+}
+/** Indexed text per chunk: one wide row (a long note, a raw payload) makes a chunk of its own. */
+const CHUNK_BYTES = 262_144;
+async function fitBytes(db: SqlDriver, indexed: IndexedTable, ids: unknown[]): Promise<unknown[]> {
+  if (ids.length < 2) return ids;
+  const size = indexed.columns.map(col => `ifnull(length(CAST(s.${qident(col)} AS BLOB)),0)`).join('+');
+  const sizes = await db.all(`SELECT ifnull((SELECT ${size} FROM ${qident(indexed.table)} AS s WHERE s.id=j.value),0) AS n
+    FROM json_each(?) AS j ORDER BY j.key`, [JSON.stringify(ids)]);
+  let total = 0, keep = 0;
+  for (const row of sizes) {
+    total += Number(row.n);
+    if (keep && total > CHUNK_BYTES) break;
+    keep++;
+  }
+  return ids.slice(0, keep);
+}
+/** A walk installs its table's queue triggers as it starts: until then the walk itself still
+ * reads every row, and reconciliation stays a few statements on hosts where each costs. */
+async function armWalk(db: SqlDriver, table: string, context: ChunkContext) {
+  const existing = new Map((await db.all("SELECT name,sql FROM main.sqlite_master WHERE type='trigger' AND tbl_name=?", [table])).map(r => [r.name, r.sql]));
+  for (const trigger of searchTriggers(table)) {
+    if (existing.get(trigger.name) === trigger.sql) continue;
+    await db.run(trigger.sql);
+    context.armed = true;
+  }
+}
+
+async function indexChunk(db: SqlDriver, context: ChunkContext): Promise<boolean> {
+  const { describe, swept, targetMs } = context;
   const [purge] = await db.all('SELECT tbl FROM _core_search_work WHERE purge=1 LIMIT 1');
   if (purge) {
     const table = String(purge.tbl);
@@ -292,20 +369,21 @@ async function indexChunk(db: SqlDriver, describe: (table: string) => Promise<In
       await db.run(`DELETE FROM _core_search_docs WHERE docid IN (${orphan})`, [table]);
     }
     // Queued IDs are never empty, so the batch is a keyset range seek like the backfill's.
-    const ids = (await db.all("SELECT row_id FROM _core_search_dirty WHERE tbl=? AND row_id>'' ORDER BY row_id LIMIT ?", [table, BATCH])).map(r => r.row_id);
-    await indexBatch(db, indexed, ids);
+    const ids = await fitBytes(db, indexed, (await db.all("SELECT row_id FROM _core_search_dirty WHERE tbl=? AND row_id>'' ORDER BY row_id LIMIT ?", [table, batches.get(db) ?? BATCH])).map(r => r.row_id));
+    await timedBatch(db, indexed, ids, targetMs);
     await db.run('DELETE FROM _core_search_dirty WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, JSON.stringify(ids)]);
     return true;
   }
   const [walk] = await db.all('SELECT tbl,backfill FROM _core_search_work WHERE backfill IS NOT NULL LIMIT 1');
   if (!walk) return false;
   const table = String(walk.tbl), indexed = await describe(table);
+  if (indexed && walk.backfill === '') await armWalk(db, table, context);
   // The primary key index keeps each page a range seek, whatever the table's size.
-  const ids = indexed ? (await db.all(`SELECT id FROM ${qident(table)} WHERE typeof(id)='text' AND id>? ORDER BY id LIMIT ?`, [String(walk.backfill), BATCH])).map(r => String(r.id)) : [];
+  const ids = indexed ? await fitBytes(db, indexed, (await db.all(`SELECT id FROM ${qident(table)} WHERE typeof(id)='text' AND id>? ORDER BY id LIMIT ?`, [String(walk.backfill), batches.get(db) ?? BATCH])).map(r => String(r.id))) : [];
   if (!ids.length) await db.run('DELETE FROM _core_search_work WHERE tbl=?', [table]);
   else {
-    await indexBatch(db, indexed!, ids);
-    await db.run('UPDATE _core_search_work SET backfill=?,left=max(left-?,0) WHERE tbl=?', [ids[ids.length - 1]!, ids.length, table]);
+    await timedBatch(db, indexed!, ids, targetMs);
+    await db.run('UPDATE _core_search_work SET backfill=?,left=max(left-?,0) WHERE tbl=?', [String(ids[ids.length - 1]), ids.length, table]);
   }
   return true;
 }
@@ -331,9 +409,13 @@ export async function searchIndexStep(db: SqlDriver, args: SearchIndexStepArgs =
   if (!Number.isSafeInteger(budgetMs) || budgetMs < 0) throw new Error('Invalid search index budget.');
   return db.transaction(async () => {
     const started = Date.now();
-    if (!(await reconciled(db))) await reconcile(db);
-    const describe = describer(db), swept = new Set<string>();
-    while (await indexChunk(db, describe, swept) && Date.now() - started < budgetMs);
+    // Every call makes progress: a reconciliation, or else at least one chunk.
+    let progressed = false;
+    if (!(await reconciled(db))) { await reconcile(db); progressed = true; }
+    const context = chunkContext(db, Math.max(budgetMs, 25));
+    while ((!progressed || Date.now() - started < budgetMs) && await indexChunk(db, context)) progressed = true;
+    // Triggers a walk installed are the index's own schema change: record them as reconciled.
+    if (context.armed) await db.run(`UPDATE _core_search_state SET fingerprint=${await searchStampSQL(db)} WHERE tbl=?`, [READY]);
     return indexStatus(db);
   });
 }
@@ -352,8 +434,8 @@ export async function openSearchIndex(db: SqlDriver): Promise<void> {
   await initSearch(db);
   const [queue] = await db.all('SELECT (SELECT count(*) FROM (SELECT 1 FROM _core_search_dirty LIMIT ?)) AS queued, EXISTS(SELECT 1 FROM _core_search_work) AS owed', [BATCH + 1]);
   if (!queue?.queued || Number(queue.queued) > BATCH || queue.owed || !(await reconciled(db))) return;
-  const describe = describer(db), swept = new Set<string>();
-  while (await indexChunk(db, describe, swept));
+  const context = chunkContext(db, 25);
+  while (await indexChunk(db, context));
 }
 /** Whether rows still wait for the index step, for reads that report it. */
 export async function searchIndexing(db: SqlDriver): Promise<boolean> {

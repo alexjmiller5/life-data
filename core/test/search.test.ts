@@ -535,11 +535,12 @@ test('search, backlinks and view search read only what the index step built; the
 test('the index step works in bounded chunks, resumes across calls and reports what is left', async () => {
   const { db } = await local();
   for (let i = 0; i < 450; i++) await db.run('INSERT INTO items(id,name,body) VALUES (?,?,?)', [`r${String(i).padStart(3, '0')}`, 'Row', 'offline copy']);
+  // Every call makes progress: the first reconciles (installing triggers, recording work)...
+  expect(await core.searchIndexStep(db, { budgetMs: 0 })).toEqual({ indexing: true, pending: 451, done: false });
+  expect(await docs(db, 'items')).toBe(0);
+  // ...and a zero budget still does one chunk after that; search sees that much.
   const first = await core.searchIndexStep(db, { budgetMs: 0 });
-  expect(first).toMatchObject({ indexing: true, done: false });
-  expect(first.pending).toBeGreaterThan(0);
-  expect(first.pending).toBeLessThan(451);
-  // A zero budget still does one chunk, so every call makes progress; search sees that much.
+  expect(first).toEqual({ indexing: true, pending: 251, done: false });
   expect(await docs(db, 'items')).toBe(200);
   expect(await core.search(db, { text: 'offline', limit: 200, offset: 199 })).toHaveLength(1);
   let last = first, steps = 1;
@@ -602,6 +603,8 @@ test('an index built before an exclusion is purged in bounded chunks while the r
   await drain(db);
   expect(await docs(db, 'provenance')).toBe(1200);
   await db.run('DELETE FROM _core_state WHERE key=?', [core.SEARCH_TABLES_KEY]);
+  expect(await core.searchIndexStep(db, { budgetMs: 0 })).toMatchObject({ indexing: false, done: false });
+  expect(await docs(db, 'provenance')).toBe(1200);
   const first = await core.searchIndexStep(db, { budgetMs: 0 });
   expect(first).toMatchObject({ indexing: false, done: false });
   const left = await docs(db, 'provenance');
@@ -684,4 +687,77 @@ test('without a hub count, a rowid span bounds small tables; wide spans and WITH
   expect(await db.all("SELECT left FROM _core_search_work WHERE tbl='sparse'")).toEqual([{ left: 2 }]);
   await drain(db);
   expect([await docs(db, 'sparse'), await docs(db, 'clustered')]).toEqual([2, 2]);
+});
+
+test('chunks shrink after one overruns its time target and grow back when quick', async () => {
+  const { db } = await local();
+  for (let i = 0; i < 600; i++) await db.run('INSERT INTO items(id,name) VALUES (?,?)', [`r${String(i).padStart(3, '0')}`, 'Row']);
+  await core.searchIndexStep(db, { budgetMs: 0 }); // reconcile
+  const run = db.run.bind(db);
+  let slow = true;
+  // A host whose chunks are slow (no JIT, wide rows): 60 ms for every chunk's index write.
+  db.run = async (sql, params) => { if (slow && sql.startsWith('INSERT INTO _core_search_fts')) await Bun.sleep(60); return run(sql, params); };
+  const indexed = async () => { await core.searchIndexStep(db, { budgetMs: 0 }); return docs(db, 'items'); };
+  expect(await indexed()).toBe(200);
+  expect(await indexed()).toBe(300);
+  expect(await indexed()).toBe(350);
+  slow = false;
+  expect(await indexed()).toBe(375);
+  expect(await indexed()).toBe(425);
+  db.run = run;
+});
+
+test('index labels follow the display rules: trimmed display text, else the id', async () => {
+  const { db } = await local();
+  await db.run("INSERT INTO items(id,name,body) VALUES ('blank','   ','labelword'),('spaced','  Padded  ','labelword'),('numeric',NULL,'labelword')");
+  await db.run("UPDATE catalog_tables SET display='qty' WHERE id='items'");
+  await db.run("UPDATE items SET qty=7 WHERE id='numeric'");
+  expect((await search(db, { text: 'labelword' })).map(h => [h.id, h.label]).sort()).toEqual([['blank', 'blank'], ['numeric', '7'], ['spaced', 'spaced']]);
+  await db.run("UPDATE catalog_tables SET display='name' WHERE id='items'");
+  expect((await search(db, { text: 'labelword' })).map(h => [h.id, h.label]).sort()).toEqual([['blank', 'blank'], ['numeric', 'numeric'], ['spaced', 'Padded']]);
+});
+
+test('source columns named like the cache columns index without ambiguity', async () => {
+  const { db } = await local();
+  await db.run('CREATE TABLE ledger (id TEXT PRIMARY KEY, tbl TEXT, row_id TEXT, label TEXT, docid TEXT, trashed TEXT, body TEXT, deleted_at TEXT)');
+  await db.run("INSERT INTO catalog_tables(id,display) VALUES ('ledger','label')");
+  for (const col of ['tbl', 'row_id', 'label', 'docid', 'trashed', 'body'])
+    await db.run('INSERT INTO catalog_properties(id,tbl,col,type) VALUES (?,?,?,?)', [`ledger.${col}`, 'ledger', col, col === 'body' ? 'markdown' : 'text']);
+  await db.run(`INSERT INTO ledger(id,tbl,row_id,label,docid,trashed,body) VALUES ('l1','tblword','rowword','Ledger label','docword','trashword',?)`, [`See [x](${core.irisHref('row', 'items', 'a')})`]);
+  for (const word of ['tblword', 'rowword', 'docword', 'trashword']) expect((await search(db, { text: word })).map(h => [h.id, h.label])).toEqual([['l1', 'Ledger label']]);
+  expect((await core.mentionedBy(db, { table: 'items', rowId: 'a' })).rows.map(r => r.id)).toEqual(['l1']);
+});
+
+test('a chunk holds about 256 KB of text, so one wide row makes a chunk of its own', async () => {
+  const { db } = await local();
+  await db.run('DELETE FROM items');
+  for (const id of ['w1', 'w2', 'w3']) await db.run('INSERT INTO items(id,name,body) VALUES (?,?,?)', [id, 'Wide', 'widetext ' + 'x'.repeat(200_000)]);
+  await core.searchIndexStep(db, { budgetMs: 0 }); // reconcile
+  await core.searchIndexStep(db, { budgetMs: 0 });
+  expect(await docs(db, 'items')).toBe(1);
+  await drain(db);
+  expect((await search(db, { text: 'widetext' })).map(h => h.id)).toEqual(['w1', 'w2', 'w3']);
+});
+
+test('a walk installs its queue triggers as it starts and leaves the index reconciled', async () => {
+  const { db } = await local();
+  await core.initCore(db);
+  for (let i = 0; i < 450; i++) await db.run('INSERT INTO items(id,name) VALUES (?,?)', [`r${String(i).padStart(3, '0')}`, 'Row']);
+  const triggers = async () => (await db.all("SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB '_core_search_*'")).length;
+  await core.searchIndexStep(db, { budgetMs: 0 }); // reconcile records the walk, installs nothing
+  expect(await triggers()).toBe(0);
+  // An edit before the walk starts needs no trigger: the walk reads the row as it is.
+  await db.run("UPDATE items SET name='before walk' WHERE id='r400'");
+  const statements: string[] = [];
+  const all = db.all.bind(db);
+  db.all = async (sql, params) => { statements.push(sql); return all(sql, params); };
+  await core.searchIndexStep(db, { budgetMs: 0 });
+  expect(await triggers()).toBe(3);
+  statements.length = 0;
+  await core.searchIndexStep(db, { budgetMs: 0 });
+  db.all = all;
+  expect(statements.some(sql => sql.includes('p.name,p.pk'))).toBe(false); // not reconciled again
+  // An edit to a row the walk already passed is queued by the trigger.
+  await db.run("UPDATE items SET name='after walk' WHERE id='a'");
+  expect((await search(db, { text: 'walk', limit: 10 })).map(h => h.id).sort()).toEqual(['a', 'r400']);
 });
