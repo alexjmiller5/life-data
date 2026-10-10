@@ -1,4 +1,4 @@
-import type { Catalog } from './contract.generated.ts';
+import type { Catalog, CatalogRevision } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
 import { qident, type Property, type Row } from './validate.ts';
 
@@ -14,8 +14,33 @@ export function decodeProperty(row: Row): Property {
   return decoded;
 }
 
-export async function readCatalog(db: SqlDriver): Promise<Catalog> {
+/** tables limits the read to those tables' entries, properties and rules, for operations
+ * that involve only them; the whole catalog is about a megabyte on a large estate. */
+export async function readCatalog(db: SqlDriver, tables?: readonly string[]): Promise<Catalog> {
   const existing=new Set((await db.all("SELECT name FROM sqlite_master WHERE type='table'")).map(r=>r.name));
-  const read=(table:string)=>existing.has(table) ? db.all(`SELECT * FROM ${qident(table)} WHERE deleted_at IS NULL ORDER BY id`) : Promise.resolve([]);
-  return {tables:await read('catalog_tables'), properties:(await read('catalog_properties')).map(decodeProperty), rules:await read('catalog_rules')};
+  const scope=tables===undefined ? [] : [JSON.stringify([...new Set(tables)])];
+  const read=(table:string,key:string)=>existing.has(table) ? db.all(`SELECT * FROM ${qident(table)} WHERE deleted_at IS NULL${scope.length?` AND ${key} IN (SELECT value FROM json_each(?))`:''} ORDER BY id`,scope) : Promise.resolve([]);
+  return {tables:await read('catalog_tables','id'), properties:(await read('catalog_properties','tbl')).map(decodeProperty), rules:await read('catalog_rules','tbl')};
+}
+
+/** Changes whenever a catalog row is added, edited, retired, pulled or removed: every write moves
+ * updated_at, deleted_at or hub_at (tables without updated_at contribute every column).
+ * Hosts compare it before re-reading the whole catalog. */
+export async function catalogRevision(db: SqlDriver): Promise<CatalogRevision> {
+  const names=['catalog_tables','catalog_properties','catalog_rules'];
+  const columns=new Map<string,string[]>();
+  for(const r of await db.all(`SELECT m.name AS tbl,p.name AS col FROM sqlite_master AS m JOIN pragma_table_info(m.name) AS p
+    WHERE m.type='table' AND m.name IN ('${names.join("','")}')`)) columns.set(String(r.tbl),[...columns.get(String(r.tbl))??[],String(r.col)]);
+  const parts=names.map(table=>{
+    const all=columns.get(table);
+    if(!all)return "'-'";
+    const used=all.includes('updated_at')?all.filter(c=>['id','updated_at','deleted_at','hub_at'].includes(c)):all;
+    return `(SELECT count(*)||':'||ifnull(group_concat(r,''),'') FROM (SELECT json_array(${used.map(qident).join(',')}) AS r FROM ${qident(table)} ORDER BY id))`;
+  });
+  const [row]=await db.all(`SELECT ${parts.join("||'|'||")} AS rows`);
+  // Two FNV-1a passes give 64 bits; the text never leaves core.
+  let a=0x811c9dc5,b=0x01000193;
+  const text=String(row!.rows);
+  for(let i=0;i<text.length;i++){const c=text.charCodeAt(i);a=Math.imul(a^c,0x01000193)>>>0;b=Math.imul(b^c,0x5bd1e995)>>>0;}
+  return {revision:a.toString(16).padStart(8,'0')+b.toString(16).padStart(8,'0')};
 }

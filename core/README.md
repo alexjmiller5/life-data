@@ -99,7 +99,12 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   transaction, resets device sync state and clears the undo stack.
   `hubBackups`/`createHubBackup` read and take hub backups. See
   `docs/backups.md`.
-- `readCatalog` decodes properties. `compileView` produces parameterized,
+- `readCatalog(driver, tables?)` decodes properties; `tables` limits the read to
+  those tables' entries, properties and rules (row reads, saved views and view
+  defaults pass only the tables they touch; the whole catalog is about a
+  megabyte on a large estate). `catalogRevision` returns a short value that
+  changes whenever any catalog row is added, edited, retired, pulled or removed;
+  hosts compare it before re-reading the whole catalog. `compileView` produces parameterized,
   catalog-scoped SQL with filtering, sorting and bounded pages. `contains`
   remains a literal substring filter (or exact JSON array membership).
 - `listViews(driver, { table, trash? })` reads shared saved definitions and
@@ -137,14 +142,19 @@ source imports no platform modules. Inject a `SqlDriver` and a `Hub`.
   punctuation-only global searches return no hits. Limits default to 50 and
   cap at 200; queries are limited to 4096 characters / 64 words. Global hits
   rank by BM25 with table/id tie-breakers and exclude trash; row views retain
-  their explicit sorting and trash selection.
+  their explicit sorting and trash selection. Ranking reads every match, so it
+  covers the `SEARCH_RANKED_MATCHES` (2,000) most recently indexed live matches
+  in scope: a one-letter prefix over a large estate stays a fraction of a
+  second, and fewer matches rank exactly as before.
 - Search indexes physically present, cataloged textual columns, including raw
   Markdown, select, URL, email, phone, ref, date, datetime and date_or_datetime values. It does
   not search uncataloged fields, JSON, numbers, blobs, or remote skipped data.
   Retained rows from skipped tables are still local results and may be stale:
   hosts must keep sync coverage warnings visible. No result is a claim of
   complete hub coverage. Labels use the shared display-name function.
-- Excerpts use up to 24 FTS tokens, capped at 512 SQLite characters, with
+- Excerpts are computed for the returned page only, from the stored index text:
+  up to 24 words around the first word starting with a search term (accents
+  folded), capped at 512 characters, with
   conservative cleanup of Markdown headings, lists, links and inline markers.
   Link destinations, code and table text remain searchable. This is **raw
   Markdown indexing plus display cleanup**, not a maintained plain-text
@@ -218,6 +228,10 @@ record OLD/NEW IDs in the same transaction as writes, including pulls and
 independent Python writes. They invoke no FTS functions in those writers.
 Before searching, core reconciles catalog/schema fingerprints, drains dirty
 rows in batches, and reads results under one BEGIN IMMEDIATE transaction.
+Each drain batch is a keyset range of the queue and looks up index entries by
+identity (`CROSS JOIN` keeps the batch outermost; a plain join lets SQLite
+range over all of the table's entries per batch), so its cost does not grow
+with the table. `test/search.test.ts` asserts these query plans.
 Queued IDs and actual returned IDs are both replaced in the binary-keyed
 cache, so source collations such as NOCASE cannot collide across batches.
 Failed drains roll back and retain their queue; missing cache components or

@@ -32,7 +32,7 @@ async function storageProblem(db:SqlDriver,catalog:Catalog,storage=defaults):Pro
  return null;
 }
 async function read(db:SqlDriver,table:string,storage=defaults):Promise<ViewDefault>{
- const catalog=await readCatalog(db),unavailable=await storageProblem(db,catalog,storage);
+ const catalog=await readCatalog(db,[storage.table.id,table]),unavailable=await storageProblem(db,catalog,storage);
  const result:ViewDefault={table,viewId:null,updated_at:null,view:null,unavailable};
  if(unavailable)return result;
  if(!catalog.tables.some(t=>t.id===table))throw Error('Default table is unavailable.');
@@ -92,7 +92,7 @@ export async function ensureDefaultView(db:SqlDriver,input:GetViewDefaultArgs,op
    view=(await listViews(tx,{table})).views.find(v=>v.id===id);
   }
   if(!view?.view)return state;
-  const pointable=state.viewId===null&&!(await storageProblem(tx,await readCatalog(tx)))&&(await writeability(tx,{table:defaults.table.id})).writable;
+  const pointable=state.viewId===null&&!(await storageProblem(tx,await readCatalog(tx,[defaults.table.id])))&&(await writeability(tx,{table:defaults.table.id})).writable;
   if(!pointable)return {...state,view};
   await commitWrite(tx,defaults.table.id,state.updated_at===null?{tbl:table,view_id:id}:{id:idFor(table),view_id:id,deleted_at:null},
    state.updated_at===null?{origin,id:()=>idFor(table)}:{origin,expectedUpdatedAt:state.updated_at});

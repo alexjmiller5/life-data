@@ -138,9 +138,11 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
       await db.run(`DELETE FROM _core_search_fts WHERE rowid IN (${orphan})`, [table]);
       await db.run(`DELETE FROM _core_search_docs WHERE docid IN (${orphan})`, [table]);
     }
-    for (;;) {
-      const pending = await db.all('SELECT row_id FROM _core_search_dirty WHERE tbl=? ORDER BY row_id LIMIT 200', [table]);
+    // Keyset paging keeps each batch a range seek however long the queue is.
+    for (let after = '';;) {
+      const pending = await db.all('SELECT row_id FROM _core_search_dirty WHERE tbl=? AND row_id>? ORDER BY row_id LIMIT 200', [table, after]);
       if (!pending.length) break;
+      after = String(pending[pending.length - 1]!.row_id);
       const ids = JSON.stringify(pending.map(r => r.row_id));
       const select = [...new Set(['id', 'deleted_at', ...columns, ...(display ? [display] : [])])].map(qident).join(',');
       const rows = await db.all(`SELECT ${select} FROM ${qident(table)} WHERE id IN (SELECT value FROM json_each(?))`, [ids]);
@@ -158,7 +160,8 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
         .map(target => [row.id, target.table, target.id])));
       await db.run("INSERT OR IGNORE INTO _core_search_mentions(tbl,row_id,target_tbl,target_id) SELECT ?,json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?)", [table, mentions]);
       await db.run("INSERT INTO _core_search_docs(tbl,row_id,label,trashed) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.label'),json_extract(value,'$.trashed') FROM json_each(?)", [table, payload]);
-      await db.run("INSERT INTO _core_search_fts(rowid,body) SELECT d.docid,json_extract(j.value,'$.body') FROM json_each(?) AS j JOIN _core_search_docs AS d ON d.tbl=? AND d.row_id=json_extract(j.value,'$.id')", [payload, table]);
+      // CROSS JOIN keeps the batch outermost: one docs lookup per row, never a range over the table's docs.
+      await db.run("INSERT INTO _core_search_fts(rowid,body) SELECT d.docid,json_extract(j.value,'$.body') FROM json_each(?) AS j CROSS JOIN _core_search_docs AS d ON d.tbl=? AND d.row_id=json_extract(j.value,'$.id')", [payload, table]);
       await db.run('DELETE FROM _core_search_dirty WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, ids]);
     }
   }
@@ -202,11 +205,48 @@ export async function search(db: SqlDriver, args: SearchArgs): Promise<SearchHit
     if (!query) return [];
     // Read-only system rows (history, provenance, catalog) repeat user text; list them after records.
     const system = catalog.tables.filter(t => isReadOnlyTable(String(t.id), t)).map(t => String(t.id));
-    const hits = await db.all(`SELECT d.tbl AS "table",d.row_id AS id,d.label,substr(snippet(_core_search_fts,0,'','','...',24),1,512) AS excerpt
+    const scope = `d.trashed=0${table === undefined ? '' : ' AND d.tbl=?'}`, scoped = table === undefined ? [] : [table];
+    // Relevance and excerpts cost work per match; a one-letter prefix matches most of a large
+    // estate. Rank the newest SEARCH_RANKED_MATCHES live matches in scope (all of them below it).
+    const hits = await db.all(`SELECT d.docid,d.tbl AS "table",d.row_id AS id,d.label
       FROM _core_search_fts JOIN _core_search_docs AS d ON d.docid=_core_search_fts.rowid
-      WHERE _core_search_fts MATCH ? AND d.trashed=0 ${table === undefined ? '' : 'AND d.tbl=?'}
+      WHERE _core_search_fts MATCH ? AND ${scope} AND _core_search_fts.rowid>=ifnull((SELECT f.rowid FROM _core_search_fts AS f
+        JOIN _core_search_docs AS d ON d.docid=f.rowid WHERE f._core_search_fts MATCH ? AND ${scope}
+        ORDER BY f.rowid DESC LIMIT 1 OFFSET ${SEARCH_RANKED_MATCHES - 1}),0)
       ORDER BY d.tbl IN (${system.map(() => '?').join(',')}),bm25(_core_search_fts),d.tbl,d.row_id LIMIT ? OFFSET ?`,
-      [query, ...(table === undefined ? [] : [table]), ...system, Math.min(limit, 200), offset]) as SearchHit[];
-    return hits.map(hit => ({ ...hit, excerpt: excerptText(hit.excerpt) }));
+      [query, ...scoped, query, ...scoped, ...system, Math.min(limit, 200), offset]);
+    // Excerpts read stored bodies by rowid; re-running MATCH per hit expands every prefix again.
+    const bodies = new Map((await db.all('SELECT rowid,body FROM _core_search_fts WHERE rowid IN (SELECT value FROM json_each(?))',
+      [JSON.stringify(hits.map(h => h.docid))])).map(r => [r.rowid, String(r.body ?? '')]));
+    const terms = (args.text.match(/[\p{L}\p{N}\p{M}]+/gu) ?? []).map(fold);
+    return hits.map(({ docid, ...hit }) => ({ ...hit, excerpt: excerptText(excerpt(bodies.get(docid) ?? '', terms)) }) as SearchHit);
   });
 }
+
+/** Ranked matches per search; more matches than this rank only the most recently indexed. */
+export const SEARCH_RANKED_MATCHES = 2000;
+const EXCERPT_WORDS = 24;
+const fold = (word: string) => word.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+/** snippet()'s window: up to EXCERPT_WORDS words centred on the first word starting with a
+ * search term (diacritics folded like the unicode61 tokenizer), '...' where text is cut.
+ * Without such a word (another folding rule), the window starts at the beginning. */
+function excerpt(body: string, terms: string[]): string {
+  const word = /[\p{L}\p{N}\p{M}]+/gu, words: [number, number][] = [];
+  let hit = -1, cutBefore = false, cutAfter = false;
+  for (let match; (match = word.exec(body));) {
+    if (hit >= 0 && words.length >= EXCERPT_WORDS && words.length - hit > EXCERPT_WORDS / 2) { cutAfter = true; break; }
+    words.push([match.index, match.index + match[0].length]);
+    if (hit < 0 && terms.some(term => fold(match[0]).startsWith(term))) hit = words.length - 1;
+    else if (hit < 0 && words.length > EXCERPT_WORDS) { words.shift(); cutBefore = true; }
+  }
+  if (hit < 0) return terms.length === 1 && terms[0] === '' ? body.slice(0, 512) : excerpt(body, ['']);
+  // Collection stops half a window past the hit, so the last EXCERPT_WORDS words centre it.
+  const first = Math.max(0, words.length - EXCERPT_WORDS);
+  const last = Math.min(words.length, first + EXCERPT_WORDS) - 1;
+  cutBefore ||= first > 0;
+  cutAfter ||= last < words.length - 1;
+  const text = body.slice(cutBefore ? words[first]![0] : 0, cutAfter ? words[last]![1] : body.length);
+  return `${cutBefore ? '...' : ''}${text}${cutAfter ? '...' : ''}`.slice(0, 512);
+}
+

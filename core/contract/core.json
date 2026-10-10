@@ -5696,6 +5696,17 @@
         "more"
       ],
       "description": "Read-only preview rows projected to id plus the displayed columns. calendar asks the host to repeat the request with that policy's CalendarContext."
+    },
+    "CatalogRevision": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision"
+      ]
     }
   },
   "operations": {
@@ -5706,6 +5717,15 @@
       "result": {
         "$ref": "#/$defs/Catalog"
       }
+    },
+    "catalogRevision": {
+      "args": {
+        "$ref": "#/$defs/EmptyArgs"
+      },
+      "result": {
+        "$ref": "#/$defs/CatalogRevision"
+      },
+      "description": "Changes whenever any catalog row changes; compare before re-reading the whole catalog."
     },
     "rows": {
       "args": {

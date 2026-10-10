@@ -177,7 +177,7 @@ export async function listViews(db: SqlDriver, args: ListViewsArgs): Promise<Sav
   if ((args.table !== undefined && typeof args.table !== 'string') || (args.trash !== undefined && typeof args.trash !== 'boolean')) throw new Error('Invalid saved-view list arguments.');
   if (args.table !== undefined) qident(args.table);
   return db.transaction(async () => {
-    const catalog = await readCatalog(db);
+    const catalog = await readCatalog(db, args.table === undefined ? undefined : [storage.table.id, args.table]);
     const unavailable = await storageProblem(db, catalog);
     if (unavailable) return { views: [], unavailable };
     const rows = await db.all(`SELECT * FROM main.views WHERE ${args.table === undefined ? '' : 'tbl=? AND '}deleted_at IS ${args.trash ? 'NOT ' : ''}NULL ORDER BY tbl,name,id`, args.table === undefined ? [] : [args.table]);

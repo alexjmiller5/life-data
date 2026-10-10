@@ -255,7 +255,7 @@ test('drain and read hold one writer reservation; a later external revision surv
   const all = db.all.bind(db);
   let attempted = false;
   db.all = async (sql, params) => {
-    if (sql.includes('snippet(')) {
+    if (sql.includes('bm25(')) {
       attempted = true;
       expect(() => external.exec("UPDATE items SET body='concurrent' WHERE id='a'")).toThrow(/locked/);
     }
@@ -412,4 +412,63 @@ test.each([
 ])('rejects malformed search arguments %j', async args => {
   const { db } = await local();
   await expect(core.search(db, args as core.SearchArgs)).rejects.toThrow();
+});
+
+test('draining dirty rows looks up index entries by identity instead of ranging over the table', async () => {
+  const { db } = await local();
+  for (let i = 0; i < 450; i++) await db.run('INSERT INTO items(id,name,body) VALUES (?,?,?)', [`r${i}`, 'Row', 'first']);
+  await ids(db, 'first');
+  await db.run("UPDATE items SET body='second'");
+  const statements: [string, core.Value[]][] = [];
+  const all = db.all.bind(db), run = db.run.bind(db);
+  db.all = async (sql, params = []) => { statements.push([sql, params]); return all(sql, params); };
+  db.run = async (sql, params = []) => { statements.push([sql, params]); return run(sql, params); };
+  expect(await search(db, { text: 'second', limit: 200 })).toHaveLength(200);
+  db.all = all; db.run = run;
+  const plans: string[] = [];
+  for (const [sql, params] of statements.filter(([sql]) => /_core_search_(docs|dirty)/.test(sql) && !/^CREATE|LIMIT 1$/.test(sql)))
+    for (const row of await all('EXPLAIN QUERY PLAN ' + sql, params)) plans.push(`${row.detail}  <-  ${sql.slice(0, 80)}`);
+  // A per-batch statement that reads every queued or indexed row of the table grows with the table.
+  expect(plans.filter(p => /\bSCAN (d|_core_search_docs|_core_search_dirty)\b|\(tbl=\?\)  /.test(p))).toEqual([]);
+});
+
+test('a word matching more rows than the ranking bound ranks only the most recently indexed matches', async () => {
+  const { db } = await local();
+  // Indexed first and most relevant; ranking every match would put it on top.
+  await db.run("INSERT INTO items(id,name,body) VALUES ('old','needle needle needle','needle needle needle')");
+  await ids(db, 'needle');
+  db.db.query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO items(id,name) SELECT 'n'||i,'needle' FROM n").run(core.SEARCH_RANKED_MATCHES);
+  const hits = await search(db, { text: 'needle', limit: 200 });
+  expect(hits).toHaveLength(200);
+  expect(hits.some(h => h.id === 'old')).toBe(false);
+  expect(hits.every(h => h.excerpt === 'needle')).toBe(true);
+  // At the bound nothing is dropped, and the most relevant match ranks first.
+  await db.run("DELETE FROM items WHERE id='n1'");
+  expect((await search(db, { text: 'needle', limit: 1 }))[0]).toMatchObject({ id: 'old', excerpt: 'needle needle needle\nneedle needle needle' });
+});
+
+test('the ranking bound applies within the searched table and to live records only', async () => {
+  const { db } = await local();
+  await db.run("INSERT INTO items(id,name) VALUES ('mine','needle')");
+  await db.run('CREATE TABLE other (id TEXT PRIMARY KEY, name TEXT, deleted_at TEXT)');
+  await db.run("INSERT INTO catalog_tables(id,display) VALUES ('other','name')");
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('other.name','other','name','text')");
+  await ids(db, 'needle');
+  db.db.query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?) INSERT INTO other(id,name,deleted_at) SELECT 'o'||i,'needle','2026-01-01T00:00:00.000Z' FROM n").run(core.SEARCH_RANKED_MATCHES);
+  expect((await search(db, { text: 'needle' })).map(h => h.id)).toEqual(['mine']);
+  db.db.query("UPDATE other SET deleted_at=NULL").run();
+  expect((await search(db, { text: 'needle', table: 'items' })).map(h => h.id)).toEqual(['mine']);
+});
+
+test('excerpts center the first matching word of long text and fold accents like the index', async () => {
+  const { db } = await local();
+  const words = Array.from({ length: 60 }, (_, i) => `w${i}`);
+  words[40] = 'Crème';
+  await db.run("UPDATE items SET body=? WHERE id='a'", [words.join(' ')]);
+  const [hit] = await search(db, { text: 'creme' });
+  expect(hit.excerpt).toBe('...w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 Crème w41 w42 w43 w44 w45 w46 w47 w48 w49 w50 w51 w52...');
+  words[40] = 'w40';
+  words[5] = 'Crème';
+  await db.run("UPDATE items SET body=? WHERE id='a'", [words.join(' ')]);
+  expect((await search(db, { text: 'creme' }))[0].excerpt).toBe(`${words.slice(0, 24).join(' ')}...`);
 });

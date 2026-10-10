@@ -73,7 +73,7 @@ export async function mentionLabels(db: SqlDriver, args: MentionLabelsArgs): Pro
   if (!Array.isArray(targets) || targets.some(t => !t || !text(t.table) || !text(t.id))) throw Error('Invalid mention targets');
   if (targets.length > 200) throw Error('Resolve at most 200 mentions per request');
   return db.transaction(async () => {
-    const catalog = await readCatalog(db);
+    const catalog = await readCatalog(db, targets.map(t => t.table));
     const found = new Map<string, { label: string; trashed: boolean }>();
     for (const table of new Set(targets.map(t => t.table))) {
       const entry = catalog.tables.find(t => t.id === table);

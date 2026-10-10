@@ -6,7 +6,7 @@ import type { CoreHandlers, OptionsArgs, View, WorkspaceRow } from './contract.g
 import {unavailableGovernance,type GovernanceAPI} from './governance-service.ts';
 import type { SqlDriver } from './driver.ts';
 import type { ServiceHub } from './services.ts';
-import { readCatalog } from './catalog.ts';
+import { catalogRevision, readCatalog } from './catalog.ts';
 import { prepareReadPlan } from './read-plan.ts';
 import { referenceSources, referencedBy } from './references.ts';
 import { resolveSourceLink } from './source-links.ts';
@@ -30,7 +30,7 @@ import { validateBackup, previewRestore, exportReplica, restoreReplica, listHubB
 /** Shared queries; hosts own serialization, read-only SQL enforcement and locks. */
 export async function readRows(db: SqlDriver, view: View): Promise<WorkspaceRow[]> {
   const read = async () => {
-    const catalog = await readCatalog(db);
+    const catalog = await readCatalog(db, view.search ? undefined : [view.table]);
     const table = catalog.tables.find(t => t.id === view.table);
     if (!table) throw new Error('Table is not in the catalog');
     const query = compileView(view, catalog.properties);
@@ -67,6 +67,7 @@ export function createCoreHandlers(db: SqlDriver, hub: (endpoint: string) => Ser
       const catalog = await readCatalog(db);
       return { ...catalog, tables: catalog.tables.map(t => ({ ...t, readOnly: isReadOnlyTable(String(t.id), t) })) };
     },
+    catalogRevision: () => catalogRevision(db),
     saveCatalogProperty: args => saveCatalogProperty(db,args),
     saveCatalogRule: args => saveCatalogRule(db,args),
     rows: view => readRows(db, view),

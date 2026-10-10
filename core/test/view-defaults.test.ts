@@ -159,3 +159,19 @@ test('default views are created without preference storage and never provision e
  expect(none.view).toBeNull();
  expect(await db.all("SELECT name FROM sqlite_master WHERE name='views'")).toEqual([]);
 });
+test('opening a table reads only the catalog rows of the tables it involves',async()=>{
+ const {db,view}=await fixture();
+ await core.setViewDefault(db,{table:'items',viewId:view.id,expectedUpdatedAt:null});
+ const read:{sql:string;rows:Record<string,unknown>[]}[]=[];
+ const all=db.all.bind(db);
+ db.all=async(sql,params)=>{const rows=await all(sql,params);if(/FROM\s+"?catalog_(tables|properties|rules)/.test(sql))read.push({sql,rows});return rows;};
+ const tablesOf=()=>new Set(read.flatMap(r=>r.rows.map(row=>String(/catalog_tables/.test(r.sql)?row.id:row.tbl))));
+ await core.ensureDefaultView(db,{table:'items'});
+ await core.listViews(db,{table:'items'});
+ await core.readRows(db,{table:'items',columns:['name']});
+ expect(read.length).toBeGreaterThan(0);
+ expect([...tablesOf()].sort()).toEqual(['items','view_defaults','views']);
+ read.length=0;
+ await core.mentionLabels(db,{targets:[{table:'items',id:'missing'}]});
+ expect([...tablesOf()]).toEqual(['items']);
+});
