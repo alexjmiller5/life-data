@@ -80,13 +80,13 @@ async function initSearch(db: SqlDriver) {
   await db.run('CREATE TABLE IF NOT EXISTS _core_search_work (tbl TEXT PRIMARY KEY, purge INTEGER NOT NULL, backfill TEXT, left INTEGER NOT NULL DEFAULT 0)');
 }
 
-type IndexedTable = { table: string; columns: string[]; markdown: string[]; display?: string; fingerprint: string; sweep: boolean };
-async function describeTable(db: SqlDriver, entry: Row, catalog: Catalog, schema: Row[]): Promise<IndexedTable | null> {
+type IndexedTable = { table: string; columns: string[]; markdown: string[]; display?: string; fingerprint: string; sweep: boolean; rowid: boolean };
+/** `columns` are the table's PRAGMA table_info rows. */
+function describeTable(entry: Row, catalog: Catalog, schema: Row[], columns: Row[]): IndexedTable | null {
   const table = String(entry.id);
   if (/^(_|sqlite_)/i.test(table)) return null;
   const physical = schema.find(r => r.type === 'table' && r.name === table);
   if (!physical || /^CREATE VIRTUAL TABLE/i.test(String(physical.sql))) return null;
-  const columns = await db.all(`PRAGMA main.table_info(${qident(table)})`);
   if (!columns.some(c => c.name === 'id' && c.pk === 1) || columns.filter(c => c.pk).length !== 1
     || !columns.some(c => c.name === 'deleted_at')) return null;
   const names = new Set(columns.map(c => c.name));
@@ -100,7 +100,7 @@ async function describeTable(db: SqlDriver, entry: Row, catalog: Catalog, schema
   // recursive_triggers is off. Only dirty tables with such constraints need
   // an indexed ID anti-join sweep; clean searches never scan source contents.
   const sweep = /unique|collate/i.test([physical.sql, ...indexes].join(' '));
-  return { table, columns: text, markdown, display, fingerprint, sweep };
+  return { table, columns: text, markdown, display, fingerprint, sweep, rowid: !/WITHOUT\s+ROWID\s*$/i.test(String(physical.sql).trim()) };
 }
 
 const stateTable = async (db: SqlDriver) => (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='_core_state'")).length > 0;
@@ -116,15 +116,35 @@ async function searchSettings(db: SqlDriver) {
   const counts = parse('hub_stats').tables;
   return { counts: (counts && typeof counts === 'object' ? counts : {}) as Record<string, unknown>, chosen: parse(SEARCH_TABLES_KEY) };
 }
-/** Whether the table is indexed, and roughly how many rows it holds (to report progress). */
-async function searched(db: SqlDriver, table: string, { counts, chosen }: Awaited<ReturnType<typeof searchSettings>>): Promise<{ include: boolean; rows: number }> {
-  const hub = Number.isSafeInteger(counts[table]) ? counts[table] as number : null;
-  if (chosen[table] === false || (chosen[table] !== true && UNSEARCHED.has(table))) return { include: false, rows: 0 };
-  // An opted-in table may be any size; a hub count or a full local count sizes it.
-  const limit = chosen[table] === true ? '' : ` LIMIT ${SEARCH_MAX_ROWS + 1}`;
-  // No hub count (never synced, or a local table): count locally, stopping just past the limit.
-  const rows = hub ?? Number((await db.all(`SELECT count(*) AS n FROM (SELECT 1 FROM ${qident(table)}${limit})`))[0]?.n ?? 0);
-  return { include: chosen[table] === true || rows <= SEARCH_MAX_ROWS, rows };
+const literal = (text: string) => `'${text.replace(/'/g, "''")}'`;
+/** Which tables the index holds, with roughly how many rows each has (to report progress).
+ * Reconciliation runs inside a host's step, so it reads every table in a few statements. */
+async function sizeTables(db: SqlDriver, tables: IndexedTable[], { counts, chosen }: Awaited<ReturnType<typeof searchSettings>>) {
+  const sizes = new Map<string, number>(), unknown: IndexedTable[] = [];
+  for (const t of tables) {
+    if (chosen[t.table] === false || (chosen[t.table] !== true && UNSEARCHED.has(t.table))) continue;
+    if (Number.isSafeInteger(counts[t.table])) {
+      if (chosen[t.table] === true || (counts[t.table] as number) <= SEARCH_MAX_ROWS) sizes.set(t.table, counts[t.table] as number);
+    } else unknown.push(t);
+  }
+  // No hub count (never synced, or a local table). Rowids are unique integers, so their
+  // span bounds the row count with two index lookups; only a wide span is counted.
+  const spans = new Map<string, number>();
+  const rowid = unknown.filter(t => t.rowid);
+  for (let i = 0; i < rowid.length; i += 100) {
+    // Separate subqueries: SQLite answers a lone min() or max() from the index, not both at once.
+    const sql = rowid.slice(i, i + 100).map(t => `SELECT ${literal(t.table)} AS tbl,ifnull((SELECT max(rowid) FROM ${qident(t.table)})-(SELECT min(rowid) FROM ${qident(t.table)})+1,0) AS n`).join(' UNION ALL ');
+    for (const row of await db.all(sql)) spans.set(String(row.tbl), Number(row.n));
+  }
+  for (const t of unknown) {
+    const span = spans.get(t.table);
+    if (chosen[t.table] !== true && span !== undefined && span <= SEARCH_MAX_ROWS) { sizes.set(t.table, span); continue; }
+    // An opted-in table may be any size and is counted in full; otherwise stop just past the limit.
+    const limit = chosen[t.table] === true ? '' : ` LIMIT ${SEARCH_MAX_ROWS + 1}`;
+    const rows = Number((await db.all(`SELECT count(*) AS n FROM (SELECT 1 FROM ${qident(t.table)}${limit})`))[0]?.n ?? 0);
+    if (chosen[t.table] === true || rows <= SEARCH_MAX_ROWS) sizes.set(t.table, rows);
+  }
+  return sizes;
 }
 
 /** The _core_state row recording the schema, catalog and settings of the last reconciliation. */
@@ -158,15 +178,14 @@ async function reconcile(db: SqlDriver): Promise<void> {
   await initSearch(db);
   const catalog = await readCatalog(db);
   const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger')");
-  const settings = await searchSettings(db);
-  const tables: IndexedTable[] = [], sizes = new Map<string, number>();
-  for (const entry of catalog.tables) {
-    const indexed = await describeTable(db, entry, catalog, schema);
-    const size = indexed && await searched(db, indexed.table, settings);
-    if (!indexed || !size?.include) continue;
-    tables.push(indexed);
-    sizes.set(indexed.table, size.rows);
+  const columns = new Map<string, Row[]>();
+  for (const row of await db.all(`SELECT m.name AS tbl,p.name,p.pk FROM main.sqlite_master AS m JOIN pragma_table_info(m.name) AS p
+    WHERE m.type='table' AND m.name IN (SELECT value FROM json_each(?))`, [JSON.stringify(catalog.tables.map(t => t.id))])) {
+    columns.set(String(row.tbl), [...columns.get(String(row.tbl)) ?? [], row]);
   }
+  const candidates = catalog.tables.flatMap(entry => describeTable(entry, catalog, schema, columns.get(String(entry.id)) ?? []) ?? []);
+  const sizes = await sizeTables(db, candidates, await searchSettings(db));
+  const tables = candidates.filter(t => sizes.has(t.table));
   const expected = new Map(tables.flatMap(t => searchTriggers(t.table).map(trigger => [trigger.name, trigger.sql] as const)));
   for (const trigger of schema.filter(r => r.type === 'trigger' && String(r.name).startsWith('_core_search_'))) {
     if (expected.get(String(trigger.name)) !== trigger.sql) {
@@ -184,19 +203,20 @@ async function reconcile(db: SqlDriver): Promise<void> {
     await db.run('DELETE FROM _core_search_state WHERE tbl=?', [retired]);
     await db.run('INSERT INTO _core_search_work(tbl,purge,backfill) VALUES (?,1,NULL) ON CONFLICT(tbl) DO UPDATE SET purge=1,backfill=NULL', [retired]);
   }
-  for (const indexed of tables) {
-    const { table } = indexed;
-    const triggers = searchTriggers(table);
-    const intact = triggers.every(t => schema.some(s => s.type === 'trigger' && s.name === t.name && s.sql === t.sql));
-    if (intact && states.find(s => s.tbl === table)?.fingerprint === indexed.fingerprint) continue;
-    // Triggers queue every later change; the backfill walks the rows already there.
-    const stale = (await db.all('SELECT 1 FROM _core_search_docs WHERE tbl=? LIMIT 1', [table])).length;
-    await db.run("INSERT INTO _core_search_work(tbl,purge,backfill,left) VALUES (?,?,'',?) ON CONFLICT(tbl) DO UPDATE SET purge=excluded.purge,backfill='',left=excluded.left", [table, stale, sizes.get(table) ?? 0]);
-    for (const trigger of triggers) {
-      if (!schema.some(s => s.type === 'trigger' && s.name === trigger.name && s.sql === trigger.sql)) await db.run(trigger.sql);
-    }
-    await db.run('INSERT INTO _core_search_state(tbl,fingerprint) VALUES (?,?) ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint', [table, indexed.fingerprint]);
+  const changed = tables.filter(t => !(states.find(s => s.tbl === t.table)?.fingerprint === t.fingerprint
+    && searchTriggers(t.table).every(trigger => schema.some(s => s.type === 'trigger' && s.name === trigger.name && s.sql === trigger.sql))));
+  // Triggers queue every later change; the backfill walks the rows already there,
+  // after purging any entries an earlier definition left.
+  const stale = new Set((await db.all('SELECT value AS tbl FROM json_each(?) WHERE EXISTS (SELECT 1 FROM _core_search_docs WHERE tbl=value)',
+    [JSON.stringify(changed.map(t => t.table))])).map(r => String(r.tbl)));
+  await db.run(`INSERT INTO _core_search_work(tbl,purge,backfill,left) SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),'',json_extract(value,'$[2]')
+    FROM json_each(?) WHERE true ON CONFLICT(tbl) DO UPDATE SET purge=excluded.purge,backfill='',left=excluded.left`,
+    [JSON.stringify(changed.map(t => [t.table, stale.has(t.table) ? 1 : 0, sizes.get(t.table) ?? 0]))]);
+  for (const trigger of changed.flatMap(t => searchTriggers(t.table))) {
+    if (!schema.some(s => s.type === 'trigger' && s.name === trigger.name && s.sql === trigger.sql)) await db.run(trigger.sql);
   }
+  await db.run(`INSERT INTO _core_search_state(tbl,fingerprint) SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)
+    WHERE true ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint`, [JSON.stringify(changed.map(t => [t.table, t.fingerprint]))]);
   await db.run(`INSERT INTO _core_search_state(tbl,fingerprint) SELECT ?,${await searchStampSQL(db)} WHERE true ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint`, [READY]);
 }
 
@@ -233,7 +253,7 @@ function describer(db: SqlDriver) {
       if (!(await db.all('SELECT 1 FROM _core_search_state WHERE tbl=? AND tbl<>?', [table, READY])).length) return null;
       const catalog = await readCatalog(db, [table]);
       const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index') AND tbl_name=?", [table]);
-      return catalog.tables[0] ? describeTable(db, catalog.tables[0], catalog, schema) : null;
+      return catalog.tables[0] ? describeTable(catalog.tables[0], catalog, schema, await db.all(`PRAGMA main.table_info(${qident(table)})`)) : null;
     })());
     return described.get(table)!;
   };

@@ -233,6 +233,8 @@ sync round, after local writes and while idle, until it returns `done`; each
 call is one BEGIN IMMEDIATE transaction that works in chunks until the budget
 (default 50 ms, at least one chunk) passes, so requests between calls never
 wait long. It reconciles first when the catalog, schema or settings moved
+(a few statements for the whole catalog plus the triggers it installs, since
+each statement crosses a host bridge)
 (a stamp built and compared in SQLite, so no host's row-object key order
 matters): that records per-table work in `_core_search_work` and installs or
 drops triggers, without touching rows. Then it purges entries of retired or
@@ -250,8 +252,9 @@ waits for the step. A retired table stops answering at once, before its
 entries are purged.
 
 Provenance and every table over the sync size rule (`SIZE_RULE_ROWS`, judged
-by sync's stored hub counts, else a local count capped just past the limit) stay
-out of the index. The `_core_state` key `search_tables` (`SEARCH_TABLES_KEY`)
+by sync's stored hub counts; without one, a rowid span within the limit settles
+it and anything else is counted, stopping just past the limit) stay out of the
+index. The `_core_state` key `search_tables` (`SEARCH_TABLES_KEY`)
 holds a JSON object of table to `true` (index it anyway) or `false` (leave it
 out); an unreadable value counts as absent. Sizes are judged when
 reconciliation runs, which hub count refreshes and setting edits trigger.

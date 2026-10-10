@@ -669,3 +669,19 @@ test('a table outgrowing its size estimate still reads as indexing until its wal
   await drain(db);
   expect(await docs(db, 'items')).toBe(451);
 });
+
+test('without a hub count, a rowid span bounds small tables; wide spans and WITHOUT ROWID tables are counted', async () => {
+  const { db } = await local();
+  await core.initCore(db);
+  await table(db, 'sparse', 1, 'needle');
+  await db.run(`INSERT INTO sparse(rowid,id,note) VALUES (?,?,?)`, [core.SEARCH_MAX_ROWS * 3, 'far', 'needle']);
+  await db.run('CREATE TABLE clustered (id TEXT PRIMARY KEY, note TEXT, deleted_at TEXT) WITHOUT ROWID');
+  await db.run("INSERT INTO catalog_tables(id) VALUES ('clustered')");
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('clustered.note','clustered','note','text')");
+  await db.run("INSERT INTO clustered(id,note) VALUES ('c1','needle'),('c2','needle')");
+  await core.searchIndexStep(db, { budgetMs: 0 });
+  // Two rows 150,000 rowids apart: counted, not estimated from the span.
+  expect(await db.all("SELECT left FROM _core_search_work WHERE tbl='sparse'")).toEqual([{ left: 2 }]);
+  await drain(db);
+  expect([await docs(db, 'sparse'), await docs(db, 'clustered')]).toEqual([2, 2]);
+});
