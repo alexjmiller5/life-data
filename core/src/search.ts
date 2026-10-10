@@ -1,6 +1,6 @@
 import type { Catalog, SearchArgs, SearchHit } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
-import { readCatalog } from './catalog.ts';
+import { catalogRevision, fingerprint, readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { displayName } from './view.ts';
 import { markdownMentions } from './mentions.ts';
@@ -94,6 +94,21 @@ async function indexedTables(db: SqlDriver, catalog: Catalog, schema: Row[]): Pr
   return result;
 }
 
+/** The _core_search_state row recording the schema and catalog of the last complete preparation. */
+const READY = '';
+async function searchStamp(db: SqlDriver): Promise<string> {
+  const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type,name");
+  return (await catalogRevision(db)).revision + fingerprint(JSON.stringify(schema));
+}
+/** Nothing queued and neither schema nor catalog moved since the last complete preparation:
+ * reconciling every table's columns and triggers again would change nothing. */
+async function searchReady(db: SqlDriver): Promise<boolean> {
+  if (!(await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='_core_search_state'")).length) return false;
+  const [ready] = await db.all('SELECT fingerprint FROM _core_search_state WHERE tbl=?', [READY]);
+  if (!ready || ready.fingerprint !== await searchStamp(db)) return false;
+  return !(await db.all('SELECT 1 FROM _core_search_dirty LIMIT 1')).length;
+}
+
 async function purgeTable(db: SqlDriver, table: string) {
   await db.run('DELETE FROM _core_search_fts WHERE rowid IN (SELECT docid FROM _core_search_docs WHERE tbl=?)', [table]);
   await db.run('DELETE FROM _core_search_docs WHERE tbl=?', [table]);
@@ -106,6 +121,7 @@ async function purgeTable(db: SqlDriver, table: string) {
  * The durable queue catches core writes, pulls and Python writes while closed.
  * Fingerprints describe schemas/catalogs, never row timestamps or row contents. */
 export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<void> {
+  if (await searchReady(db)) return;
   await initSearch(db);
   const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger')");
   const tables = await indexedTables(db, catalog, schema);
@@ -118,7 +134,7 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
     }
   }
   const states = await db.all('SELECT tbl,fingerprint FROM _core_search_state');
-  for (const state of states) if (!tables.some(t => t.table === state.tbl)) await purgeTable(db, String(state.tbl));
+  for (const state of states) if (state.tbl !== READY && !tables.some(t => t.table === state.tbl)) await purgeTable(db, String(state.tbl));
   for (const indexed of tables) {
     const { table, columns, display } = indexed;
     const triggers = searchTriggers(table);
@@ -165,6 +181,7 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
       await db.run('DELETE FROM _core_search_dirty WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, ids]);
     }
   }
+  await db.run('INSERT INTO _core_search_state(tbl,fingerprint) VALUES (?,?) ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint', [READY, await searchStamp(db)]);
 }
 
 /** Hosts may call at database open to fail early on incompatible SQLite.
@@ -190,6 +207,11 @@ function excerptText(text: string): string {
     .join('').trim();
 }
 
+async function readCatalogTables(db: SqlDriver): Promise<Catalog> {
+  const exists = (await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='catalog_tables'")).length;
+  return { tables: exists ? await db.all('SELECT * FROM catalog_tables WHERE deleted_at IS NULL ORDER BY id') : [], properties: [], rules: [] };
+}
+
 /** Search only the local replica. Missing/skipped remote tables are not queried. */
 export async function search(db: SqlDriver, args: SearchArgs): Promise<SearchHit[]> {
   if (!args || typeof args !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(args))
@@ -199,9 +221,11 @@ export async function search(db: SqlDriver, args: SearchArgs): Promise<SearchHit
   if (table !== undefined && typeof table !== 'string') throw new Error('Invalid search table.');
   if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid search pagination.');
   return db.transaction(async () => {
-    const catalog = await readCatalog(db);
+    // A ready index needs only the table entries, not the whole catalog.
+    const ready = await searchReady(db);
+    const catalog = ready ? await readCatalogTables(db) : await readCatalog(db);
     if (table !== undefined && !catalog.tables.some(t => t.id === table)) throw new Error('Table is not in the catalog');
-    await prepareSearch(db, catalog);
+    if (!ready) await prepareSearch(db, catalog);
     if (!query) return [];
     // Read-only system rows (history, provenance, catalog) repeat user text; list them after records.
     const system = catalog.tables.filter(t => isReadOnlyTable(String(t.id), t)).map(t => String(t.id));

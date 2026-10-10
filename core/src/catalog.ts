@@ -23,9 +23,10 @@ export async function readCatalog(db: SqlDriver, tables?: readonly string[]): Pr
   return {tables:await read('catalog_tables','id'), properties:(await read('catalog_properties','tbl')).map(decodeProperty), rules:await read('catalog_rules','tbl')};
 }
 
-/** Changes whenever a catalog row is added, edited, retired, pulled or removed: every write moves
- * updated_at, deleted_at or hub_at (tables without updated_at contribute every column).
- * Hosts compare it before re-reading the whole catalog. */
+/** Changes whenever a catalog row is added, edited, retired, pulled or removed. Every soma
+ * write moves updated_at (its timestamp trigger stamps raw edits too); the length of the whole
+ * row also separates edits that keep it, such as two in one millisecond. Hosts compare it
+ * before re-reading the whole catalog. */
 export async function catalogRevision(db: SqlDriver): Promise<CatalogRevision> {
   const names=['catalog_tables','catalog_properties','catalog_rules'];
   const columns=new Map<string,string[]>();
@@ -34,13 +35,16 @@ export async function catalogRevision(db: SqlDriver): Promise<CatalogRevision> {
   const parts=names.map(table=>{
     const all=columns.get(table);
     if(!all)return "'-'";
-    const used=all.includes('updated_at')?all.filter(c=>['id','updated_at','deleted_at','hub_at'].includes(c)):all;
-    return `(SELECT count(*)||':'||ifnull(group_concat(r,''),'') FROM (SELECT json_array(${used.map(qident).join(',')}) AS r FROM ${qident(table)} ORDER BY id))`;
+    const row=`json_array(id,${all.includes('updated_at')?'updated_at':'NULL'},length(json_array(${all.map(qident).join(',')})))`;
+    return `(SELECT ifnull(group_concat(r,''),'') FROM (SELECT ${row} AS r FROM ${qident(table)} ORDER BY id))`;
   });
   const [row]=await db.all(`SELECT ${parts.join("||'|'||")} AS rows`);
-  // Two FNV-1a passes give 64 bits; the text never leaves core.
+  return {revision:fingerprint(String(row!.rows))};
+}
+
+/** 64-bit FNV-1a style digest for cache keys; never a security boundary. */
+export function fingerprint(text: string): string {
   let a=0x811c9dc5,b=0x01000193;
-  const text=String(row!.rows);
   for(let i=0;i<text.length;i++){const c=text.charCodeAt(i);a=Math.imul(a^c,0x01000193)>>>0;b=Math.imul(b^c,0x5bd1e995)>>>0;}
-  return {revision:a.toString(16).padStart(8,'0')+b.toString(16).padStart(8,'0')};
+  return a.toString(16).padStart(8,'0')+b.toString(16).padStart(8,'0');
 }

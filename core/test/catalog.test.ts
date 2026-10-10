@@ -1,6 +1,6 @@
 import { expect,test } from 'bun:test';
 import { catalogRevision, readCatalog } from '../src/catalog.ts';
-import { schema,setup,T0,T1 } from './support.ts';
+import { schema,setup,T0,T1,T2 } from './support.ts';
 import { sync } from '../src/sync.ts';
 
 test('catalog reads decode field options and inputs and exclude retired definitions',async()=>{
@@ -24,6 +24,8 @@ test('the catalog revision changes with every catalog row change and only then',
   for(const ddl of schema)await db.run(ddl);
   expect(await revision()).not.toBe(empty);
   await db.run('CREATE TABLE catalog_tables(id TEXT PRIMARY KEY,display TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)');
+  for(const t of ['catalog_tables','catalog_properties','catalog_rules'])
+    await db.run(`CREATE TRIGGER ${t}_updated_at AFTER UPDATE ON ${t} FOR EACH ROW WHEN NEW.updated_at = OLD.updated_at BEGIN UPDATE ${t} SET updated_at = (strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE rowid = NEW.rowid; END`);
   await db.run("INSERT INTO catalog_tables(id,display,updated_at) VALUES ('items','name',?)",[T0]);
   const seen=new Set([empty]);
   const changed=async(label:string)=>{const next=await revision();expect(seen.has(next),label).toBe(false);seen.add(next);expect(await revision()).toBe(next);};
@@ -32,6 +34,8 @@ test('the catalog revision changes with every catalog row change and only then',
   await changed('property added');
   await db.run("UPDATE catalog_properties SET type='markdown',updated_at=? WHERE id='items.name'",[T1]);
   await changed('property edited');
+  await db.run("UPDATE catalog_properties SET type='multiref',updated_at=? WHERE id='items.name'",[T2]);
+  await changed('same-length edit');
   await db.run("UPDATE catalog_properties SET hub_at=? WHERE id='items.name'",[T1]);
   await changed('property pulled');
   await db.run("INSERT INTO catalog_rules(id,tbl,kind,updated_at) VALUES ('r','items','invariant',?)",[T0]);
@@ -42,9 +46,12 @@ test('the catalog revision changes with every catalog row change and only then',
   await changed('table removed');
   await db.run("INSERT INTO items(id,name,updated_at) VALUES ('row','not catalog',?)",[T0]);
   expect(seen.has(await revision())).toBe(true);
+  // A raw edit that leaves updated_at alone is stamped by the trigger.
+  await db.run("UPDATE catalog_properties SET type='text' WHERE id='items.name'");
+  await changed('raw property edit');
 });
 
-test('a catalog without sync timestamps revises on any content change',async()=>{
+test('a catalog without the timestamp trigger revises on any content change',async()=>{
   const {db}=setup();
   for(const ddl of schema)await db.run(ddl);
   await db.run('CREATE TABLE catalog_tables(id TEXT PRIMARY KEY,display TEXT,deleted_at TEXT)');

@@ -472,3 +472,25 @@ test('excerpts center the first matching word of long text and fold accents like
   await db.run("UPDATE items SET body=? WHERE id='a'", [words.join(' ')]);
   expect((await search(db, { text: 'creme' }))[0].excerpt).toBe(`${words.slice(0, 24).join(' ')}...`);
 });
+
+test('an unchanged, fully indexed database searches without re-reading catalog properties or table schemas', async () => {
+  const { db } = await local();
+  expect(await ids(db, 'offline')).toEqual(['a']);
+  const statements: string[] = [];
+  const all = db.all.bind(db), run = db.run.bind(db);
+  db.all = async (sql, params) => { statements.push(sql); return all(sql, params); };
+  db.run = async (sql, params) => { statements.push(sql); return run(sql, params); };
+  expect(await ids(db, 'offline')).toEqual(['a']);
+  expect(statements.filter(sql => /SELECT \* FROM "catalog_(properties|rules)"|PRAGMA main\.table_info/.test(sql))).toEqual([]);
+  expect(statements.length).toBeLessThan(20); // a full reconciliation is a few per table
+  db.all = all; db.run = run;
+  // Catalog, schema and row changes each still reach the index.
+  await db.run("UPDATE catalog_properties SET type='text' WHERE col='qty'");
+  expect(await ids(db, '42')).toEqual(['a']);
+  await db.run('ALTER TABLE items ADD COLUMN subtitle TEXT');
+  await db.run("UPDATE items SET subtitle='appendix' WHERE id='a'");
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('subtitle','items','subtitle','text')");
+  expect(await ids(db, 'appendix')).toEqual(['a']);
+  await db.run("UPDATE items SET body='rewritten' WHERE id='a'");
+  expect(await ids(db, 'rewritten')).toEqual(['a']);
+});
