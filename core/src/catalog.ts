@@ -28,18 +28,22 @@ export async function readCatalog(db: SqlDriver, tables?: readonly string[]): Pr
  * row also separates edits that keep it, such as two in one millisecond. Hosts compare it
  * before re-reading the whole catalog. */
 export async function catalogRevision(db: SqlDriver): Promise<CatalogRevision> {
+  const [row]=await db.all(`SELECT ${await catalogRevisionSQL(db)} AS rows`);
+  return {revision:fingerprint(String(row!.rows))};
+}
+
+/** The SQL expression behind catalogRevision, so callers can compare it inside SQLite. */
+export async function catalogRevisionSQL(db: SqlDriver): Promise<string> {
   const names=['catalog_tables','catalog_properties','catalog_rules'];
   const columns=new Map<string,string[]>();
   for(const r of await db.all(`SELECT m.name AS tbl,p.name AS col FROM sqlite_master AS m JOIN pragma_table_info(m.name) AS p
     WHERE m.type='table' AND m.name IN ('${names.join("','")}')`)) columns.set(String(r.tbl),[...columns.get(String(r.tbl))??[],String(r.col)]);
-  const parts=names.map(table=>{
+  return names.map(table=>{
     const all=columns.get(table);
     if(!all)return "'-'";
     const row=`json_array(id,${all.includes('updated_at')?'updated_at':'NULL'},length(json_array(${all.map(qident).join(',')})))`;
     return `(SELECT ifnull(group_concat(r,''),'') FROM (SELECT ${row} AS r FROM ${qident(table)} ORDER BY id))`;
-  });
-  const [row]=await db.all(`SELECT ${parts.join("||'|'||")} AS rows`);
-  return {revision:fingerprint(String(row!.rows))};
+  }).join("||'|'||");
 }
 
 /** 64-bit FNV-1a style digest for cache keys; never a security boundary. */

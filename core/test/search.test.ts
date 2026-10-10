@@ -478,7 +478,8 @@ test('an unchanged, fully indexed database searches without re-reading catalog p
   expect(await ids(db, 'offline')).toEqual(['a']);
   const statements: string[] = [];
   const all = db.all.bind(db), run = db.run.bind(db);
-  db.all = async (sql, params) => { statements.push(sql); return all(sql, params); };
+  // Native bridges build row objects whose key order can differ between calls.
+  db.all = async (sql, params) => { statements.push(sql); return (await all(sql, params)).map(row => Object.fromEntries(Object.entries(row).reverse())); };
   db.run = async (sql, params) => { statements.push(sql); return run(sql, params); };
   expect(await ids(db, 'offline')).toEqual(['a']);
   expect(statements.filter(sql => /SELECT \* FROM "catalog_(properties|rules)"|PRAGMA main\.table_info/.test(sql))).toEqual([]);

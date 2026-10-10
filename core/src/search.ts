@@ -1,6 +1,6 @@
 import type { Catalog, SearchArgs, SearchHit } from './contract.generated.ts';
 import type { SqlDriver } from './driver.ts';
-import { catalogRevision, fingerprint, readCatalog } from './catalog.ts';
+import { catalogRevisionSQL, readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { displayName } from './view.ts';
 import { markdownMentions } from './mentions.ts';
@@ -96,17 +96,18 @@ async function indexedTables(db: SqlDriver, catalog: Catalog, schema: Row[]): Pr
 
 /** The _core_search_state row recording the schema and catalog of the last complete preparation. */
 const READY = '';
-async function searchStamp(db: SqlDriver): Promise<string> {
-  const schema = await db.all("SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type,name");
-  return (await catalogRevision(db)).revision + fingerprint(JSON.stringify(schema));
+/** The catalog revision and every table, index and trigger definition, built and compared
+ * inside SQLite: host bridges need not return row objects with a stable key order. */
+async function searchStampSQL(db: SqlDriver): Promise<string> {
+  return `${await catalogRevisionSQL(db)}||'|'||(SELECT ifnull(group_concat(m,char(30)),'') FROM (SELECT type||char(31)||name||char(31)||tbl_name||char(31)||ifnull(sql,'') AS m
+    FROM main.sqlite_master WHERE type IN ('table','index','trigger') ORDER BY type,name))`;
 }
 /** Nothing queued and neither schema nor catalog moved since the last complete preparation:
  * reconciling every table's columns and triggers again would change nothing. */
 async function searchReady(db: SqlDriver): Promise<boolean> {
   if (!(await db.all("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='_core_search_state'")).length) return false;
-  const [ready] = await db.all('SELECT fingerprint FROM _core_search_state WHERE tbl=?', [READY]);
-  if (!ready || ready.fingerprint !== await searchStamp(db)) return false;
-  return !(await db.all('SELECT 1 FROM _core_search_dirty LIMIT 1')).length;
+  const [ready] = await db.all(`SELECT fingerprint IS (${await searchStampSQL(db)}) AS same FROM _core_search_state WHERE tbl=?`, [READY]);
+  return !!ready?.same && !(await db.all('SELECT 1 FROM _core_search_dirty LIMIT 1')).length;
 }
 
 async function purgeTable(db: SqlDriver, table: string) {
@@ -181,7 +182,7 @@ export async function prepareSearch(db: SqlDriver, catalog: Catalog): Promise<vo
       await db.run('DELETE FROM _core_search_dirty WHERE tbl=? AND row_id IN (SELECT value FROM json_each(?))', [table, ids]);
     }
   }
-  await db.run('INSERT INTO _core_search_state(tbl,fingerprint) VALUES (?,?) ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint', [READY, await searchStamp(db)]);
+  await db.run(`INSERT INTO _core_search_state(tbl,fingerprint) SELECT ?,${await searchStampSQL(db)} WHERE true ON CONFLICT(tbl) DO UPDATE SET fingerprint=excluded.fingerprint`, [READY]);
 }
 
 /** Hosts may call at database open to fail early on incompatible SQLite.

@@ -240,10 +240,11 @@ rebuild affected entries. None of this local DDL is logged or synced, and cache
 work does not create history, pending UI edits or revisions on source rows.
 
 Clean searches read metadata and the FTS index, not source table contents.
-After a complete preparation core records a readiness stamp (catalog revision
-plus a digest of `sqlite_master`); while nothing is queued and the stamp still
-matches, a search skips reconciliation and reads only the catalog's table
-entries, a few statements instead of several per table.
+After a complete preparation core records a readiness stamp (the catalog
+revision and every table, index and trigger definition, built and compared in
+SQLite so no host's row-object key order matters); while nothing is queued and
+the stamp still matches, a search skips reconciliation and reads only the
+catalog's table entries, a few statements instead of several per table.
 Initial backfills and schema changes scan affected tables. A dirty table with
 UNIQUE constraints or custom collation also gets an indexed ID anti-join to
 remove silent `INSERT/UPDATE OR REPLACE` victims when SQLite delete triggers
