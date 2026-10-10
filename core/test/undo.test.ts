@@ -238,6 +238,34 @@ async function provisionViews(db: TestSql) {
   }
 }
 
+test('undo never restores or renames a view onto a live name', async () => {
+  const {db,h}=await local(); await provisionViews(db);
+  const copy=await h.saveView({table:'items',name:'Daily',definition:{version:1}});
+  await h.deleteView({id:copy.id,expectedUpdatedAt:copy.updated_at!});
+  const restore=await action(h);
+  // The name is taken again (another device synced one) before Undo runs.
+  await db.run("INSERT INTO views(id,name,tbl,definition,updated_at) VALUES ('synced',' daily','items','{\"version\":1}',?)",[T0]);
+  await expect(h.undo({receiptId:restore.receiptId})).rejects.toThrow(/already named/);
+  expect((await db.all('SELECT deleted_at FROM views WHERE id=?',[copy.id]))[0]!.deleted_at).not.toBeNull();
+  expect(await action(h)).toEqual(restore);
+  const view=await h.saveView({table:'items',name:'Weekly',definition:{version:1}});
+  await h.saveView({table:'items',id:view.id,expectedUpdatedAt:view.updated_at!,name:'Monthly',definition:{version:1}});
+  const renamed=await action(h);
+  await db.run("INSERT INTO views(id,name,tbl,definition,updated_at) VALUES ('synced-2','WEEKLY','items','{\"version\":1}',?)",[T0]);
+  await expect(h.undo({receiptId:renamed.receiptId})).rejects.toThrow(/already named/);
+  expect((await db.all('SELECT name FROM views WHERE id=?',[view.id]))[0]!.name).toBe('Monthly');
+  // Undo that keeps a legacy duplicate's own name still works.
+  await db.run("UPDATE views SET deleted_at=?, updated_at=? WHERE id='synced-2'",[T1,T1]);
+  const back=await h.undo({receiptId:renamed.receiptId});
+  expect(back.name).toBe('Weekly');
+  // A legacy duplicate does not block undoing an edit that keeps the view's own name.
+  await db.run("INSERT INTO views(id,name,tbl,definition,updated_at) VALUES ('synced-3','weekly','items','{\"version\":1}',?)",[T0]);
+  const current=(await h.listViews({table:'items'})).views.find(v=>v.id===view.id)!;
+  await h.saveView({table:'items',id:view.id,expectedUpdatedAt:current.updated_at!,name:'Weekly',definition:{version:1,columns:['name']}});
+  const edited=await action(h);
+  expect(JSON.parse(String((await h.undo({receiptId:edited.receiptId})).definition))).toEqual({version:1});
+});
+
 test('saved views join the same undo stack and failed mutations leave it intact', async () => {
   const {db,h}=await local(); await provisionViews(db); await edit(h);
   const recordUndo=await action(h);

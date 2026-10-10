@@ -3,7 +3,7 @@ import type { SqlDriver } from './driver.ts';
 import { readCatalog } from './catalog.ts';
 import { qident, type Row } from './validate.ts';
 import { compileView, validateView } from './view.ts';
-import { commitWrite, type WriteCapture } from './write.ts';
+import { commitWrite, ValidationError, type WriteCapture } from './write.ts';
 import { validateRowActions } from './row-actions.ts';
 import storage from '../schema/saved-views.json';
 
@@ -187,6 +187,13 @@ export async function listViews(db: SqlDriver, args: ListViewsArgs): Promise<Sav
   });
 }
 
+/** A table's live views keep distinct names (trimmed, ASCII case-insensitive). Only a new,
+ * renamed or restored view is checked, so duplicates synced from another device keep saving. */
+async function requireUniqueName(db: SqlDriver, table: string, name: string, id: string | null): Promise<void> {
+  const [clash] = await db.all('SELECT id FROM main.views WHERE tbl=? AND deleted_at IS NULL AND lower(trim(name))=lower(trim(?)) AND id IS NOT ?', [table, name, id]);
+  if (clash) throw new ValidationError([{ tbl: 'views', row_id: id, col: 'name', rule: 'unique', message: `Another view on this table is already named "${name.trim()}".` }]);
+}
+
 // writeRow retains every guard/history/outbox step under our existing writer
 // reservation. Only its inner transaction wrapper is elided, never the outer.
 function inTransaction(db: SqlDriver): SqlDriver {
@@ -203,6 +210,9 @@ export async function saveView(db: SqlDriver, args: SaveViewArgs, options: { ori
     const problem = await storageProblem(db, catalog);
     if (problem) throw new Error(problem);
     await definitionView(db, catalog, args.table, args.definition);
+    const [stored] = args.id === undefined ? [] : await db.all('SELECT name,tbl,deleted_at FROM main.views WHERE id=?', [args.id]);
+    if (!stored || stored.name !== args.name || stored.tbl !== args.table || stored.deleted_at !== null)
+      await requireUniqueName(db, args.table, args.name, args.id ?? null);
     const result = await commitWrite(inTransaction(db), 'views', {
       ...(args.id === undefined ? {} : { id: args.id }), name: args.name, tbl: args.table, definition: args.definition,
     }, { ...options, expectedUpdatedAt: args.expectedUpdatedAt }, !!capture);
@@ -236,6 +246,8 @@ export async function validateViewUndo(db: SqlDriver, before: Row, patch: Row): 
   const next = {...before, ...patch};
   if (next.deleted_at != null) return;
   if (typeof next.name !== 'string' || !next.name.trim() || typeof next.tbl !== 'string') throw new Error('Invalid saved view.');
+  if (before.deleted_at != null || before.name !== next.name || before.tbl !== next.tbl)
+    await requireUniqueName(db, next.tbl, next.name, String(before.id));
   const definition = typeof next.definition === 'string' ? JSON.parse(next.definition) : next.definition;
   await definitionView(db, catalog, next.tbl, definition);
 }

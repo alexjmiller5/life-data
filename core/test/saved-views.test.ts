@@ -464,3 +464,27 @@ test('transient configuration is captured before asynchronous catalog reads', as
   input.columns!.push('missing');
   expect((await pending).definition.columns).toEqual(['name']);
 });
+
+test('a table keeps distinct live view names; legacy duplicates still save unchanged', async () => {
+  const db = await local();
+  const first = await save(db, { table: 'items', name: 'Daily', definition });
+  for (const name of ['Daily', ' daily ', 'DAILY']) {
+    await expect(save(db, { table: 'items', name, definition })).rejects.toThrow(/already named/);
+  }
+  const other = await save(db, { table: 'items', name: 'Weekly', definition });
+  await expect(save(db, { table: 'items', id: other.id, expectedUpdatedAt: other.updated_at, name: 'daily', definition })).rejects.toThrow(/already named/);
+  expect((await list(db)).views.map(v => v.name)).toEqual(['Daily', 'Weekly']);
+  // Another table and tombstoned views do not reserve the name.
+  await db.run("INSERT INTO catalog_tables(id,kind,display) VALUES ('others','table','name')");
+  await db.run('CREATE TABLE others(id TEXT PRIMARY KEY,name TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,hub_at TEXT)');
+  await db.run("INSERT INTO catalog_properties(id,tbl,col,type) VALUES ('others.name','others','name','text')");
+  expect((await save(db, { table: 'others', name: 'Daily', definition: { version: 1 } })).name).toBe('Daily');
+  await remove(db, { id: other.id, expectedUpdatedAt: other.updated_at });
+  expect((await save(db, { table: 'items', name: 'Weekly', definition })).name).toBe('Weekly');
+  // A duplicate written before this rule (or synced from another device) keeps saving its own name.
+  await insert(db, 'legacy', definition, 'Daily');
+  const legacy = (await list(db)).views.find(v => v.id === 'legacy')!;
+  const edited = await save(db, { table: 'items', id: 'legacy', expectedUpdatedAt: legacy.updated_at, name: 'Daily', definition: { ...definition, widths: { name: 200 } } });
+  expect(edited.definition?.widths).toEqual({ name: 200 });
+  expect((await save(db, { table: 'items', id: first.id, expectedUpdatedAt: first.updated_at, name: 'Daily', definition: { version: 1 } })).name).toBe('Daily');
+});

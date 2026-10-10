@@ -34,6 +34,11 @@ without an available preference it creates or restores the table's deterministic
 it, so every table opens on a real saved view. It records no Undo receipt and falls
 back to a plain read when either store is unprovisioned or unwritable. Explicit
 destinations win. Provisioning is operator-owned, never implicit in reads.
+A table's live saved views keep distinct names (trimmed, ASCII case-insensitive):
+`saveView` refuses a new or renamed view, and Undo refuses a restore or rename, that
+would collide with another live view (`views.name` violation, rule `unique`). Edits
+that keep a view's stored name still save, so duplicates synced from another device
+can be deleted or renamed rather than blocking autosave.
 
 Related-record view IDs use the separate `related-view-defaults/v1` manifest and
 `getRelatedViewDefault`/`setRelatedViewDefault` operations. This optional store does
